@@ -666,6 +666,20 @@ function runWindowsRuntime(report) {
 
     runCargoSection(report, "NTFS", [
       {
+        name: "Windows volume/path diagnostics",
+        args: [
+          "test",
+          "-p",
+          "platform-windows",
+          "--features",
+          "mutation",
+          "--test",
+          "windows_volume_path_diagnostics",
+          "--",
+          "--nocapture",
+        ],
+      },
+      {
         name: "NTFS qualification suite",
         args: [
           "test",
@@ -754,18 +768,31 @@ function runWindowsRuntime(report) {
   ]);
 }
 
+function linkerDiagnostics(output) {
+  return output
+    .split(/\r?\n/)
+    .filter((line) =>
+      /LNK\d+|error LNK|linking with `link\.exe`|already defined|multiply defined|unresolved external/i.test(
+        line,
+      ),
+    )
+    .join("\n");
+}
+
 function runCargoSection(report, section, suites) {
   for (const suite of suites) {
     const result = run("cargo", suite.args, { allowFailure: true });
     if (result.status === 0) {
       addCheck(report, section, suite.name, Status.PASS, "cargo test ok");
     } else {
+      const full = `${result.stdout}\n${result.stderr}`.trim();
+      const linker = linkerDiagnostics(full);
       addCheck(
         report,
         section,
         suite.name,
         Status.FAIL,
-        truncate(`${result.stdout}\n${result.stderr}`.trim(), 800),
+        linker ? `${linker}\n---\n${truncate(full, 800)}` : truncate(full, 800),
       );
     }
   }
