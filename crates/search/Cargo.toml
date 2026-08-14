@@ -1,0 +1,31 @@
+[package]
+name = "search"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+blake3 = "1.8.6"
+domain = { version = "0.1.0", path = "../domain" }
+# hex unused — sha2 formats via {:?}
+libc = "0.2.180" # available-disk checks for model install
+# ONNX Runtime for local CPU embedding inference (no Python).
+# `download-binaries` vendors the platform ORT shared library at build time so
+# production packages do not require a machine-wide ORT install.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "download-binaries", "tls-rustls"] }
+regex = "1.13.1"
+serde = "1.0.229"
+serde_json = "1.0.151" # model manifest + status.json
+sha2 = "0.10.9" # cryptographic model asset verification
+thiserror = "2.0.20"
+# HuggingFace tokenizer artifacts for the pinned embedding model (no HTTP).
+tokenizers = { version = "0.21.4", default-features = false, features = ["fancy-regex"] }
+unicode-normalization = "0.1.25"
+# Pinned HTTPS model asset download (user-consented install only).
+ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
+url = "2.5.8"
+# Local persistent HNSW ANN (Apache-2.0) for scalable semantic retrieval.
+# Linked via cxx into the application binary — no separate daemon.
+usearch = "2.26.0"
+
+[dev-dependencies]
+tempfile = "3.27.0"

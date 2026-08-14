@@ -1,0 +1,36 @@
+{
+  "model_id": "granite-embedding-97m-multilingual-r2",
+  "provider_id": "granite-embedding-97m-multilingual-r2",
+  "revision": "835ad14087e140460703cf0fae09f97d469d65c2",
+  "version": "835ad14087e140460703cf0fae09f97d469d65c2",
+  "display_name": "Granite Embedding 97M Multilingual R2",
+  "source": "https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2",
+  "license": "Apache-2.0",
+  "license_verification": "Declared on pinned Hugging Face model card/metadata (Apache-2.0). Include Apache-2.0 text and model card with redistributed artifacts; counsel confirmation recommended before product release.",
+  "dimensions": 384,
+  "max_sequence_tokens": 512,
+  "pooling": "cls",
+  "normalize": "l2",
+  "query_prefix": null,
+  "passage_prefix": null,
+  "languages": ["fr", "en", "multilingual"],
+  "runtime": "onnxruntime",
+  "runtime_notes": "CPU ONNX Runtime via Rust ort (load-dynamic). No Python required for end users.",
+  "approximate_disk_bytes": 123549550,
+  "approximate_disk_label": "118 MiB",
+  "expected_ram_loaded_mib": "250-450",
+  "assets": [
+    {
+      "path": "onnx/model_quint8_avx2.onnx",
+      "role": "onnx_model",
+      "bytes": 98247878,
+      "sha256": "a6022dd8220ea6f6595562a1328ee216f4a94faa55362f2f4747c80f1e78772e"
+    },
+    {
+      "path": "tokenizer.json",
+      "role": "tokenizer",
+      "bytes": 25301672,
+      "sha256": "4f2842d568e2724370aec203652a42ac783c7937f8347a1a2cc7506d71f1582f"
+    }
+  ]
+}

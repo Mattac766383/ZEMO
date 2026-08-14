@@ -1,0 +1,56 @@
+[package]
+name = "desktop"
+version = "0.1.0"
+description = "Local-first semantic file organizer"
+authors = ["ZEMO contributors"]
+edition = "2024"
+license = "Apache-2.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+default = []
+windows-apply-qualified = ["operations/windows-apply-qualified"]
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+getrandom = "0.4.3"
+zeroize = "1.9.0"
+application = { version = "0.1.0", path = "../../../crates/application" }
+extraction = { version = "0.1.0", path = "../../../crates/extraction" }
+ipc-contracts = { version = "0.1.0", path = "../../../crates/ipc-contracts" }
+knowledge = { version = "0.1.0", path = "../../../crates/knowledge" }
+operations = { version = "0.1.0", path = "../../../crates/operations" }
+persistence = { version = "0.1.0", path = "../../../crates/persistence" }
+rfd = "0.17.2"
+dirs = "6.0.0"
+privacy = { version = "0.1.0", path = "../../../crates/privacy" }
+platform = { version = "0.1.0", path = "../../../crates/platform" }
+domain = { version = "0.1.0", path = "../../../crates/domain" }
+catalog = { version = "0.1.0", path = "../../../crates/catalog" }
+search = { version = "0.1.0", path = "../../../crates/search" }
+
+[target.'cfg(windows)'.dependencies]
+platform-windows = { version = "0.1.0", path = "../../../crates/platform-windows", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+platform-macos = { version = "0.1.0", path = "../../../crates/platform-macos" }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true
+

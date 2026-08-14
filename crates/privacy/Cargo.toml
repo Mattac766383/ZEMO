@@ -1,0 +1,20 @@
+[package]
+name = "privacy"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait = "0.1.92"
+blake3 = "1.8.6"
+dirs = "6.0.0"
+domain = { version = "0.1.0", path = "../domain" }
+keyring = "4.1.6"
+platform = { version = "0.1.0", path = "../platform" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+uuid = { version = "1.24.0", features = ["v7"] }
+zeroize = "1.9.0"
+
+[dev-dependencies]
+tempfile = "3.27.0"

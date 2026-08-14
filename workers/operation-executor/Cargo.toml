@@ -1,0 +1,23 @@
+[package]
+name = "operation-executor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+blake3 = "1.8.6"
+domain = { version = "0.1.0", path = "../../crates/domain" }
+getrandom = "0.4.3"
+ipc-contracts = { version = "0.1.0", path = "../../crates/ipc-contracts" }
+platform = { version = "0.1.0", path = "../../crates/platform" }
+privacy = { version = "0.1.0", path = "../../crates/privacy" }
+thiserror = "2.0.20"
+zeroize = "1.9.0"
+
+[target.'cfg(windows)'.dependencies]
+platform-windows = { version = "0.1.0", path = "../../crates/platform-windows", features = ["mutation"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+platform-macos = { version = "0.1.0", path = "../../crates/platform-macos", features = ["mutation"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

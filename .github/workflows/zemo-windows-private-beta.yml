@@ -1,0 +1,257 @@
+# ZEMO Windows private-beta: native build + qualification on a real
+# GitHub-hosted Windows runner. Does not create a public release.
+name: ZEMO Windows Private Beta
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: zemo-windows-private-beta-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  ZEMO_DIST_TAG: "0.1.0-beta.6"
+
+jobs:
+  windows-qualification:
+    name: windows-qualification
+    runs-on: windows-latest
+    timeout-minutes: 180
+    outputs:
+      apply_qualified: ${{ steps.decide.outputs.apply_qualified }}
+      filesystem: ${{ steps.ntfs.outputs.filesystem }}
+      qualification_status: ${{ steps.decide.outputs.qualification_status }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install Rust stable MSVC
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Record runner environment
+        run: |
+          powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\print-environment.ps1
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "ZEMO_CI_ENVIRONMENT_STATUS=PASS"
+
+      - name: Install npm dependencies from lockfile
+        run: npm ci
+
+      - name: NTFS qualification volume gate
+        id: ntfs
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\verify-ntfs.ps1
+
+      - name: Windows qualification prep
+        run: npm run windows:qualification:prep
+
+      - name: Frontend tests, TypeScript, production build
+        run: |
+          npm test
+          npm run build
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "ZEMO_CI_FRONTEND_STATUS=PASS"
+
+      - name: Rust fmt, Clippy, library tests
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --exclude platform-macos --all-targets -- -D warnings
+          cargo test -p operations --lib
+          cargo test -p operations --features windows-apply-qualified --lib
+          cargo test -p ipc-contracts --lib
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "ZEMO_CI_RUST_STATUS=PASS"
+
+      - name: Cache pinned Granite assets
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/zemo-pinned-models
+          key: granite-${{ hashFiles('models/manifests/granite-embedding-97m-multilingual-r2.v1.json') }}
+
+      - name: Download pinned Granite model
+        continue-on-error: true
+        env:
+          ZEMO_PINNED_MODEL_CACHE: ${{ runner.temp }}/zemo-pinned-models
+        run: npm run windows:ci:download-granite
+
+      - name: Native Windows qualification harness
+        run: npm run windows:qualification
+
+      - name: Decide Apply enablement
+        id: decide
+        run: npm run windows:ci:decide-apply
+
+      - name: Upload qualification evidence
+        if: always() && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-qualification-evidence
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            target/windows-qualification/windows-qualification-latest.json
+            target/windows-qualification/windows-qualification-latest.txt
+            target/windows-qualification/qualification-summary.txt
+            target/windows-qualification/apply-decision.json
+
+      - name: Job summary
+        if: always() && !cancelled()
+        run: node .\scripts\windows-ci\write-job-summary.mjs
+
+  build-windows-apply-beta:
+    name: build-windows-apply-beta
+    needs: windows-qualification
+    if: needs.windows-qualification.outputs.apply_qualified == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 150
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install Rust stable MSVC
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Record runner environment
+        run: |
+          powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\print-environment.ps1
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "ZEMO_CI_ENVIRONMENT_STATUS=PASS"
+
+      - name: Detect code signing without printing secrets
+        env:
+          HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
+          HAS_TAURI_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          if ($env:HAS_WINDOWS_CERT -eq "true" -or $env:HAS_TAURI_KEY -eq "true") {
+            Write-Host "WINDOWS SIGNING: a secret exists; this workflow does not use it"
+          } else {
+            Write-Host "WINDOWS SIGNING: NOT CONFIGURED"
+          }
+          Write-Host "SMARTSCREEN USER EXPERIENCE: NOT QUALIFIED"
+
+      - name: Install npm dependencies from lockfile
+        run: npm ci
+
+      - name: Download qualification evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-qualification-evidence
+          path: target/windows-qualification
+
+      - name: Build Apply-enabled NSIS installer
+        run: npm run tauri -- build --features windows-apply-qualified
+
+      - name: Inspect packaged runtime
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\inspect-bundle.ps1
+
+      - name: Package private-beta files
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\package-windows-beta.ps1 -DistributionKind apply -DistTag $env:ZEMO_DIST_TAG -GitCommit $env:GITHUB_SHA
+
+      - name: Silent NSIS install smoke
+        continue-on-error: true
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\smoke-nsis.ps1
+
+      - name: Upload private-beta artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZEMO-windows-private-beta
+          if-no-files-found: error
+          retention-days: 14
+          path: target/windows-qualification/dist/*
+
+      - name: Job summary
+        if: always() && !cancelled()
+        run: node .\scripts\windows-ci\write-job-summary.mjs
+
+  build-windows-propose-only:
+    name: build-windows-propose-only
+    needs: windows-qualification
+    if: always() && needs.windows-qualification.result == 'success' && needs.windows-qualification.outputs.apply_qualified != 'true'
+    runs-on: windows-latest
+    timeout-minutes: 150
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install Rust stable MSVC
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Install npm dependencies from lockfile
+        run: npm ci
+
+      - name: Download qualification evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-qualification-evidence
+          path: target/windows-qualification
+
+      - name: Build propose-only NSIS installer
+        run: npm run tauri -- build
+
+      - name: Inspect packaged runtime
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\inspect-bundle.ps1
+
+      - name: Package propose-only files
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\package-windows-beta.ps1 -DistributionKind propose-only -DistTag $env:ZEMO_DIST_TAG -GitCommit $env:GITHUB_SHA
+
+      - name: Upload propose-only artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZEMO-windows-private-beta-propose-only
+          if-no-files-found: error
+          retention-days: 14
+          path: target/windows-qualification/dist/*
+
+      - name: Job summary
+        if: always() && !cancelled()
+        run: node .\scripts\windows-ci\write-job-summary.mjs

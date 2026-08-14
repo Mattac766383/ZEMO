@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://working-name.local/schemas/ml-worker-request-v1.json",
+  "title": "ML worker request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocolVersion", "requestId", "method"],
+  "properties": {
+    "protocolVersion": { "const": 1 },
+    "requestId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "method": {
+      "enum": ["health", "ocr", "vision_describe", "embed_text", "embed_image", "rerank"]
+    },
+    "artifactDigest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "mediaType": { "type": "string", "maxLength": 255 },
+    "payload": {
+      "description": "Bounded payload transported by the authenticated parent process."
+    }
+  }
+}

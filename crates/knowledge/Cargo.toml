@@ -1,0 +1,11 @@
+[package]
+name = "knowledge"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+domain = { version = "0.1.0", path = "../domain" }
+regex = "1.13.1"
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.20"
+unicode-normalization = "0.1.25"

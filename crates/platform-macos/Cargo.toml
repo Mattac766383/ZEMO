@@ -1,0 +1,22 @@
+[package]
+name = "platform-macos"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+mutation = []
+
+[dependencies]
+blake3 = "1.8.6"
+domain = { version = "0.1.0", path = "../domain" }
+libc = "0.2.189"
+platform = { version = "0.1.0", path = "../platform" }
+thiserror = "2.0.20"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[[test]]
+name = "macos_apply_sandbox"
+required-features = ["mutation"]

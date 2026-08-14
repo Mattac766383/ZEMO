@@ -1,0 +1,1186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workingname.invalid/schemas/operation-executor-protocol-v2.schema.json",
+  "title": "Operation Executor Authenticated Child-Session Protocol v2",
+  "description": "Documentation schema for length-prefixed JSON frames exchanged only over inherited stdin/stdout. Encoded frames are hard-limited to 134217728 bytes by the Rust decoder.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/coordinatorHandshakeFrame"
+    },
+    {
+      "$ref": "#/$defs/coordinatorSessionFrame"
+    },
+    {
+      "$ref": "#/$defs/executorFrame"
+    }
+  ],
+  "$defs": {
+    "fixedBytes32": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "hexBytes": {
+      "type": "string",
+      "maxLength": 131072,
+      "pattern": "^(?:[0-9a-f]{2})*$"
+    },
+    "uuid": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?![\\\\/])(?!.*(?:^|[\\\\/])(?:\\.|\\.\\.)(?:[\\\\/]|$))(?!.*:)[^\\u0000]*[^\\\\/]$"
+    },
+    "nativePath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "encoding",
+        "bytes"
+      ],
+      "properties": {
+        "encoding": {
+          "enum": [
+            "windows_utf16_le",
+            "unix_bytes"
+          ]
+        },
+        "bytes": {
+          "$ref": "#/$defs/hexBytes"
+        }
+      }
+    },
+    "volumeIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "stable_identifier",
+        "filesystem_type",
+        "case_sensitive",
+        "removable",
+        "local"
+      ],
+      "properties": {
+        "platform": {
+          "enum": [
+            "windows",
+            "mac_os",
+            "linux",
+            "other"
+          ]
+        },
+        "stable_identifier": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "filesystem_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "case_sensitive": {
+          "type": "boolean"
+        },
+        "removable": {
+          "const": false
+        },
+        "local": {
+          "const": true
+        }
+      }
+    },
+    "rootBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canonical_path",
+        "display_path",
+        "volume"
+      ],
+      "properties": {
+        "canonical_path": {
+          "$ref": "#/$defs/nativePath"
+        },
+        "display_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        },
+        "volume": {
+          "$ref": "#/$defs/volumeIdentity"
+        }
+      }
+    },
+    "safetyPolicyBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "maximum_rehash_bytes",
+        "allow_qualified_case_only_rename",
+        "digest"
+      ],
+      "properties": {
+        "version": {
+          "const": "execution-safety-v2"
+        },
+        "maximum_rehash_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 68719476736
+        },
+        "allow_qualified_case_only_rename": {
+          "type": "boolean"
+        },
+        "digest": {
+          "$ref": "#/$defs/fixedBytes32"
+        }
+      }
+    },
+    "nativeFileIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "volume",
+        "object_key",
+        "parent_key",
+        "leaf_name",
+        "link_count",
+        "reparse_tag"
+      ],
+      "properties": {
+        "volume": {
+          "$ref": "#/$defs/volumeIdentity"
+        },
+        "object_key": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 8192,
+          "pattern": "^(?:[0-9a-f]{2})+$"
+        },
+        "parent_key": {
+          "type": "string",
+          "maxLength": 8192,
+          "pattern": "^(?:[0-9a-f]{2})*$"
+        },
+        "leaf_name": {
+          "$ref": "#/$defs/nativePath"
+        },
+        "link_count": {
+          "const": 1
+        },
+        "reparse_tag": {
+          "type": "null"
+        }
+      }
+    },
+    "expectedFileState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "native_identity",
+        "byte_size",
+        "modified_at_ns",
+        "attributes",
+        "content_digest"
+      ],
+      "properties": {
+        "native_identity": {
+          "$ref": "#/$defs/nativeFileIdentity"
+        },
+        "byte_size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "modified_at_ns": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "attributes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "content_digest": {
+          "$ref": "#/$defs/fixedBytes32"
+        }
+      }
+    },
+    "filePrimitiveProperties": {
+      "type": "object",
+      "required": [
+        "source_relative_path",
+        "destination_relative_path",
+        "original_source_relative_path",
+        "expected_source"
+      ],
+      "properties": {
+        "source_relative_path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "destination_relative_path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "original_source_relative_path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "expected_source": {
+          "$ref": "#/$defs/expectedFileState"
+        }
+      }
+    },
+    "operationPrimitive": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "destination_relative_path"
+          ],
+          "properties": {
+            "kind": {
+              "const": "create_directory"
+            },
+            "destination_relative_path": {
+              "$ref": "#/$defs/relativePath"
+            }
+          }
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/filePrimitiveProperties"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "source_relative_path",
+                "destination_relative_path",
+                "original_source_relative_path",
+                "expected_source"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "same_volume_move",
+                    "same_volume_rename",
+                    "same_volume_move_and_rename",
+                    "internal_stage"
+                  ]
+                },
+                "source_relative_path": {
+                  "$ref": "#/$defs/relativePath"
+                },
+                "destination_relative_path": {
+                  "$ref": "#/$defs/relativePath"
+                },
+                "original_source_relative_path": {
+                  "$ref": "#/$defs/relativePath"
+                },
+                "expected_source": {
+                  "$ref": "#/$defs/expectedFileState"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "approvedOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "proposal_operation_id",
+        "sequence",
+        "dependencies",
+        "primitive"
+      ],
+      "properties": {
+        "operation_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "proposal_operation_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9999
+        },
+        "dependencies": {
+          "type": "array",
+          "maxItems": 10000,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/uuid"
+          }
+        },
+        "primitive": {
+          "$ref": "#/$defs/operationPrimitive"
+        }
+      }
+    },
+    "frozenPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "material_version",
+        "plan_id",
+        "proposal_id",
+        "proposal_revision_id",
+        "proposal_revision",
+        "source_snapshot_version",
+        "approved_operation_ids",
+        "operation_count",
+        "approval_timestamp",
+        "user_confirmed",
+        "digest"
+      ],
+      "properties": {
+        "material_version": {
+          "const": 2
+        },
+        "plan_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "proposal_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "proposal_revision_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "proposal_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_snapshot_version": {
+          "$ref": "#/$defs/uuid"
+        },
+        "approved_operation_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10000,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/uuid"
+          }
+        },
+        "operation_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "approval_timestamp": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "user_confirmed": {
+          "const": true
+        },
+        "digest": {
+          "$ref": "#/$defs/fixedBytes32"
+        }
+      }
+    },
+    "attestedConsent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issued_at_unix_ms",
+        "expires_at_unix_ms",
+        "attested_at_unix_ms",
+        "consent_nonce",
+        "attestation_mac"
+      ],
+      "properties": {
+        "issued_at_unix_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expires_at_unix_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "attested_at_unix_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "consent_nonce": {
+          "$ref": "#/$defs/fixedBytes32"
+        },
+        "attestation_mac": {
+          "$ref": "#/$defs/fixedBytes32"
+        }
+      }
+    },
+    "envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "execution_id",
+        "root_id",
+        "plan",
+        "root_binding",
+        "safety_policy_binding",
+        "consent",
+        "operations"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 2
+        },
+        "execution_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "root_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "plan": {
+          "$ref": "#/$defs/frozenPlan"
+        },
+        "root_binding": {
+          "$ref": "#/$defs/rootBinding"
+        },
+        "safety_policy_binding": {
+          "$ref": "#/$defs/safetyPolicyBinding"
+        },
+        "consent": {
+          "$ref": "#/$defs/attestedConsent"
+        },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10000,
+          "items": {
+            "$ref": "#/$defs/approvedOperation"
+          }
+        }
+      }
+    },
+    "direction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "direction"
+      ],
+      "properties": {
+        "direction": {
+          "enum": [
+            "forward",
+            "rollback"
+          ]
+        }
+      }
+    },
+    "operationBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "direction",
+        "journal_intent"
+      ],
+      "properties": {
+        "operation_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "direction": {
+          "$ref": "#/$defs/direction"
+        },
+        "journal_intent": {
+          "$ref": "#/$defs/committedJournalEvent"
+        }
+      }
+    },
+    "committedJournalEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "database_sequence",
+        "database_event_digest",
+        "external_sequence",
+        "external_event_digest"
+      ],
+      "properties": {
+        "database_sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "database_event_digest": {
+          "$ref": "#/$defs/fixedBytes32"
+        },
+        "external_sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "external_event_digest": {
+          "$ref": "#/$defs/fixedBytes32"
+        }
+      }
+    },
+    "rollbackEligibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "state",
+        "applied_event"
+      ],
+      "properties": {
+        "operation_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "state": {
+          "enum": [
+            "applied",
+            "recovered"
+          ]
+        },
+        "applied_event": {
+          "$ref": "#/$defs/committedJournalEvent"
+        }
+      }
+    },
+    "sessionAuthorization": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode"
+          ],
+          "properties": {
+            "mode": {
+              "const": "forward"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "eligible_operations"
+          ],
+          "properties": {
+            "mode": {
+              "const": "rollback"
+            },
+            "eligible_operations": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 10000,
+              "items": {
+                "$ref": "#/$defs/rollbackEligibility"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "refusalCategory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "category"
+      ],
+      "properties": {
+        "category": {
+          "enum": [
+            "protocol",
+            "authentication",
+            "replay"
+          ]
+        }
+      }
+    },
+    "protocolRefusal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "category",
+        "code",
+        "detail"
+      ],
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/refusalCategory"
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z0-9_]+$"
+        },
+        "detail": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        }
+      }
+    },
+    "executorAttemptAudit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempt_count",
+        "error_class"
+      ],
+      "properties": {
+        "attempt_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "error_class": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "sharing_violation",
+            "lock_violation",
+            "permission_denied",
+            "disk_full",
+            "destination_collision",
+            "source_missing",
+            "path_policy_refusal",
+            "precondition",
+            "verification_limit",
+            "cancelled",
+            "unsupported",
+            "io",
+            "ambiguous_mutation_outcome",
+            null
+          ]
+        }
+      }
+    },
+    "outcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "applied_at_unix_ms",
+            "observed_state_digest",
+            "audit"
+          ],
+          "properties": {
+            "status": {
+              "const": "success"
+            },
+            "applied_at_unix_ms": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "observed_state_digest": {
+              "$ref": "#/$defs/fixedBytes32"
+            },
+            "audit": {
+              "$ref": "#/$defs/executorAttemptAudit"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "code",
+            "detail",
+            "audit"
+          ],
+          "properties": {
+            "status": {
+              "enum": [
+                "proven_not_applied",
+                "recovery_required"
+              ]
+            },
+            "code": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-z0-9_]+$"
+            },
+            "detail": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            "audit": {
+              "$ref": "#/$defs/executorAttemptAudit"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "refusal"
+          ],
+          "properties": {
+            "status": {
+              "const": "protocol_refusal"
+            },
+            "refusal": {
+              "$ref": "#/$defs/protocolRefusal"
+            }
+          }
+        }
+      ]
+    },
+    "hello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "schema_version",
+        "worker_pid",
+        "worker_nonce",
+        "issued_at_unix_ms",
+        "mac"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 2
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "worker_pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "worker_nonce": {
+          "$ref": "#/$defs/fixedBytes32"
+        },
+        "issued_at_unix_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mac": {
+          "$ref": "#/$defs/fixedBytes32"
+        }
+      }
+    },
+    "openSession": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "schema_version",
+        "child_pid",
+        "coordinator_pid",
+        "worker_nonce",
+        "coordinator_nonce",
+        "session_id",
+        "execution_id",
+        "plan_id",
+        "plan_digest",
+        "issued_at_unix_ms",
+        "expires_at_unix_ms",
+        "authorization",
+        "envelope",
+        "mac"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 2
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "child_pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "coordinator_pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "worker_nonce": {
+          "$ref": "#/$defs/fixedBytes32"
+        },
+        "coordinator_nonce": {
+          "$ref": "#/$defs/fixedBytes32"
+        },
+        "session_id": {
+          "$ref": "#/$defs/fixedBytes32"
+        },
+        "execution_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "plan_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "plan_digest": {
+          "$ref": "#/$defs/fixedBytes32"
+        },
+        "issued_at_unix_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expires_at_unix_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "authorization": {
+          "$ref": "#/$defs/sessionAuthorization"
+        },
+        "envelope": {
+          "$ref": "#/$defs/envelope"
+        },
+        "mac": {
+          "$ref": "#/$defs/fixedBytes32"
+        }
+      }
+    },
+    "sessionOpened": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "schema_version",
+        "session_id",
+        "worker_pid",
+        "coordinator_pid",
+        "worker_nonce",
+        "coordinator_nonce",
+        "response_nonce",
+        "issued_at_unix_ms",
+        "mac"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 2
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "session_id": {
+          "$ref": "#/$defs/fixedBytes32"
+        },
+        "worker_pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "coordinator_pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "worker_nonce": {
+          "$ref": "#/$defs/fixedBytes32"
+        },
+        "coordinator_nonce": {
+          "$ref": "#/$defs/fixedBytes32"
+        },
+        "response_nonce": {
+          "$ref": "#/$defs/fixedBytes32"
+        },
+        "issued_at_unix_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mac": {
+          "$ref": "#/$defs/fixedBytes32"
+        }
+      }
+    },
+    "authenticatedRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "schema_version",
+        "session_id",
+        "sequence",
+        "message_nonce",
+        "sent_at_unix_ms",
+        "expires_at_unix_ms",
+        "execution_id",
+        "plan_id",
+        "plan_digest",
+        "operation",
+        "mac"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 2
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "session_id": {
+          "$ref": "#/$defs/fixedBytes32"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "message_nonce": {
+          "$ref": "#/$defs/fixedBytes32"
+        },
+        "sent_at_unix_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expires_at_unix_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "execution_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "plan_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "plan_digest": {
+          "$ref": "#/$defs/fixedBytes32"
+        },
+        "operation": {
+          "$ref": "#/$defs/operationBinding"
+        },
+        "mac": {
+          "$ref": "#/$defs/fixedBytes32"
+        }
+      }
+    },
+    "authenticatedResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "schema_version",
+        "session_id",
+        "sequence",
+        "message_nonce",
+        "sent_at_unix_ms",
+        "expires_at_unix_ms",
+        "execution_id",
+        "plan_id",
+        "plan_digest",
+        "operation",
+        "outcome",
+        "mac"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 2
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "session_id": {
+          "$ref": "#/$defs/fixedBytes32"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "message_nonce": {
+          "$ref": "#/$defs/fixedBytes32"
+        },
+        "sent_at_unix_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expires_at_unix_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "execution_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "plan_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "plan_digest": {
+          "$ref": "#/$defs/fixedBytes32"
+        },
+        "operation": {
+          "$ref": "#/$defs/operationBinding"
+        },
+        "outcome": {
+          "$ref": "#/$defs/outcome"
+        },
+        "mac": {
+          "$ref": "#/$defs/fixedBytes32"
+        }
+      }
+    },
+    "handshakeRefusal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "schema_version",
+        "worker_pid",
+        "worker_nonce",
+        "response_nonce",
+        "issued_at_unix_ms",
+        "refusal",
+        "mac"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 2
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "worker_pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "worker_nonce": {
+          "$ref": "#/$defs/fixedBytes32"
+        },
+        "response_nonce": {
+          "$ref": "#/$defs/fixedBytes32"
+        },
+        "issued_at_unix_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "refusal": {
+          "$ref": "#/$defs/protocolRefusal"
+        },
+        "mac": {
+          "$ref": "#/$defs/fixedBytes32"
+        }
+      }
+    },
+    "coordinatorHandshakeFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "open_session"
+        },
+        "payload": {
+          "$ref": "#/$defs/openSession"
+        }
+      }
+    },
+    "coordinatorSessionFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "const": "execute_operation"
+        },
+        "payload": {
+          "$ref": "#/$defs/authenticatedRequest"
+        }
+      }
+    },
+    "executorFrame": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ],
+          "properties": {
+            "type": {
+              "const": "hello"
+            },
+            "payload": {
+              "$ref": "#/$defs/hello"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ],
+          "properties": {
+            "type": {
+              "const": "handshake_refusal"
+            },
+            "payload": {
+              "$ref": "#/$defs/handshakeRefusal"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ],
+          "properties": {
+            "type": {
+              "const": "session_opened"
+            },
+            "payload": {
+              "$ref": "#/$defs/sessionOpened"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ],
+          "properties": {
+            "type": {
+              "const": "operation_response"
+            },
+            "payload": {
+              "$ref": "#/$defs/authenticatedResponse"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

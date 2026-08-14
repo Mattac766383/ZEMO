@@ -1,54 +1,65 @@
-# Supremacy
+# ZEMO
 
-Assistant IA souverain avec interface 3D — code, design, marketing, jeux, bots.
+Application desktop Windows-first et local-first qui comprend les fichiers,
+construit un index sémantique, propose une organisation révisable et ne modifie
+le filesystem qu'après approbation d'un plan scellé.
 
-## Fonctionnalités
+Le prototype Electron historique est conservé par le tag
+`prototype-electron-v0.1`. Le produit courant utilise Tauri 2, React,
+TypeScript, Rust et SQLite/SQLCipher.
 
-- **⚡ SUPREMACY CORE** — orchestration multi-modèles en cascade (Opus → o1 → GPT-4o → local)
-- **Interface 3D** — avatar réactif (idle, thinking, speaking, listening), orbes violets, verre bleu
-- **5 profils IA** — Supremacy, Architect, Pixel, Growth, Nexus
-- **Voix** — speech-to-text (🎤) + lecture auto des réponses
-- **Éditeur Monaco** — codage direct sur le PC avec file tree
-- **Historique persistant** — conversations sauvegardées automatiquement
-- **Plugins** — Discord Bot Builder, Game Engine (Phaser), Web Builder
-- **Contrôle PC** — fichiers + shell avec autorisation explicite
+## Garanties actuelles
 
-## Lancer
+- Le scan n'obtient qu'une capacité de lecture et ne mute jamais le corpus.
+- Le renderer n'accède ni aux chemins absolus, ni au SQL, ni au filesystem.
+- L'index, les artifacts et le journal de récupération sont chiffrés.
+- Aucun modèle ne dispose d'outil fichier ou shell.
+- Le cloud exige un consentement ponctuel exactement lié à la tâche.
+- Une destination existante n'est jamais remplacée.
+- Aucun fichier n'est supprimé automatiquement.
+- Les cas ambigus ou non calibrés restent `TO_REVIEW`.
+- Apply est verrouillé dans le processus UI. L'exécuteur Windows isolé exige
+  un plan authentifié et reste feature-gated.
+- Le transfert inter-volume est codé comme protocole de coffre, mais reste
+  verrouillé tant que la préservation ACL/ADS/EFS n'est pas auditée.
 
-```bash
-cd ~/supremacy
-npm run electron:dev
-```
+## Développement
 
-## Configuration
-
-1. **⚙️ Paramètres** → clé Anthropic (recommandé) ou OpenAI
-2. Activer **Supremacy Mode** + **Local illimité** pour puissance max
-3. Choisir un **workspace** pour le codage direct
-4. (Optionnel) Ollama pour modèles locaux sans filtre :
-   ```bash
-   ollama pull dolphin-mixtral
-   ollama pull nous-hermes2
-   ollama pull qwen2.5
-   ```
-
-## Modèles
-
-| Modèle | Type | Puissance |
-|--------|------|-----------|
-| SUPREMACY CORE | Cascade auto | 100% |
-| Claude Opus 4 | API | 98% |
-| OpenAI o1 | API | 95% |
-| GPT-4o | API | 88% |
-| Dolphin Mixtral | Local illimité | 82% |
-| Nous Hermes 2 | Local illimité | 80% |
-
-## Build app
+Prérequis : Node.js 22+, Rust stable et les prérequis Tauri de la plateforme.
 
 ```bash
-npm run electron:build
+npm install
+npm run typecheck
+npm test
+cargo test --workspace
+npm run tauri -- dev
 ```
 
-## Sécurité
+Pour vérifier les primitives Windows depuis une autre plateforme :
 
-Toute action sur le PC nécessite une popup d'autorisation native.
+```bash
+rustup target add x86_64-pc-windows-msvc
+cargo check -p platform-windows -p operations -p operation-executor \
+  --target x86_64-pc-windows-msvc
+```
+
+Préparation / qualification Windows (M15-A) — ne revendique pas un PASS natif
+hors machine Windows réelle :
+
+```bash
+npm run windows:qualification:prep   # packaging + rapport NOT RUN
+npm run windows:qualification        # runtime complet sur Windows uniquement
+```
+
+Voir [docs/qualification/windows.md](docs/qualification/windows.md).
+
+## Architecture et sécurité
+
+- [Architecture normative](docs/architecture/README.md)
+- [Décisions d'architecture](docs/architecture/adr/)
+- [Modèle de menace](docs/threat-model/README.md)
+- [Traitement des données](docs/privacy/data-handling.md)
+- [Récupération](docs/recovery/README.md)
+- [Support des formats](docs/architecture/format-support.md)
+
+Le tag historique ne doit pas être remis dans le chemin d'exécution du produit.

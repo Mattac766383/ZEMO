@@ -1,51 +1,26 @@
 {
-  "name": "supremacy",
+  "name": "working-name-local-first",
   "version": "0.1.0",
-  "description": "Supremacy — assistant IA tout-en-un avec interface 3D",
-  "main": "dist-electron/main.js",
-  "type": "module",
+  "private": true,
+  "description": "Application desktop local-first d'organisation sémantique de fichiers",
+  "workspaces": [
+    "apps/desktop"
+  ],
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build && tsc -p tsconfig.electron.json",
-    "preview": "vite preview",
-    "electron:dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "electron:build": "npm run build && electron-builder"
+    "dev": "npm run dev --workspace @working-name/desktop",
+    "build": "npm run build --workspace @working-name/desktop",
+    "tauri": "npm run tauri --workspace @working-name/desktop --",
+    "typecheck": "npm run typecheck --workspace @working-name/desktop",
+    "test:ui": "npm run test --workspace @working-name/desktop",
+    "test:rust": "cargo test --workspace",
+    "test": "npm run typecheck && npm run test:ui",
+    "windows:qualification": "node ./scripts/windows-qualification/run.mjs --json",
+    "windows:qualification:prep": "node ./scripts/windows-qualification/run.mjs --prep-only --json",
+    "windows:ci:download-granite": "node ./scripts/windows-ci/download-pinned-granite.mjs",
+    "windows:ci:decide-apply": "node ./scripts/windows-ci/decide-apply-qualification.mjs",
+    "macos:apply:qualification": "node ./scripts/macos-apply-qualification/run.mjs"
   },
-  "build": {
-    "appId": "com.supremacy.ai",
-    "productName": "Supremacy",
-    "directories": { "output": "release" },
-    "files": ["dist/**/*", "dist-electron/**/*"],
-    "mac": { "category": "public.app-category.developer-tools" }
-  },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
-    "@react-three/drei": "^9.117.3",
-    "@react-three/fiber": "^8.17.10",
-    "@monaco-editor/react": "^4.7.0",
-    "framer-motion": "^11.15.0",
-    "monaco-editor": "^0.52.2",
-    "openai": "^4.77.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "three": "^0.171.0",
-    "uuid": "^11.0.3",
-    "zustand": "^5.0.2"
-  },
-  "devDependencies": {
-    "@types/node": "^22.10.2",
-    "@types/react": "^18.3.18",
-    "@types/react-dom": "^18.3.5",
-    "@types/three": "^0.171.0",
-    "@types/uuid": "^10.0.0",
-    "@vitejs/plugin-react": "^4.3.4",
-    "concurrently": "^9.1.0",
-    "electron": "^33.2.1",
-    "electron-builder": "^25.1.8",
-    "typescript": "^5.7.2",
-    "vite": "^6.0.5",
-    "vite-plugin-electron": "^0.28.8",
-    "vite-plugin-electron-renderer": "^0.14.6",
-    "wait-on": "^8.0.1"
+  "engines": {
+    "node": ">=22"
   }
 }

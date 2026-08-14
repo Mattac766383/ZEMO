@@ -1,0 +1,20 @@
+[package]
+name = "platform-windows"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+mutation = []
+
+[dependencies]
+blake3 = "1.8.6"
+domain = { version = "0.1.0", path = "../domain" }
+platform = { version = "0.1.0", path = "../platform" }
+thiserror = "2.0.20"
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_WindowsProgramming"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

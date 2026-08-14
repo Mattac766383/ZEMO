@@ -1,0 +1,15 @@
+[package]
+name = "platform"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait = "0.1.92"
+domain = { version = "0.1.0", path = "../domain" }
+notify = "8.2.0"
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.20"
+
+[dev-dependencies]
+platform-windows = { version = "0.1.0", path = "../platform-windows" }
+tempfile = "3.27.0"
