@@ -35,6 +35,7 @@ import {
   overallPrepStatus,
   sectionStatus,
 } from "./report.mjs";
+import { sidecarNaming } from "../../apps/desktop/scripts/operation-executor-sidecar-naming.mjs";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryDirectory = path.resolve(scriptDirectory, "../..");
@@ -399,6 +400,7 @@ function runBuildPrep(report) {
 function runInstallerPrep(report) {
   const docs = readText("docs/qualification/windows.md");
   const manifestsReadme = readText("models/manifests/README.md");
+  const expectedSidecar = sidecarNaming(windowsTarget);
   const sidecarCheck = run(
     "npm",
     [
@@ -412,6 +414,7 @@ function runInstallerPrep(report) {
     ],
     { allowFailure: true },
   );
+  const sidecarOutput = `${sidecarCheck.stdout}\n${sidecarCheck.stderr}`;
 
   addCheck(
     report,
@@ -437,10 +440,12 @@ function runInstallerPrep(report) {
     "INSTALLER",
     "sidecar:check reports Windows target naming",
     sidecarCheck.status === 0 &&
-      `${sidecarCheck.stdout}\n${sidecarCheck.stderr}`.includes(windowsTarget)
+      sidecarOutput.includes(windowsTarget) &&
+      sidecarOutput.includes(expectedSidecar.packagedFileName) &&
+      sidecarOutput.includes(expectedSidecar.tauriExternalBin)
       ? Status.PASS
       : Status.FAIL,
-    truncate(`${sidecarCheck.stdout}\n${sidecarCheck.stderr}`.trim(), 240),
+    truncate(sidecarOutput.trim(), 400),
   );
 
   addCheck(
@@ -840,21 +845,28 @@ function commandText(command, commandArgs) {
 }
 
 function run(command, commandArgs, { allowFailure = false } = {}) {
+  const isWindowsNpm =
+    process.platform === "win32" && (command === "npm" || command === "npx");
   const result = spawnSync(command, commandArgs, {
     cwd: repositoryDirectory,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     env: process.env,
+    shell: isWindowsNpm,
+    windowsHide: true,
   });
+  const spawnError = result.error ? `${result.error.message}\n` : "";
   if (!allowFailure && result.status !== 0) {
     throw new Error(
-      `${command} ${commandArgs.join(" ")} failed: ${result.stderr || result.stdout}`,
+      `${command} ${commandArgs.join(" ")} failed: ${
+        spawnError || result.stderr || result.stdout
+      }`,
     );
   }
   return {
     status: result.status ?? 1,
     stdout: result.stdout || "",
-    stderr: result.stderr || "",
+    stderr: `${spawnError}${result.stderr || ""}`,
   };
 }
 

@@ -8,6 +8,7 @@ import {
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { sidecarNaming } from "./operation-executor-sidecar-naming.mjs";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const desktopDirectory = path.resolve(scriptDirectory, "..");
@@ -34,32 +35,44 @@ const targetTriple =
   explicitTarget ??
   process.env.TAURI_ENV_TARGET_TRIPLE ??
   process.env.CARGO_BUILD_TARGET ??
-  commandOutput("rustc", ["--print", "host-tuple"]);
+  rustcHostTriple();
 
-if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(targetTriple)) {
-  fail(`unsafe or invalid Rust target triple: ${targetTriple}`);
+let naming;
+try {
+  naming = sidecarNaming(targetTriple);
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
 }
 
-const windowsTarget = targetTriple.includes("-windows-");
-const macTarget = targetTriple.includes("-apple-darwin") || targetTriple.includes("-macos");
-const extension = windowsTarget ? ".exe" : "";
 const source = path.join(
   cargoTargetDirectory,
-  targetTriple,
+  naming.targetTriple,
   "release",
-  `operation-executor${extension}`,
+  naming.cargoFileName,
 );
-const destination = path.join(
-  sidecarDirectory,
-  `operation-executor-${targetTriple}${extension}`,
-);
+const destination = path.join(sidecarDirectory, naming.packagedFileName);
 
 if (checkOnly) {
-  process.stdout.write(`${targetTriple}\n${destination}\n`);
+  const found = existsSync(destination) ? destination : "not present";
+  const lines = [
+    naming.targetTriple,
+    destination,
+    `host platform: ${process.platform}`,
+    `target: ${naming.targetTriple}`,
+    `expected sidecar base: ${naming.sidecarBase}`,
+    `expected packaged filename: ${naming.packagedFileName}`,
+    `actual found: ${found}`,
+    `Tauri externalBin entry: ${naming.tauriExternalBin}`,
+    "binary required: no (configuration/naming check)",
+  ];
+  process.stdout.write(`${lines.join("\n")}\n`);
+  if (!naming.supported) {
+    fail("operation-executor sidecar is configured for Windows and macOS targets only");
+  }
   process.exit(0);
 }
 
-if (!windowsTarget && !macTarget) {
+if (!naming.supported) {
   fail(
     "operation-executor sidecar is configured for Windows and macOS targets only",
   );
@@ -71,7 +84,7 @@ run("cargo", [
   "--package",
   "operation-executor",
   "--target",
-  targetTriple,
+  naming.targetTriple,
 ]);
 
 if (!existsSync(source)) {
@@ -86,20 +99,28 @@ rmSync(destination, { force: true });
 renameSync(temporary, destination);
 process.stdout.write(`Prepared ${destination}\n`);
 
+function rustcHostTriple() {
+  const printed = commandOutput("rustc", ["--print", "host-tuple"]);
+  if (printed) {
+    return printed;
+  }
+  const legacy = commandOutput("rustc", ["--print", "host-triple"]);
+  if (legacy) {
+    return legacy;
+  }
+  fail("rustc did not report a host target triple");
+}
+
 function commandOutput(command, args) {
   const result = spawnSync(command, args, {
     cwd: repositoryDirectory,
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "inherit"],
+    stdio: ["ignore", "pipe", "pipe"],
   });
   if (result.status !== 0) {
-    fail(`${command} failed with status ${result.status ?? "unknown"}`);
+    return "";
   }
-  const output = result.stdout.trim();
-  if (!output) {
-    fail(`${command} returned an empty target triple`);
-  }
-  return output;
+  return (result.stdout || "").trim();
 }
 
 function run(command, args) {
