@@ -49,88 +49,266 @@ fn m15_temp(prefix: &str) -> TempDir {
     dir
 }
 
+struct StageLog {
+    failed: Vec<String>,
+}
+
+impl StageLog {
+    fn new() -> Self {
+        Self { failed: Vec::new() }
+    }
+
+    fn run(&mut self, name: &str, action: impl FnOnce() -> Result<(), String>) {
+        match action() {
+            Ok(()) => eprintln!("STAGE {name}: PASS"),
+            Err(error) => {
+                eprintln!("STAGE {name}: FAIL: {error}");
+                self.failed.push(format!("{name}: {error}"));
+            }
+        }
+    }
+
+    fn skip(&mut self, name: &str, reason: &str) {
+        eprintln!("STAGE {name}: FAIL: skipped ({reason})");
+        self.failed.push(format!("{name}: skipped ({reason})"));
+    }
+
+    fn finish(self) {
+        assert!(
+            self.failed.is_empty(),
+            "semantic stages failed:\n{}",
+            self.failed.join("\n")
+        );
+    }
+}
+
 #[test]
 fn windows_ort_granite_install_embed_ann_remove_and_lexical_fallback() {
+    let mut stages = StageLog::new();
     let source = model_source();
-    assert!(
-        source.join("onnx/model_quint8_avx2.onnx").is_file(),
-        "missing onnx model under {}",
-        source.display()
+    let onnx = source.join("onnx/model_quint8_avx2.onnx");
+    let tokenizer = source.join("tokenizer.json");
+    eprintln!("semantic source dir: {}", source.display());
+    eprintln!("arch: {}", env::consts::ARCH);
+    eprintln!(
+        "dll search: PATH length {}",
+        env::var("PATH").unwrap_or_default().len()
     );
-    assert!(
-        source.join("tokenizer.json").is_file(),
-        "missing tokenizer under {}",
-        source.display()
-    );
+
+    stages.run("MODEL ASSETS", || {
+        if !onnx.is_file() {
+            return Err(format!("missing onnx model {}", onnx.display()));
+        }
+        if !tokenizer.is_file() {
+            return Err(format!("missing tokenizer {}", tokenizer.display()));
+        }
+        Ok(())
+    });
+    if !stages.failed.is_empty() {
+        stages.finish();
+        return;
+    }
 
     let model_root = m15_temp("supremacy-m15-sandbox-model-");
     let ann_root = m15_temp("supremacy-m15-sandbox-ann-");
-    let provider = OnnxLocalEmbeddingProvider::new(model_root.path())
-        .unwrap_or_else(|error| panic!("provider: {error}"));
-
-    provider
-        .activate_from_directory(&source)
-        .unwrap_or_else(|error| panic!("activate/checksum install: {error}"));
-    provider
-        .verify_installed()
-        .unwrap_or_else(|error| panic!("verify installed model: {error}"));
-
-    let embed = |text: &str| {
-        provider
-            .embed_batch(&[EmbeddingInput {
-                source_id: "windows-qual".to_owned(),
-                source_kind: "semantic_summary".to_owned(),
-                text: text.to_owned(),
-                start_offset: None,
-                end_offset: None,
-            }])
-            .unwrap_or_else(|error| panic!("embed `{text}`: {error}"))
-            .remove(0)
-            .values
+    let provider = match OnnxLocalEmbeddingProvider::new(model_root.path()) {
+        Ok(provider) => provider,
+        Err(error) => {
+            stages.skip("CHECKSUM", &error.to_string());
+            stages.finish();
+            return;
+        }
     };
 
-    let invoice = embed("facture fournisseur matériaux");
-    let related = embed("achat matériaux fournisseur");
-    let beach = embed("photo de vacances à la plage");
-    assert_eq!(invoice.len(), 384);
-    assert!(
-        cosine_similarity_quantized(&invoice, &quantize_unit_vector(&related))
-            > cosine_similarity_quantized(&invoice, &quantize_unit_vector(&beach)),
-        "Granite embeddings should rank related French invoices above unrelated beach text"
-    );
-
-    let index = PersistentAnnIndex::open(ann_root.path(), "windows-qual")
-        .unwrap_or_else(|error| panic!("ann open: {error}"));
-    assert_eq!(ANN_LIBRARY, "usearch");
-    assert_eq!(ANN_LIBRARY_VERSION, "2.26.0");
-    index
-        .begin_build()
-        .unwrap_or_else(|error| panic!("ann build: {error}"));
-    index
-        .upsert_vector(1, &invoice)
-        .unwrap_or_else(|error| panic!("ann upsert invoice: {error}"));
-    index
-        .upsert_vector(2, &beach)
-        .unwrap_or_else(|error| panic!("ann upsert beach: {error}"));
-    index
-        .persist_snapshot()
-        .unwrap_or_else(|error| panic!("ann persist: {error}"));
-    assert_eq!(index.status(), AnnIndexStatus::Ready);
-
-    let reloaded = PersistentAnnIndex::open(ann_root.path(), "windows-qual")
-        .unwrap_or_else(|error| panic!("ann reload: {error}"));
-    assert_eq!(reloaded.status(), AnnIndexStatus::Ready);
-    let hits = reloaded
-        .search(&related, AnnSearchPolicy { top_k: 2 })
-        .unwrap_or_else(|error| panic!("ann search: {error}"));
-    assert!(!hits.is_empty());
-    assert_eq!(hits[0].key, 1);
-
-    provider
-        .remove_model()
-        .unwrap_or_else(|error| panic!("model removal: {error}"));
-    assert!(
+    stages.run("CHECKSUM", || {
         provider
+            .activate_from_directory(&source)
+            .map_err(|error| error.to_string())?;
+        provider
+            .verify_installed()
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    });
+
+    let model_path = provider
+        .manager()
+        .asset_path("onnx_model")
+        .unwrap_or_else(|_| model_root.path().join("missing-onnx"));
+    stages.run("MODEL PATH", || {
+        if !model_path.is_file() {
+            return Err(format!(
+                "installed model missing at {}",
+                model_path.display()
+            ));
+        }
+        eprintln!("resolved model path: {}", model_path.display());
+        Ok(())
+    });
+
+    let mut invoice = Vec::new();
+    let mut related = Vec::new();
+    let mut beach = Vec::new();
+    if stages
+        .failed
+        .iter()
+        .any(|item| item.starts_with("CHECKSUM"))
+    {
+        stages.skip("ORT LOAD", "checksum/install failed");
+        stages.skip("TOKENIZER", "checksum/install failed");
+        stages.skip("ONNX SESSION", "checksum/install failed");
+        stages.skip("GRANITE EMBEDDING", "checksum/install failed");
+        stages.skip("DIMENSION CHECK", "checksum/install failed");
+    } else {
+        stages.run("ORT LOAD", || {
+            provider
+                .embed_batch(&[EmbeddingInput {
+                    source_id: "windows-qual".to_owned(),
+                    source_kind: "semantic_summary".to_owned(),
+                    text: "facture fournisseur matériaux".to_owned(),
+                    start_offset: None,
+                    end_offset: None,
+                }])
+                .map(|mut batch| {
+                    invoice = batch.remove(0).values;
+                })
+                .map_err(|error| {
+                    format!(
+                        "ORT/tokenizer/session/embed failed: {error}; model={}",
+                        model_path.display()
+                    )
+                })
+        });
+        if stages
+            .failed
+            .iter()
+            .any(|item| item.starts_with("ORT LOAD"))
+        {
+            stages.skip("TOKENIZER", "ORT load failed");
+            stages.skip("ONNX SESSION", "ORT load failed");
+            stages.skip("GRANITE EMBEDDING", "ORT load failed");
+            stages.skip("DIMENSION CHECK", "ORT load failed");
+        } else {
+            eprintln!("STAGE TOKENIZER: PASS");
+            eprintln!("STAGE ONNX SESSION: PASS");
+            stages.run("GRANITE EMBEDDING", || {
+                related = provider
+                    .embed_batch(&[EmbeddingInput {
+                        source_id: "windows-qual".to_owned(),
+                        source_kind: "semantic_summary".to_owned(),
+                        text: "achat matériaux fournisseur".to_owned(),
+                        start_offset: None,
+                        end_offset: None,
+                    }])
+                    .map_err(|error| error.to_string())?
+                    .remove(0)
+                    .values;
+                beach = provider
+                    .embed_batch(&[EmbeddingInput {
+                        source_id: "windows-qual".to_owned(),
+                        source_kind: "semantic_summary".to_owned(),
+                        text: "photo de vacances à la plage".to_owned(),
+                        start_offset: None,
+                        end_offset: None,
+                    }])
+                    .map_err(|error| error.to_string())?
+                    .remove(0)
+                    .values;
+                if cosine_similarity_quantized(&invoice, &quantize_unit_vector(&related))
+                    <= cosine_similarity_quantized(&invoice, &quantize_unit_vector(&beach))
+                {
+                    return Err(
+                        "related French invoice did not outrank unrelated beach text".to_owned(),
+                    );
+                }
+                Ok(())
+            });
+            stages.run("DIMENSION CHECK", || {
+                if invoice.len() != 384 {
+                    return Err(format!("expected 384 dimensions, got {}", invoice.len()));
+                }
+                Ok(())
+            });
+        }
+    }
+
+    let mut index_ready = false;
+    stages.run("USEARCH LOAD", || {
+        if ANN_LIBRARY != "usearch" || ANN_LIBRARY_VERSION != "2.26.0" {
+            return Err(format!(
+                "unexpected ANN library {ANN_LIBRARY} {ANN_LIBRARY_VERSION}"
+            ));
+        }
+        Ok(())
+    });
+    match PersistentAnnIndex::open(ann_root.path(), "windows-qual") {
+        Ok(index) => {
+            stages.run("INDEX CREATE", || {
+                index.begin_build().map_err(|error| error.to_string())
+            });
+            if invoice.len() == 384 && beach.len() == 384 && related.len() == 384 {
+                stages.run("INSERT", || {
+                    index
+                        .upsert_vector(1, &invoice)
+                        .map_err(|error| error.to_string())?;
+                    index
+                        .upsert_vector(2, &beach)
+                        .map_err(|error| error.to_string())?;
+                    Ok(())
+                });
+                stages.run("PERSIST", || {
+                    index
+                        .persist_snapshot()
+                        .map_err(|error| error.to_string())?;
+                    if index.status() != AnnIndexStatus::Ready {
+                        return Err(format!("persist status {:?}", index.status()));
+                    }
+                    index_ready = true;
+                    Ok(())
+                });
+            } else {
+                stages.skip("INSERT", "no embeddings");
+                stages.skip("PERSIST", "no embeddings");
+            }
+        }
+        Err(error) => {
+            stages.skip("INDEX CREATE", &error);
+            stages.skip("INSERT", "index open failed");
+            stages.skip("PERSIST", "index open failed");
+        }
+    }
+    if index_ready && related.len() == 384 {
+        stages.run("RELOAD", || {
+            let reloaded = PersistentAnnIndex::open(ann_root.path(), "windows-qual")
+                .map_err(|error| error.to_string())?;
+            if reloaded.status() != AnnIndexStatus::Ready {
+                return Err(format!("reload status {:?}", reloaded.status()));
+            }
+            Ok(())
+        });
+        stages.run("QUERY", || {
+            let reloaded = PersistentAnnIndex::open(ann_root.path(), "windows-qual")
+                .map_err(|error| error.to_string())?;
+            let hits = reloaded
+                .search(&related, AnnSearchPolicy { top_k: 2 })
+                .map_err(|error| error.to_string())?;
+            if hits.is_empty() {
+                return Err("usearch query returned no hits".to_owned());
+            }
+            if hits[0].key != 1 {
+                return Err(format!("expected top hit 1, got {}", hits[0].key));
+            }
+            Ok(())
+        });
+    } else {
+        stages.skip("RELOAD", "index not persisted");
+        stages.skip("QUERY", "index not persisted");
+    }
+
+    stages.run("MODEL REMOVE", || {
+        provider.remove_model().map_err(|error| error.to_string())
+    });
+    stages.run("LEXICAL FALLBACK", || {
+        if provider
             .embed_batch(&[EmbeddingInput {
                 source_id: "windows-qual".to_owned(),
                 source_kind: "semantic_summary".to_owned(),
@@ -138,19 +316,21 @@ fn windows_ort_granite_install_embed_ann_remove_and_lexical_fallback() {
                 start_offset: None,
                 end_offset: None,
             }])
-            .is_err(),
-        "embedding must fail closed after model removal so lexical fallback remains authoritative"
-    );
+            .is_ok()
+        {
+            return Err("embedding succeeded after model removal".to_owned());
+        }
+        if index_ready {
+            let entries = fs::read_dir(ann_root.path()).map_err(|error| error.to_string())?;
+            let found = entries
+                .filter_map(Result::ok)
+                .any(|entry| entry.file_name().to_string_lossy().contains("usearch"));
+            if !found {
+                return Err("USearch snapshot missing after model removal".to_owned());
+            }
+        }
+        Ok(())
+    });
 
-    // Persistence path evidence: ANN snapshot files remain under the temp ANN root only.
-    let entries = fs::read_dir(ann_root.path())
-        .unwrap_or_else(|error| panic!("ann root should enumerate: {error}"))
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap_or_else(|error| panic!("ann entries: {error}"));
-    assert!(
-        entries
-            .iter()
-            .any(|entry| { entry.file_name().to_string_lossy().contains("usearch") }),
-        "USearch snapshot should persist under the Windows ANN storage path"
-    );
+    stages.finish();
 }

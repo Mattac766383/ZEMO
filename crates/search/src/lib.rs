@@ -25,7 +25,33 @@ use domain::{SearchDocument, SearchHit, SearchResponse};
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
 };
+
+/// Prepare a filesystem path for C runtimes (ORT, USearch) that reject `\\?\`.
+/// Keeps the verbatim form for UNC and paths that would exceed a short DOS limit.
+#[must_use]
+pub(crate) fn native_filesystem_path_for_c_runtime(path: &Path) -> PathBuf {
+    let Some(text) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    let Some(rest) = text.strip_prefix(r"\\?\") else {
+        return path.to_path_buf();
+    };
+    if rest.starts_with("UNC\\") || rest.starts_with("UNC/") {
+        return path.to_path_buf();
+    }
+    let bytes = rest.as_bytes();
+    if bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
+        && rest.len() < 240
+    {
+        return PathBuf::from(rest);
+    }
+    path.to_path_buf()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SearchConfig {
@@ -288,6 +314,22 @@ mod tests {
             embedding: None,
             evidence: Vec::new(),
         }
+    }
+
+    #[test]
+    fn strips_verbatim_dos_prefix_for_short_c_runtime_paths() {
+        assert_eq!(
+            native_filesystem_path_for_c_runtime(Path::new(r"\\?\D:\models\onnx\model.onnx")),
+            PathBuf::from(r"D:\models\onnx\model.onnx")
+        );
+        assert_eq!(
+            native_filesystem_path_for_c_runtime(Path::new(r"D:\models\onnx\model.onnx")),
+            PathBuf::from(r"D:\models\onnx\model.onnx")
+        );
+        assert_eq!(
+            native_filesystem_path_for_c_runtime(Path::new(r"\\?\UNC\server\share\model.onnx")),
+            PathBuf::from(r"\\?\UNC\server\share\model.onnx")
+        );
     }
 
     #[test]

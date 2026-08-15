@@ -280,8 +280,9 @@ impl PersistentAnnIndex {
             meta.expansion_search,
         ))
         .map_err(|e| e.to_string())?;
+        let load_path = crate::native_filesystem_path_for_c_runtime(&path);
         index
-            .load(path.to_str().ok_or("non-utf8 ann path")?)
+            .load(load_path.to_str().ok_or("non-utf8 ann path")?)
             .map_err(|e| e.to_string())?;
         if index.dimensions() != meta.embedding_dimension {
             return Err("ANN dimension mismatch".to_owned());
@@ -449,8 +450,9 @@ impl PersistentAnnIndex {
         if tmp_path.exists() {
             fs::remove_file(&tmp_path).map_err(|e| e.to_string())?;
         }
+        let save_path = crate::native_filesystem_path_for_c_runtime(&tmp_path);
         index
-            .save(tmp_path.to_str().ok_or("non-utf8 tmp path")?)
+            .save(save_path.to_str().ok_or("non-utf8 tmp path")?)
             .map_err(|e| e.to_string())?;
         {
             let file = File::open(&tmp_path).map_err(|e| e.to_string())?;

@@ -585,6 +585,47 @@ fn case_only_rename_requires_and_supports_safe_staging() {
 }
 
 #[test]
+fn case_only_rename_undo_restores_original_leaf() {
+    let sandbox = NtfsSandbox::new();
+    sandbox.create_dir_all("case-undo");
+    let source = sandbox.write_file("case-undo/Report.txt", b"case-undo");
+    let staging = sandbox.path("case-undo/.supremacy-case-stage");
+    let renamed = sandbox.path("case-undo/report.txt");
+    sandbox
+        .rename(&WindowsPlatform, &sandbox.request(&source, &staging))
+        .unwrap_or_else(|error| panic!("case undo staging should succeed: {error}"));
+    sandbox
+        .rename(&WindowsPlatform, &sandbox.request(&staging, &renamed))
+        .unwrap_or_else(|error| panic!("case undo rename should succeed: {error}"));
+
+    let undo_stage = sandbox.path("case-undo/.supremacy-case-undo");
+    sandbox
+        .rename(&WindowsPlatform, &sandbox.request(&renamed, &undo_stage))
+        .unwrap_or_else(|error| panic!("case undo reverse staging should succeed: {error}"));
+    let restored = sandbox.path("case-undo/Report.txt");
+    sandbox
+        .rename(&WindowsPlatform, &sandbox.request(&undo_stage, &restored))
+        .unwrap_or_else(|error| panic!("case undo restore should succeed: {error}"));
+
+    assert!(!undo_stage.exists());
+    assert_eq!(
+        fs::read(&restored).unwrap_or_else(|error| panic!("restored leaf should exist: {error}")),
+        b"case-undo"
+    );
+    let leaf = fs::read_dir(sandbox.path("case-undo"))
+        .unwrap_or_else(|error| panic!("case-undo directory should enumerate: {error}"))
+        .filter_map(Result::ok)
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("report.txt")
+        })
+        .unwrap_or_else(|| panic!("restored leaf should enumerate"));
+    assert_eq!(leaf.file_name(), OsStr::new("Report.txt"));
+}
+
+#[test]
 fn verbatim_long_paths_move_without_win32_max_path_truncation() {
     let sandbox = NtfsSandbox::new();
     let deep = (0..5).fold(PathBuf::from("long"), |path, index| {
@@ -857,4 +898,25 @@ fn source_disappearance_before_mutation_is_structured_and_leaves_destination_abs
         Err(PlatformError::SourceMissing)
     ));
     assert!(!destination.exists());
+}
+
+#[test]
+fn source_content_drift_before_mutation_is_refused_without_overwrite() {
+    let sandbox = NtfsSandbox::new();
+    sandbox.create_dir_all("drift");
+    let source = sandbox.write_file("drift/source.txt", b"original");
+    let destination = sandbox.path("drift/destination.txt");
+    let request = sandbox.request(&source, &destination);
+    fs::write(&source, b"changed-after-fingerprint")
+        .unwrap_or_else(|error| panic!("source drift write should succeed: {error}"));
+
+    assert!(matches!(
+        sandbox.rename(&WindowsPlatform, &request),
+        Err(PlatformError::Precondition(_))
+    ));
+    assert!(!destination.exists(), "drift must not create a destination");
+    assert_eq!(
+        fs::read(&source).unwrap_or_else(|error| panic!("drifted source should remain: {error}")),
+        b"changed-after-fingerprint"
+    );
 }

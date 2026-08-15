@@ -17,6 +17,11 @@ test("does not hardcode D: and accepts another runner drive", () => {
   assert.deepEqual(parsed, { volumeRoot: "C:\\", driveLetter: "C" });
 });
 
+test("parses verbatim Win32 roots used after canonicalize", () => {
+  const parsed = windowsVolumeRoot("\\\\?\\D:\\a\\_temp\\zemo-windows-qualification");
+  assert.deepEqual(parsed, { volumeRoot: "D:\\", driveLetter: "D" });
+});
+
 test("accepts forward slashes after the drive", () => {
   const parsed = windowsVolumeRoot("E:/a/_temp/zemo-windows-qualification");
   assert.deepEqual(parsed, { volumeRoot: "E:\\", driveLetter: "E" });
@@ -25,6 +30,15 @@ test("accepts forward slashes after the drive", () => {
 test("returns null for non-Windows paths instead of assuming NTFS", () => {
   assert.equal(windowsVolumeRoot("/var/folders/tmp/zemo-windows-qualification"), null);
   assert.equal(windowsVolumeRoot(""), null);
+});
+
+test("qualification harness does not use PSDrive.FileSystem", () => {
+  const harness = readFileSync(
+    join(scriptDirectory, "../windows-qualification/run.mjs"),
+    "utf8",
+  );
+  assert.equal(harness.includes(".PSDrive"), false);
+  assert.match(harness, /DriveInfo/);
 });
 
 test("verify-ntfs.ps1 uses volume-root detection and not PSDrive.FileSystem", () => {

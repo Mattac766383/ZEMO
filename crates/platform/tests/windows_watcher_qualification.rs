@@ -73,21 +73,28 @@ where
     false
 }
 
-#[test]
-fn windows_watcher_observes_create_modify_rename_delete_and_directory_rename() {
-    let sandbox = m15_sandbox();
-    let root = sandbox
-        .path()
-        .canonicalize()
-        .unwrap_or_else(|error| panic!("root: {error}"));
-    fs::create_dir_all(scoped(&root, "nested"))
-        .unwrap_or_else(|error| panic!("nested dir: {error}"));
-
+fn started_monitor(root: &Path) -> LocalChangeMonitor {
     let monitor = LocalChangeMonitor::default();
     monitor
-        .start(&root)
+        .start(root)
         .unwrap_or_else(|error| panic!("start watcher: {error}"));
+    monitor
+}
 
+fn canonical_root(sandbox: &TempDir) -> PathBuf {
+    sandbox
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|error| panic!("root: {error}"))
+}
+
+#[test]
+fn windows_watcher_observes_create() {
+    let sandbox = m15_sandbox();
+    let root = canonical_root(&sandbox);
+    fs::create_dir_all(scoped(&root, "nested"))
+        .unwrap_or_else(|error| panic!("nested dir: {error}"));
+    let monitor = started_monitor(&root);
     let created = scoped(&root, "nested/created.txt");
     fs::write(&created, b"one").unwrap_or_else(|error| panic!("create: {error}"));
     assert!(
@@ -102,8 +109,19 @@ fn windows_watcher_observes_create_modify_rename_delete_and_directory_rename() {
         }),
         "create event missing"
     );
+    monitor
+        .stop()
+        .unwrap_or_else(|error| panic!("stop watcher: {error}"));
+}
 
-    fs::write(&created, b"two").unwrap_or_else(|error| panic!("modify: {error}"));
+#[test]
+fn windows_watcher_observes_modify() {
+    let sandbox = m15_sandbox();
+    let root = canonical_root(&sandbox);
+    let path = scoped(&root, "modified.txt");
+    fs::write(&path, b"one").unwrap_or_else(|error| panic!("seed: {error}"));
+    let monitor = started_monitor(&root);
+    fs::write(&path, b"two").unwrap_or_else(|error| panic!("modify: {error}"));
     assert!(
         wait_for_hint(&monitor, Duration::from_secs(3), |hints| {
             hints.iter().any(|hint| {
@@ -113,13 +131,24 @@ fn windows_watcher_observes_create_modify_rename_delete_and_directory_rename() {
                 ) && hint
                     .path_after
                     .as_ref()
-                    .is_some_and(|path| path.ends_with("created.txt"))
+                    .is_some_and(|observed| observed.ends_with("modified.txt"))
             })
         }),
         "modify event missing"
     );
+    monitor
+        .stop()
+        .unwrap_or_else(|error| panic!("stop watcher: {error}"));
+}
 
-    let renamed = scoped(&root, "nested/renamed.txt");
+#[test]
+fn windows_watcher_observes_rename() {
+    let sandbox = m15_sandbox();
+    let root = canonical_root(&sandbox);
+    let created = scoped(&root, "created.txt");
+    fs::write(&created, b"one").unwrap_or_else(|error| panic!("seed: {error}"));
+    let monitor = started_monitor(&root);
+    let renamed = scoped(&root, "renamed.txt");
     fs::rename(&created, &renamed).unwrap_or_else(|error| panic!("rename: {error}"));
     assert!(
         wait_for_hint(&monitor, Duration::from_secs(3), |hints| {
@@ -137,8 +166,19 @@ fn windows_watcher_observes_create_modify_rename_delete_and_directory_rename() {
         }),
         "rename/move event missing"
     );
+    monitor
+        .stop()
+        .unwrap_or_else(|error| panic!("stop watcher: {error}"));
+}
 
-    fs::remove_file(&renamed).unwrap_or_else(|error| panic!("delete: {error}"));
+#[test]
+fn windows_watcher_observes_delete() {
+    let sandbox = m15_sandbox();
+    let root = canonical_root(&sandbox);
+    let path = scoped(&root, "deleted.txt");
+    fs::write(&path, b"one").unwrap_or_else(|error| panic!("seed: {error}"));
+    let monitor = started_monitor(&root);
+    fs::remove_file(&path).unwrap_or_else(|error| panic!("delete: {error}"));
     assert!(
         wait_for_hint(&monitor, Duration::from_secs(3), |hints| {
             hints.iter().any(|hint| {
@@ -146,16 +186,25 @@ fn windows_watcher_observes_create_modify_rename_delete_and_directory_rename() {
                     || hint
                         .path_before
                         .as_ref()
-                        .is_some_and(|path| path.ends_with("renamed.txt"))
+                        .is_some_and(|observed| observed.ends_with("deleted.txt"))
             })
         }),
         "delete event missing"
     );
+    monitor
+        .stop()
+        .unwrap_or_else(|error| panic!("stop watcher: {error}"));
+}
 
+#[test]
+fn windows_watcher_observes_directory_rename() {
+    let sandbox = m15_sandbox();
+    let root = canonical_root(&sandbox);
     let dir_a = scoped(&root, "folder-a");
     let dir_b = scoped(&root, "folder-b");
     fs::create_dir(&dir_a).unwrap_or_else(|error| panic!("dir create: {error}"));
-    let _ = wait_for_hint(&monitor, Duration::from_secs(2), |_| true);
+    let monitor = started_monitor(&root);
+    let _ = wait_for_hint(&monitor, Duration::from_secs(1), |_| true);
     fs::rename(&dir_a, &dir_b).unwrap_or_else(|error| panic!("dir rename: {error}"));
     assert!(
         wait_for_hint(&monitor, Duration::from_secs(3), |hints| {
@@ -173,24 +222,16 @@ fn windows_watcher_observes_create_modify_rename_delete_and_directory_rename() {
         }),
         "directory rename event missing"
     );
-
     monitor
         .stop()
         .unwrap_or_else(|error| panic!("stop watcher: {error}"));
 }
 
 #[test]
-fn windows_watcher_survives_burst_and_restart_without_profile_paths() {
+fn windows_watcher_survives_burst() {
     let sandbox = m15_sandbox();
-    let root = sandbox
-        .path()
-        .canonicalize()
-        .unwrap_or_else(|error| panic!("root: {error}"));
-    let monitor = LocalChangeMonitor::default();
-    monitor
-        .start(&root)
-        .unwrap_or_else(|error| panic!("start: {error}"));
-
+    let root = canonical_root(&sandbox);
+    let monitor = started_monitor(&root);
     for index in 0..40 {
         let path = scoped(&root, &format!("burst-{index}.txt"));
         fs::write(&path, format!("burst-{index}"))
@@ -200,7 +241,16 @@ fn windows_watcher_survives_burst_and_restart_without_profile_paths() {
         wait_for_hint(&monitor, Duration::from_secs(5), |hints| !hints.is_empty()),
         "burst should produce watcher hints"
     );
+    monitor
+        .stop()
+        .unwrap_or_else(|error| panic!("stop watcher: {error}"));
+}
 
+#[test]
+fn windows_watcher_survives_restart() {
+    let sandbox = m15_sandbox();
+    let root = canonical_root(&sandbox);
+    let monitor = started_monitor(&root);
     monitor
         .stop()
         .unwrap_or_else(|error| panic!("stop before restart: {error}"));
@@ -227,14 +277,8 @@ fn windows_watcher_survives_burst_and_restart_without_profile_paths() {
 #[test]
 fn windows_watcher_handles_unicode_path_encoding() {
     let sandbox = m15_sandbox();
-    let root = sandbox
-        .path()
-        .canonicalize()
-        .unwrap_or_else(|error| panic!("root: {error}"));
-    let monitor = LocalChangeMonitor::default();
-    monitor
-        .start(&root)
-        .unwrap_or_else(|error| panic!("start: {error}"));
+    let root = canonical_root(&sandbox);
+    let monitor = started_monitor(&root);
     let path = scoped(&root, "café-文档.txt");
     fs::write(&path, "été").unwrap_or_else(|error| panic!("unicode write: {error}"));
     assert!(

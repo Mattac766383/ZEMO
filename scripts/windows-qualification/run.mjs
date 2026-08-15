@@ -36,6 +36,23 @@ import {
   sectionStatus,
 } from "./report.mjs";
 import { sidecarNaming } from "../../apps/desktop/scripts/operation-executor-sidecar-naming.mjs";
+import { extractDiagnostics, formatCapturedFailure } from "./capture.mjs";
+import {
+  compileSuites,
+  executorSuites,
+  monitoringSuites,
+  ntfsSuites,
+  pathIdentitySuites,
+  readOnlySuites,
+  sandboxSuites,
+  semanticSuites,
+  volumeSuites,
+} from "./suites.mjs";
+import {
+  formatDiagnosticReport,
+  mapQualificationToDiagnostic,
+} from "./diagnostic-report.mjs";
+import { decideApplyQualification } from "../windows-ci/decide-apply-qualification.mjs";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryDirectory = path.resolve(scriptDirectory, "../..");
@@ -46,35 +63,52 @@ const windowsTarget = "x86_64-pc-windows-msvc";
 const args = new Set(process.argv.slice(2));
 const skipCargoCheck = args.has("--skip-cargo-check");
 const skipRuntime = args.has("--prep-only");
-const jsonOut = args.has("--json");
+const nativeFirst = args.has("--native-first");
+const diagnostic =
+  args.has("--diagnostic") || process.env.ZEMO_WINDOWS_DIAGNOSTIC_ONLY === "1";
+const jsonOut = args.has("--json") || diagnostic;
 
 function main() {
   mkdirSync(reportsDirectory, { recursive: true });
   const report = createReport({ hostIsWindows });
-  collectEnvironment(report);
-  runBuildPrep(report);
-  runInstallerPrep(report);
-  runSandboxSafetyPrep(report);
+  report._diagnosticMapped = [];
+  report._semanticStages = [];
+  try {
+    collectEnvironment(report);
+    runBuildPrep(report);
+    runInstallerPrep(report);
+    runSandboxSafetyPrep(report);
 
-  if (!hostIsWindows || skipRuntime) {
-    const reason = !hostIsWindows
-      ? "host is not Windows; native runtime qualification requires a real Windows machine/runner"
-      : "--prep-only requested; native runtime suites not executed";
-    for (const section of [
-      "READ-ONLY",
-      "SEMANTIC",
-      "MONITORING",
-      "EXECUTOR",
-      "NTFS",
-      "ROLLBACK",
-    ]) {
-      markNotRunSection(report, section, reason);
+    if (!hostIsWindows || skipRuntime) {
+      const reason = !hostIsWindows
+        ? "host is not Windows; native runtime qualification requires a real Windows machine/runner"
+        : "--prep-only requested; native runtime suites not executed";
+      for (const section of [
+        "READ-ONLY",
+        "SEMANTIC",
+        "MONITORING",
+        "EXECUTOR",
+        "NTFS",
+        "ROLLBACK",
+      ]) {
+        markNotRunSection(report, section, reason);
+      }
+      report.nativeRuntime = "NOT TESTED";
+    } else {
+      report.nativeRuntime = "RUN ATTEMPTED";
+      runWindowsRuntime(report, { nativeFirst, diagnostic });
     }
-    report.nativeRuntime = "NOT TESTED";
-  } else {
-    report.nativeRuntime = "RUN ATTEMPTED";
-    runWindowsRuntime(report);
+  } catch (error) {
+    addCheck(
+      report,
+      "BUILD PREP",
+      "diagnostic harness exception",
+      Status.FAIL,
+      String(error?.stack || error?.message || error),
+    );
   }
+
+  writeDiagnosticArtifacts(report);
 
   const text = formatReport(report);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -85,9 +119,12 @@ function main() {
     text,
   );
   if (jsonOut) {
+    const publicReport = { ...report };
+    delete publicReport._diagnosticMapped;
+    delete publicReport._semanticStages;
     writeFileSync(
       path.join(reportsDirectory, "windows-qualification-latest.json"),
-      `${JSON.stringify(report, null, 2)}\n`,
+      `${JSON.stringify(publicReport, null, 2)}\n`,
     );
   }
 
@@ -391,9 +428,24 @@ function runBuildPrep(report) {
         missingLinker ? Status.PARTIAL : Status.FAIL,
         missingLinker
           ? "target present but MSVC/link tooling unavailable on this host (expected on macOS without full cross-link); not a native runtime result"
-          : truncate(output, 500),
+          : failureTail(output),
       );
     }
+  }
+
+  if (hostIsWindows && !skipCargoCheck) {
+    recordCargoCheck(
+      report,
+      "BUILD PREP",
+      "Native cargo check -p platform-windows",
+      ["check", "-p", "platform-windows"],
+    );
+    recordCargoCheck(
+      report,
+      "BUILD PREP",
+      "Native cargo check -p platform-windows --features mutation",
+      ["check", "-p", "platform-windows", "--features", "mutation"],
+    );
   }
 }
 
@@ -550,163 +602,89 @@ function qualificationVolumeIsNtfs(report) {
   return /^NTFS$/i.test(filesystem);
 }
 
-function runWindowsRuntime(report) {
+function mutationContainment(report) {
+  const root =
+    process.env.ZEMO_WINDOWS_QUALIFICATION_ROOT ||
+    process.env.RUNNER_TEMP ||
+    process.env.TEMP ||
+    "";
+  const forbidden = ["Documents", "Desktop", "Downloads"];
+  const escaped = forbidden.some((name) =>
+    String(root)
+      .toLowerCase()
+      .includes(`\\${name.toLowerCase()}\\`),
+  );
+  if (!root || escaped) {
+    return {
+      ok: false,
+      reason: `mutation containment not proven (root='${root || "missing"}')`,
+    };
+  }
+  if (!qualificationVolumeIsNtfs(report)) {
+    return {
+      ok: false,
+      reason: `qualification volume is not NTFS (${
+        report.environment["qualification sandbox filesystem"] ||
+        report.environment.filesystem ||
+        "unknown"
+      })`,
+    };
+  }
+  return { ok: true, reason: root };
+}
+
+function runWindowsRuntime(report, { nativeFirst = false, diagnostic = false } = {}) {
+  report._diagnosticMapped = [];
+  report._semanticStages = [];
   const modelDir = process.env.SUPREMACY_LOCAL_EMBEDDING_MODEL_DIR;
-  const ntfsReady = qualificationVolumeIsNtfs(report);
+  const containment = mutationContainment(report);
   addCheck(
     report,
     "NTFS",
     "Qualification volume is NTFS",
-    ntfsReady ? Status.PASS : Status.FAIL,
+    qualificationVolumeIsNtfs(report) ? Status.PASS : Status.FAIL,
     report.environment["qualification sandbox filesystem"] ||
       report.environment.filesystem ||
       "filesystem unknown",
   );
-
-  runCargoSection(report, "READ-ONLY", [
-    {
-      name: "Windows read-only product flow",
-      args: [
-        "test",
-        "-p",
-        "application",
-        "--test",
-        "windows_read_only_qualification",
-        "--",
-        "--nocapture",
-      ],
-    },
-    {
-      name: "Safe scanner (Windows)",
-      args: [
-        "test",
-        "-p",
-        "application",
-        "--test",
-        "safe_scanner",
-        "--",
-        "--nocapture",
-      ],
-    },
-  ]);
-
-  const ui = run("npm", ["run", "test:ui"], { allowFailure: true });
   addCheck(
     report,
-    "READ-ONLY",
-    "Desktop UI smoke (Vitest)",
-    ui.status === 0 ? Status.PASS : Status.FAIL,
-    truncate(`${ui.stdout}\n${ui.stderr}`.trim(), 400),
+    "SANDBOX SAFETY",
+    "Mutation containment under runner temp",
+    containment.ok ? Status.PASS : Status.FAIL,
+    containment.reason,
   );
-  if (!modelDir) {
-    addCheck(
-      report,
-      "SEMANTIC",
-      "Granite / ORT / ANN real-model suite",
-      Status.NOT_RUN,
-      "SUPREMACY_LOCAL_EMBEDDING_MODEL_DIR unset; refuse to mark PASS",
-    );
-  } else {
-    runCargoSection(report, "SEMANTIC", [
+
+  if (diagnostic) {
+    runCargoSuites(report, compileSuites);
+    runCargoSuites(report, [
       {
-        name: "Windows ORT / Granite / USearch runtime",
-        args: [
-          "test",
-          "-p",
-          "search",
-          "--test",
-          "windows_runtime_qualification",
-          "--",
-          "--nocapture",
-        ],
+        name: "platform-windows lib tests (compile + path parsing)",
+        args: ["test", "-p", "platform-windows", "--lib", "--", "--nocapture"],
+        section: "BUILD PREP",
+        diagnostic: "COMPILATION",
+      },
+    ]);
+  } else {
+    runCargoSuites(report, [
+      {
+        name: "platform-windows lib tests (compile + path parsing)",
+        args: ["test", "-p", "platform-windows", "--lib", "--", "--nocapture"],
+        section: "NTFS",
+        diagnostic: "COMPILATION",
       },
     ]);
   }
 
-  runCargoSection(report, "MONITORING", [
-    {
-      name: "Windows native watcher qualification",
-      args: [
-        "test",
-        "-p",
-        "platform",
-        "--test",
-        "windows_watcher_qualification",
-        "--",
-        "--nocapture",
-      ],
-    },
-  ]);
+  // Volume diagnostic is independent of later NTFS mutation results.
+  runCargoSuites(report, volumeSuites);
+  runCargoSuites(report, monitoringSuites);
+  runCargoSuites(report, sandboxSuites);
 
-  if (!ntfsReady) {
-    const reason =
-      "qualification volume is not NTFS; Apply / mutation suites were not executed";
-    addCheck(report, "EXECUTOR", "Native mutation suites", Status.FAIL, reason);
-    addCheck(report, "NTFS", "Native NTFS Apply suites", Status.FAIL, reason);
-    addCheck(report, "ROLLBACK", "Native rollback / recovery suites", Status.FAIL, reason);
-  } else {
-    runCargoSection(report, "EXECUTOR", [
-      {
-        name: "operation-executor protocol + native handler",
-        args: ["test", "-p", "operation-executor", "--", "--nocapture"],
-      },
-      {
-        name: "M8 safety-gated execution (focused)",
-        args: [
-          "test",
-          "-p",
-          "application",
-          "--test",
-          "milestone8_safety_gated_execution",
-          "--",
-          "--nocapture",
-        ],
-      },
-    ]);
-
-    runCargoSection(report, "NTFS", [
-      {
-        name: "Windows volume/path diagnostics",
-        args: [
-          "test",
-          "-p",
-          "platform-windows",
-          "--features",
-          "mutation",
-          "--test",
-          "windows_volume_path_diagnostics",
-          "--",
-          "--nocapture",
-        ],
-      },
-      {
-        name: "NTFS qualification suite",
-        args: [
-          "test",
-          "-p",
-          "platform-windows",
-          "--features",
-          "mutation",
-          "--test",
-          "ntfs_qualification",
-          "--",
-          "--nocapture",
-        ],
-      },
-      {
-        name: "Windows native path identity suite",
-        args: [
-          "test",
-          "-p",
-          "platform-windows",
-          "--features",
-          "mutation",
-          "--test",
-          "windows_native_paths",
-          "--",
-          "--nocapture",
-        ],
-      },
+  if (containment.ok) {
+    runCargoSuites(report, ntfsSuites);
+    runCargoSuites(report, pathIdentitySuites);
+    runCargoSuites(report, [
       {
         name: "Windows error taxonomy",
         args: [
@@ -718,84 +696,143 @@ function runWindowsRuntime(report) {
           "--",
           "--nocapture",
         ],
+        section: "NTFS",
+        diagnostic: "NTFS",
       },
     ]);
-
-    runCargoSection(report, "ROLLBACK", [
-      {
-        name: "NTFS round-trip / restart reconciliation",
-        args: [
-          "test",
-          "-p",
-          "platform-windows",
-          "--features",
-          "mutation",
-          "--test",
-          "ntfs_qualification",
-          "fresh_adapter_reconciles",
-          "--",
-          "--nocapture",
-        ],
-      },
-      {
-        name: "M8 qualification rollback / recovery",
-        args: [
-          "test",
-          "-p",
-          "application",
-          "--test",
-          "milestone8_qualification",
-          "--",
-          "--nocapture",
-        ],
-      },
-    ]);
+  } else {
+    const reason = `mutation skipped: ${containment.reason}`;
+    addCheck(report, "NTFS", "Native NTFS Apply suites", Status.FAIL, reason);
+    addCheck(report, "ROLLBACK", "Native rollback / recovery suites", Status.FAIL, reason);
+    addCheck(report, "EXECUTOR", "Native mutation suites", Status.FAIL, reason);
   }
 
-  runCargoSection(report, "SANDBOX SAFETY", [
+  if (nativeFirst) {
+    const reason =
+      "--native-first: application linker, semantic, and executor suites not executed";
+    for (const section of ["READ-ONLY", "SEMANTIC", "EXECUTOR"]) {
+      markNotRunSection(report, section, reason);
+    }
+    return;
+  }
+
+  // Linker / read-only / semantic continue even when NTFS mutation was skipped.
+  runCargoSuites(report, readOnlySuites);
+  const ui = run("npm", ["run", "test:ui"], { allowFailure: true, logName: "desktop-ui" });
+  addCheck(
+    report,
+    "READ-ONLY",
+    "Desktop UI smoke (Vitest)",
+    ui.status === 0 ? Status.PASS : Status.FAIL,
+    ui.status === 0
+      ? "vitest ok"
+      : formatCapturedFailure({
+          command: "npm run test:ui",
+          exitCode: ui.status,
+          output: `${ui.stdout}\n${ui.stderr}`,
+          logPath: ui.logPath,
+        }),
+  );
+
+  if (containment.ok) {
+    runCargoSuites(report, executorSuites);
+  }
+
+  if (!modelDir) {
+    addCheck(
+      report,
+      "SEMANTIC",
+      "Granite / ORT / ANN real-model suite",
+      Status.NOT_RUN,
+      "SUPREMACY_LOCAL_EMBEDDING_MODEL_DIR unset; refuse to mark PASS",
+    );
+  } else {
+    runCargoSuites(report, semanticSuites);
+  }
+}
+
+function failureTail(output) {
+  return formatCapturedFailure({
+    command: "cargo",
+    exitCode: 1,
+    output,
+  });
+}
+
+function recordCargoCheck(report, section, name, cargoArgs) {
+  runCargoSuites(report, [
     {
-      name: "Windows sandbox safety assertions",
-      args: [
-        "test",
-        "-p",
-        "platform",
-        "--test",
-        "windows_sandbox_safety",
-        "--",
-        "--nocapture",
-      ],
+      name,
+      args: cargoArgs,
+      section,
+      diagnostic: "COMPILATION",
     },
   ]);
 }
 
-function linkerDiagnostics(output) {
-  return output
-    .split(/\r?\n/)
-    .filter((line) =>
-      /LNK\d+|error LNK|linking with `link\.exe`|already defined|multiply defined|unresolved external/i.test(
-        line,
-      ),
-    )
-    .join("\n");
+function runCargoSuites(report, suites) {
+  for (const suite of suites) {
+    const result = run("cargo", suite.args, {
+      allowFailure: true,
+      logName: suite.name,
+    });
+    const full = `${result.stdout}\n${result.stderr}`.trim();
+    const captured = extractDiagnostics(full);
+    if (captured.stages.length) {
+      report._semanticStages = [
+        ...(report._semanticStages || []),
+        ...captured.stages,
+      ];
+    }
+    const status = result.status === 0 ? Status.PASS : Status.FAIL;
+    const detail =
+      status === Status.PASS
+        ? "cargo ok"
+        : formatCapturedFailure({
+            command: `cargo ${suite.args.join(" ")}`,
+            exitCode: result.status,
+            output: full,
+            logPath: result.logPath,
+          });
+    addCheck(report, suite.section, suite.name, status, detail);
+    report._diagnosticMapped = report._diagnosticMapped || [];
+    report._diagnosticMapped.push({
+      diagnostic: suite.diagnostic || suite.section,
+      name: suite.name,
+      status,
+      detail,
+    });
+  }
 }
 
-function runCargoSection(report, section, suites) {
-  for (const suite of suites) {
-    const result = run("cargo", suite.args, { allowFailure: true });
-    if (result.status === 0) {
-      addCheck(report, section, suite.name, Status.PASS, "cargo test ok");
-    } else {
-      const full = `${result.stdout}\n${result.stderr}`.trim();
-      const linker = linkerDiagnostics(full);
-      addCheck(
-        report,
-        section,
-        suite.name,
-        Status.FAIL,
-        linker ? `${linker}\n---\n${truncate(full, 800)}` : truncate(full, 800),
-      );
-    }
+function writeDiagnosticArtifacts(report) {
+  let qualificationDecision = "FAIL";
+  try {
+    const decision = decideApplyQualification(report, {
+      filesystem: process.env.ZEMO_WINDOWS_QUALIFICATION_FILESYSTEM,
+    });
+    qualificationDecision = decision.qualification_status || "FAIL";
+  } catch (error) {
+    qualificationDecision = "FAIL";
+    addCheck(
+      report,
+      "BUILD PREP",
+      "qualification decision",
+      Status.FAIL,
+      String(error?.message || error),
+    );
   }
+  const diagnostic = mapQualificationToDiagnostic(report, {
+    qualificationDecision,
+    mappedChecks: report._diagnosticMapped || [],
+    stages: report._semanticStages || [],
+  });
+  const text = formatDiagnosticReport(diagnostic);
+  writeFileSync(path.join(reportsDirectory, "windows-diagnostic-report.txt"), text);
+  writeFileSync(
+    path.join(reportsDirectory, "windows-diagnostic-report.json"),
+    `${JSON.stringify(diagnostic, null, 2)}\n`,
+  );
 }
 
 function probeWritableAppPaths() {
@@ -820,10 +857,12 @@ function windowsFilesystemForPath(targetPath) {
     return "";
   }
   const escaped = String(targetPath).replace(/'/g, "''");
+  // DriveInfo.DriveFormat is the volume type. Do not read the PowerShell
+  // provider name; it is often empty on GitHub runner temp paths.
   return commandText("powershell.exe", [
     "-NoProfile",
     "-Command",
-    `(Get-Item -LiteralPath '${escaped}').PSDrive.FileSystem`,
+    `$p = [System.IO.Path]::GetFullPath('${escaped}'); $root = [System.IO.Path]::GetPathRoot($p); [System.IO.DriveInfo]::new($root).DriveFormat`,
   ]);
 }
 
@@ -871,7 +910,7 @@ function commandText(command, commandArgs) {
   return (result.stdout || "").trim();
 }
 
-function run(command, commandArgs, { allowFailure = false } = {}) {
+function run(command, commandArgs, { allowFailure = false, logName } = {}) {
   const isWindowsNpm =
     process.platform === "win32" && (command === "npm" || command === "npx");
   const result = spawnSync(command, commandArgs, {
@@ -881,8 +920,22 @@ function run(command, commandArgs, { allowFailure = false } = {}) {
     env: process.env,
     shell: isWindowsNpm,
     windowsHide: true,
+    maxBuffer: 32 * 1024 * 1024,
   });
   const spawnError = result.error ? `${result.error.message}\n` : "";
+  const stdout = result.stdout || "";
+  const stderr = `${spawnError}${result.stderr || ""}`;
+  let logPath = "";
+  if (logName) {
+    const logsDirectory = path.join(reportsDirectory, "logs");
+    mkdirSync(logsDirectory, { recursive: true });
+    const safe = String(logName)
+      .replace(/[^A-Za-z0-9._-]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 80);
+    logPath = path.join(logsDirectory, `${safe || "command"}.log`);
+    writeFileSync(logPath, `command: ${command} ${commandArgs.join(" ")}\nexit: ${result.status ?? 1}\n\n${stdout}\n${stderr}`);
+  }
   if (!allowFailure && result.status !== 0) {
     throw new Error(
       `${command} ${commandArgs.join(" ")} failed: ${
@@ -892,8 +945,9 @@ function run(command, commandArgs, { allowFailure = false } = {}) {
   }
   return {
     status: result.status ?? 1,
-    stdout: result.stdout || "",
-    stderr: `${spawnError}${result.stderr || ""}`,
+    stdout,
+    stderr,
+    logPath,
   };
 }
 

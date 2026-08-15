@@ -16,6 +16,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   ZEMO_DIST_TAG: "0.1.0-beta.6"
+  ZEMO_WINDOWS_DIAGNOSTIC_ONLY: "1"
 
 jobs:
   windows-qualification:
@@ -26,6 +27,7 @@ jobs:
       apply_qualified: ${{ steps.decide.outputs.apply_qualified }}
       filesystem: ${{ steps.ntfs.outputs.filesystem }}
       qualification_status: ${{ steps.decide.outputs.qualification_status }}
+      diagnostic_only: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,28 +52,54 @@ jobs:
         with:
           workspaces: ". -> target"
 
+      - name: platform-windows compile gate
+        continue-on-error: true
+        run: |
+          cargo check -p platform-windows
+          cargo check -p platform-windows --features mutation
+          cargo test -p platform-windows --lib
+
+      - name: Compile application / executor / desktop
+        continue-on-error: true
+        run: |
+          cargo check -p application
+          cargo check -p operation-executor
+          cargo check -p desktop
+          cargo test -p application --test windows_read_only_qualification --no-run
+
       - name: Record runner environment
+        if: always() && !cancelled()
         run: |
           powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\print-environment.ps1
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "ZEMO_CI_ENVIRONMENT_STATUS=PASS"
 
       - name: Install npm dependencies from lockfile
+        if: always() && !cancelled()
+        continue-on-error: true
         run: npm ci
 
       - name: NTFS qualification volume gate
         id: ntfs
+        if: always() && !cancelled()
+        continue-on-error: true
         run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\verify-ntfs.ps1
 
       - name: Windows qualification prep
+        if: always() && !cancelled()
+        continue-on-error: true
         run: npm run windows:qualification:prep
 
       - name: Frontend tests, TypeScript, production build
+        if: always() && !cancelled()
+        continue-on-error: true
         run: |
           npm test
           npm run build
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "ZEMO_CI_FRONTEND_STATUS=PASS"
 
       - name: Rust fmt, Clippy, library tests
+        if: always() && !cancelled()
+        continue-on-error: true
         run: |
           cargo fmt --all -- --check
           cargo clippy --workspace --exclude platform-macos --all-targets -- -D warnings
@@ -81,22 +109,28 @@ jobs:
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "ZEMO_CI_RUST_STATUS=PASS"
 
       - name: Cache pinned Granite assets
+        if: always() && !cancelled()
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/zemo-pinned-models
           key: granite-${{ hashFiles('models/manifests/granite-embedding-97m-multilingual-r2.v1.json') }}
 
       - name: Download pinned Granite model
+        if: always() && !cancelled()
         continue-on-error: true
         env:
           ZEMO_PINNED_MODEL_CACHE: ${{ runner.temp }}/zemo-pinned-models
         run: npm run windows:ci:download-granite
 
-      - name: Native Windows qualification harness
-        run: npm run windows:qualification
+      - name: Native Windows diagnostic harness
+        if: always() && !cancelled()
+        continue-on-error: true
+        run: npm run windows:diagnostic
 
       - name: Decide Apply enablement
         id: decide
+        if: always() && !cancelled()
+        continue-on-error: true
         run: npm run windows:ci:decide-apply
 
       - name: Upload qualification evidence
@@ -109,12 +143,35 @@ jobs:
           path: |
             target/windows-qualification/windows-qualification-latest.json
             target/windows-qualification/windows-qualification-latest.txt
+            target/windows-qualification/windows-diagnostic-report.txt
+            target/windows-qualification/windows-diagnostic-report.json
             target/windows-qualification/qualification-summary.txt
             target/windows-qualification/apply-decision.json
+            target/windows-qualification/logs
 
       - name: Job summary
         if: always() && !cancelled()
         run: node .\scripts\windows-ci\write-job-summary.mjs
+
+      - name: Fail if required qualification gates did not pass
+        if: always() && !cancelled()
+        shell: pwsh
+        run: |
+          $decisionPath = "target/windows-qualification/apply-decision.json"
+          if (-not (Test-Path -LiteralPath $decisionPath)) {
+            Write-Error "qualification decision missing; diagnostic collection cannot unlock Apply"
+            exit 1
+          }
+          $decision = Get-Content -LiteralPath $decisionPath -Raw | ConvertFrom-Json
+          if ($decision.apply_qualified -eq $true) {
+            Write-Host "Qualification decision: PASS"
+            exit 0
+          }
+          Write-Host "Qualification decision: FAIL"
+          if ($decision.blockers) {
+            $decision.blockers | ForEach-Object { Write-Host " - $_" }
+          }
+          exit 1
 
   build-windows-apply-beta:
     name: build-windows-apply-beta
@@ -200,7 +257,7 @@ jobs:
   build-windows-propose-only:
     name: build-windows-propose-only
     needs: windows-qualification
-    if: always() && needs.windows-qualification.result == 'success' && needs.windows-qualification.outputs.apply_qualified != 'true'
+    if: always() && needs.windows-qualification.result == 'success' && needs.windows-qualification.outputs.apply_qualified != 'true' && needs.windows-qualification.outputs.diagnostic_only != 'true'
     runs-on: windows-latest
     timeout-minutes: 150
     steps:

@@ -19,7 +19,10 @@ pub const MUTATION_CAPABILITY_COMPILED: bool = cfg!(feature = "mutation");
 
 mod volume_root;
 
-pub use volume_root::{format_win32_drive_root, is_legal_win32_mount_point};
+pub use volume_root::{
+    ParsedWindowsDrivePrefix, format_win32_drive_root, is_legal_win32_mount_point,
+    parse_windows_drive_prefix,
+};
 
 #[cfg(windows)]
 mod windows {
@@ -93,16 +96,145 @@ mod windows {
         pub input_path: String,
         pub absolute_path: String,
         pub canonical_path: String,
+        pub prefix_kind: String,
         pub volume_root: String,
+        pub dos_root: String,
+        pub win32_root: String,
         pub win32_volume_path: String,
         pub utf16_len: usize,
+        pub get_volume_path_name: String,
+        pub get_volume_information: String,
+        pub get_drive_type: String,
         pub filesystem_name: Option<String>,
         pub volume_identity: Option<String>,
         pub case_sensitive: Option<bool>,
+        pub last_error: Option<u32>,
+        pub error_87: bool,
         pub inspect_error: Option<String>,
     }
 
     impl WindowsPlatform {
+        fn last_win32_error_code() -> Option<u32> {
+            std::io::Error::last_os_error()
+                .raw_os_error()
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|code| *code != 0)
+        }
+
+        fn prefix_kind_label(path: &Path) -> String {
+            match path.components().next() {
+                Some(Component::Prefix(component)) => format!("{:?}", component.kind()),
+                other => format!("{other:?}"),
+            }
+        }
+
+        fn drive_type_label(drive_type: u32) -> &'static str {
+            match drive_type {
+                DRIVE_UNKNOWN => "DRIVE_UNKNOWN",
+                DRIVE_NO_ROOT_DIR => "DRIVE_NO_ROOT_DIR",
+                DRIVE_REMOVABLE => "DRIVE_REMOVABLE",
+                DRIVE_FIXED => "DRIVE_FIXED",
+                4 => "DRIVE_REMOTE",
+                5 => "DRIVE_CDROM",
+                6 => "DRIVE_RAMDISK",
+                _ => "DRIVE_OTHER",
+            }
+        }
+
+        fn probe_volume_path_name(path: &Path) -> (String, Option<u32>, Vec<u16>) {
+            let path_wide = Self::wide_null(path.as_os_str());
+            let mut buffer = vec![0_u16; 512];
+            // SAFETY: path_wide is NUL-terminated; buffer is writable for the
+            // character count passed to GetVolumePathNameW.
+            let ok = unsafe {
+                GetVolumePathNameW(
+                    path_wide.as_ptr(),
+                    buffer.as_mut_ptr(),
+                    u32::try_from(buffer.len()).unwrap_or(u32::MAX),
+                )
+            };
+            if ok == 0 {
+                let code = Self::last_win32_error_code();
+                return (
+                    format!(
+                        "FAIL GetLastError={}",
+                        code.map_or_else(|| "unknown".to_owned(), |value| value.to_string())
+                    ),
+                    code,
+                    Vec::new(),
+                );
+            }
+            let wide = Self::ensure_trailing_backslash_wide(buffer);
+            let utf16_len = wide
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(wide.len());
+            (
+                format!("OK {}", String::from_utf16_lossy(&wide[..utf16_len])),
+                None,
+                wide,
+            )
+        }
+
+        fn probe_volume_information(mount_wide: &[u16]) -> (String, Option<String>, Option<u32>) {
+            if mount_wide.is_empty() {
+                return ("NOT RUN (no mount point)".to_owned(), None, None);
+            }
+            let mut volume_name = [0_u16; 128];
+            let mut filesystem_name = [0_u16; 32];
+            let mut serial = 0_u32;
+            let mut maximum_component = 0_u32;
+            let mut flags = 0_u32;
+            // SAFETY: mount_wide is a NUL-terminated mount point; output buffers
+            // match the character counts passed in. Diagnostic-only; no handle.
+            let by_mount = unsafe {
+                GetVolumeInformationW(
+                    mount_wide.as_ptr(),
+                    volume_name.as_mut_ptr(),
+                    u32::try_from(volume_name.len()).unwrap_or(u32::MAX),
+                    ptr::addr_of_mut!(serial),
+                    ptr::addr_of_mut!(maximum_component),
+                    ptr::addr_of_mut!(flags),
+                    filesystem_name.as_mut_ptr(),
+                    u32::try_from(filesystem_name.len()).unwrap_or(u32::MAX),
+                )
+            };
+            if by_mount == 0 {
+                let code = Self::last_win32_error_code();
+                return (
+                    format!(
+                        "FAIL GetVolumeInformationW GetLastError={}",
+                        code.map_or_else(|| "unknown".to_owned(), |value| value.to_string())
+                    ),
+                    None,
+                    code,
+                );
+            }
+            let filesystem_length = filesystem_name
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(filesystem_name.len());
+            let filesystem = String::from_utf16_lossy(&filesystem_name[..filesystem_length]);
+            (
+                format!("OK serial={serial:08x} filesystem={filesystem}"),
+                Some(filesystem),
+                None,
+            )
+        }
+
+        fn probe_drive_type(dos_root: &str) -> (String, Option<u32>) {
+            if dos_root.is_empty() {
+                return ("NOT RUN (no DOS root)".to_owned(), None);
+            }
+            let dos_wide = Self::wide_null(OsStr::new(dos_root));
+            // SAFETY: dos_wide is NUL-terminated `X:\`.
+            let drive_type = unsafe { GetDriveTypeW(dos_wide.as_ptr()) };
+            (
+                format!("OK {drive_type} {}", Self::drive_type_label(drive_type)),
+                None,
+            )
+        }
+
         #[must_use]
         pub fn volume_path_diagnostics(path: &Path) -> VolumePathDiagnostics {
             let input_path = path.display().to_string();
@@ -113,47 +245,96 @@ mod windows {
                 .map(|value| value.display().to_string())
                 .unwrap_or_else(|error| format!("<canonicalize failed: {error}>"));
             let inspected = Path::new(&absolute_path);
-            let (volume_root, win32_volume_path, utf16_len) =
-                match Self::drive_root_and_components(inspected)
-                    .and_then(|(_, _)| Self::win32_mount_point_wide(inspected))
-                {
-                    Ok(wide) => {
-                        let utf16_len = wide
-                            .iter()
-                            .position(|unit| *unit == 0)
-                            .unwrap_or(wide.len());
-                        let win32 = String::from_utf16_lossy(&wide[..utf16_len]);
-                        let root = Self::drive_root_and_components(inspected)
-                            .map(|(root, _)| root.display().to_string())
-                            .unwrap_or_default();
-                        (root, win32, utf16_len)
-                    }
-                    Err(error) => (format!("<root error: {error}>"), String::new(), 0),
-                };
-            match WindowsPlatform.inspect_volume(inspected) {
+            let prefix_kind = Self::prefix_kind_label(inspected);
+            let mut last_error = None;
+
+            let (volume_root, win32_root) = match Self::drive_root_and_components(inspected) {
+                Ok((root, _)) => {
+                    let formatted = root.display().to_string();
+                    (formatted.clone(), formatted)
+                }
+                Err(error) => (format!("<root error: {error}>"), String::new()),
+            };
+            let dos_root = Self::drive_letter(inspected)
+                .ok()
+                .and_then(|letter| format_win32_drive_root(letter, false))
+                .unwrap_or_default();
+
+            let (get_volume_path_name, path_error, mount_wide) =
+                Self::probe_volume_path_name(inspected);
+            last_error = last_error.or(path_error);
+            let utf16_len = mount_wide
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(mount_wide.len());
+            let win32_volume_path = if mount_wide.is_empty() {
+                String::new()
+            } else {
+                String::from_utf16_lossy(&mount_wide[..utf16_len])
+            };
+
+            let information_wide = if mount_wide.is_empty() {
+                Self::wide_null(OsStr::new(&dos_root))
+            } else {
+                mount_wide
+            };
+            let (get_volume_information, filesystem_from_api, info_error) =
+                Self::probe_volume_information(&information_wide);
+            last_error = last_error.or(info_error);
+
+            let (get_drive_type, drive_error) = Self::probe_drive_type(&dos_root);
+            last_error = last_error.or(drive_error);
+
+            let inspected_volume = WindowsPlatform.inspect_volume(inspected);
+            let inspect_error = inspected_volume.as_ref().err().map(ToString::to_string);
+            if inspect_error.is_some() {
+                last_error = last_error.or(Self::last_win32_error_code());
+            }
+            let error_87 = last_error == Some(87)
+                || inspect_error.as_deref().is_some_and(|value| {
+                    value.contains("87") || value.contains("INVALID_PARAMETER")
+                });
+
+            match inspected_volume {
                 Ok(volume) => VolumePathDiagnostics {
                     input_path,
                     absolute_path: absolute_path.display().to_string(),
                     canonical_path,
+                    prefix_kind,
                     volume_root,
+                    dos_root,
+                    win32_root,
                     win32_volume_path,
                     utf16_len,
-                    filesystem_name: volume.filesystem_type,
+                    get_volume_path_name,
+                    get_volume_information,
+                    get_drive_type,
+                    filesystem_name: volume.filesystem_type.or(filesystem_from_api),
                     volume_identity: Some(volume.stable_identifier),
                     case_sensitive: Some(volume.case_sensitive),
+                    last_error,
+                    error_87,
                     inspect_error: None,
                 },
-                Err(error) => VolumePathDiagnostics {
+                Err(_) => VolumePathDiagnostics {
                     input_path,
                     absolute_path: absolute_path.display().to_string(),
                     canonical_path,
+                    prefix_kind,
                     volume_root,
+                    dos_root,
+                    win32_root,
                     win32_volume_path,
                     utf16_len,
-                    filesystem_name: None,
+                    get_volume_path_name,
+                    get_volume_information,
+                    get_drive_type,
+                    filesystem_name: filesystem_from_api,
                     volume_identity: None,
                     case_sensitive: None,
-                    inspect_error: Some(error.to_string()),
+                    last_error,
+                    error_87,
+                    inspect_error,
                 },
             }
         }
@@ -227,7 +408,7 @@ mod windows {
             if !matches!(components.next(), Some(Component::RootDir)) {
                 return Err(PlatformError::OutsideRoot);
             }
-            let root = Self::win32_drive_root(prefix)?;
+            let root = Self::win32_drive_root(prefix.kind())?;
             let mut names = Vec::new();
             for component in components {
                 match component {
@@ -242,7 +423,7 @@ mod windows {
         }
 
         fn win32_drive_root(prefix: Prefix<'_>) -> Result<PathBuf, PlatformError> {
-            let formatted = match prefix.kind() {
+            let formatted = match prefix {
                 Prefix::VerbatimDisk(letter) => format_win32_drive_root(letter, true),
                 Prefix::Disk(letter) => format_win32_drive_root(letter, false),
                 _ => None,
@@ -321,13 +502,34 @@ mod windows {
                     size,
                 )
             };
-            if result == 0 {
+            if result != 0 {
+                return Self::reject_attribute_bits(info.FileAttributes, info.ReparseTag);
+            }
+            let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            // FileAttributeTagInfo returns ERROR_INVALID_PARAMETER (87) on some
+            // Windows 11 volume-root handles. Fall back to basic attributes so
+            // a legal `D:\` / `\\?\D:\` open is not rejected. Reparse and cloud
+            // bits still fail closed when the fallback query can see them.
+            if code != 87 {
+                return Err(PlatformError::from_windows_code(
+                    u32::try_from(code).unwrap_or(u32::MAX),
+                    false,
+                ));
+            }
+            let mut basic = BY_HANDLE_FILE_INFORMATION::default();
+            // SAFETY: `basic` is valid writable storage for the documented query.
+            let basic_ok = unsafe { GetFileInformationByHandle(handle, ptr::addr_of_mut!(basic)) };
+            if basic_ok == 0 {
                 return Err(Self::last_windows_error(false));
             }
-            if info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 || info.ReparseTag != 0 {
+            Self::reject_attribute_bits(basic.dwFileAttributes, 0)
+        }
+
+        fn reject_attribute_bits(attributes: u32, reparse_tag: u32) -> Result<(), PlatformError> {
+            if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 || reparse_tag != 0 {
                 return Err(PlatformError::ReparsePoint);
             }
-            if info.FileAttributes
+            if attributes
                 & (FILE_ATTRIBUTE_OFFLINE
                     | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
                     | FILE_ATTRIBUTE_RECALL_ON_OPEN)
@@ -1542,6 +1744,44 @@ mod windows {
                 .unwrap_or_else(|error| panic!("DOS temp should prepare: {error}"));
             assert_eq!(root, PathBuf::from(r"D:\"));
             assert!(crate::is_legal_win32_mount_point(&root.to_string_lossy()));
+        }
+
+        #[test]
+        fn prefix_kind_and_win32_root_for_dos_verbatim_mixed_and_unicode() {
+            for (path, verbatim, expected_root, expected_leaf) in [
+                (r"D:\folder\file.txt", false, r"D:\", "file.txt"),
+                (r"\\?\D:\folder\file.txt", true, r"\\?\D:\", "file.txt"),
+                (r"d:\Folder\File.txt", false, r"D:\", "File.txt"),
+                (
+                    r"D:\dossier\facture-été.txt",
+                    false,
+                    r"D:\",
+                    "facture-été.txt",
+                ),
+                (r"D:\inbox\facture-🎉.txt", false, r"D:\", "facture-🎉.txt"),
+            ] {
+                let parsed = Path::new(path);
+                let prefix = match parsed.components().next() {
+                    Some(Component::Prefix(component)) => component.kind(),
+                    other => panic!("{path}: expected Prefix, got {other:?}"),
+                };
+                assert_eq!(
+                    matches!(prefix, Prefix::VerbatimDisk(_)),
+                    verbatim,
+                    "{path}"
+                );
+                assert_eq!(matches!(prefix, Prefix::Disk(_)), !verbatim, "{path}");
+                let (root, names) = WindowsPlatform::drive_root_and_components(parsed)
+                    .unwrap_or_else(|error| panic!("{path}: {error}"));
+                assert_eq!(root, PathBuf::from(expected_root), "{path}");
+                assert!(crate::is_legal_win32_mount_point(&root.to_string_lossy()));
+                assert!(!root.to_string_lossy().ends_with(r"\\"), "{path}");
+                assert_eq!(
+                    names.last().map(|name| name.to_string_lossy().into_owned()),
+                    Some(expected_leaf.to_owned()),
+                    "{path}"
+                );
+            }
         }
 
         #[test]

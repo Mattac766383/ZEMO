@@ -10,6 +10,14 @@ export function windowsVolumeRoot(windowsPath) {
     return null;
   }
   const trimmed = windowsPath.trim();
+  const verbatim = trimmed.match(/^\\\\\?\\([A-Za-z]):[\\/]/);
+  if (verbatim) {
+    const driveLetter = verbatim[1].toUpperCase();
+    return {
+      volumeRoot: `${driveLetter}:\\`,
+      driveLetter,
+    };
+  }
   const drive = trimmed.match(/^([A-Za-z]):[\\/]/);
   if (drive) {
     const driveLetter = drive[1].toUpperCase();

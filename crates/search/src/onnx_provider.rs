@@ -173,22 +173,29 @@ impl OnnxLocalEmbeddingProvider {
     }
 
     fn load_model_inner(&self) -> Result<LoadedModel, EmbeddingError> {
-        let model_path = self.manager.asset_path("onnx_model")?;
-        let tokenizer_path = self.manager.asset_path("tokenizer")?;
+        let model_path =
+            crate::native_filesystem_path_for_c_runtime(&self.manager.asset_path("onnx_model")?);
+        let tokenizer_path =
+            crate::native_filesystem_path_for_c_runtime(&self.manager.asset_path("tokenizer")?);
 
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|error| EmbeddingError::Failed(format!("tokenizer load failed: {error}")))?;
 
         let session = Session::builder()
-            .map_err(|error| EmbeddingError::Failed(error.to_string()))?
+            .map_err(|error| EmbeddingError::Failed(format!("ORT session builder: {error}")))?
             .with_optimization_level(GraphOptimizationLevel::Level1)
-            .map_err(|error| EmbeddingError::Failed(error.to_string()))?
+            .map_err(|error| EmbeddingError::Failed(format!("ORT optimization: {error}")))?
             .with_intra_threads(INTRA_THREADS)
-            .map_err(|error| EmbeddingError::Failed(error.to_string()))?
+            .map_err(|error| EmbeddingError::Failed(format!("ORT intra threads: {error}")))?
             .with_inter_threads(INTER_THREADS)
-            .map_err(|error| EmbeddingError::Failed(error.to_string()))?
+            .map_err(|error| EmbeddingError::Failed(format!("ORT inter threads: {error}")))?
             .commit_from_file(&model_path)
-            .map_err(|error| EmbeddingError::Failed(error.to_string()))?;
+            .map_err(|error| {
+                EmbeddingError::Failed(format!(
+                    "ORT commit_from_file {}: {error}",
+                    model_path.display()
+                ))
+            })?;
 
         Ok(LoadedModel { session, tokenizer })
     }

@@ -6,6 +6,39 @@
 //! prefix (`\\?\D:`) can produce `\\?\D:` or `\\?\D:\\`, both of which yield
 //! Win32 error 87 (ERROR_INVALID_PARAMETER).
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedWindowsDrivePrefix {
+    pub letter: u8,
+    pub verbatim: bool,
+    pub win32_root: String,
+}
+
+#[must_use]
+pub fn parse_windows_drive_prefix(path: &str) -> Option<ParsedWindowsDrivePrefix> {
+    let verbatim = path.starts_with("\\\\?\\");
+    let rest = if verbatim {
+        path.strip_prefix("\\\\?\\")?
+    } else {
+        path
+    };
+    let mut chars = rest.chars();
+    let letter = chars.next()?;
+    if !letter.is_ascii_alphabetic() || chars.next() != Some(':') {
+        return None;
+    }
+    match chars.next() {
+        Some('\\' | '/') => {}
+        _ => return None,
+    }
+    let letter = u8::try_from(letter.to_ascii_uppercase()).ok()?;
+    let win32_root = format_win32_drive_root(letter, verbatim)?;
+    Some(ParsedWindowsDrivePrefix {
+        letter,
+        verbatim,
+        win32_root,
+    })
+}
+
 #[must_use]
 pub fn format_win32_drive_root(letter: u8, verbatim: bool) -> Option<String> {
     if !letter.is_ascii_alphabetic() {
@@ -35,7 +68,7 @@ pub fn is_legal_win32_mount_point(mount: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_win32_drive_root, is_legal_win32_mount_point};
+    use super::{format_win32_drive_root, is_legal_win32_mount_point, parse_windows_drive_prefix};
 
     #[test]
     fn github_runner_verbatim_root_is_legal() {
@@ -61,5 +94,43 @@ mod tests {
         assert!(!is_legal_win32_mount_point("D:"));
         assert!(!is_legal_win32_mount_point("D:\\\\"));
         assert!(!is_legal_win32_mount_point(""));
+    }
+
+    #[test]
+    fn parses_dos_and_verbatim_file_paths() {
+        let dos = parse_windows_drive_prefix(r"D:\folder\file.txt")
+            .unwrap_or_else(|| panic!("DOS path should parse"));
+        assert_eq!(dos.letter, b'D');
+        assert!(!dos.verbatim);
+        assert_eq!(dos.win32_root, "D:\\");
+        assert!(is_legal_win32_mount_point(&dos.win32_root));
+
+        let verbatim = parse_windows_drive_prefix(r"\\?\D:\folder\file.txt")
+            .unwrap_or_else(|| panic!("verbatim path should parse"));
+        assert_eq!(verbatim.letter, b'D');
+        assert!(verbatim.verbatim);
+        assert_eq!(verbatim.win32_root, "\\\\?\\D:\\");
+        assert!(is_legal_win32_mount_point(&verbatim.win32_root));
+        assert!(!verbatim.win32_root.ends_with("\\\\"));
+    }
+
+    #[test]
+    fn parses_mixed_case_drive_and_unicode_leaf() {
+        let mixed = parse_windows_drive_prefix(r"d:\Folder\File.txt")
+            .unwrap_or_else(|| panic!("mixed-case drive should parse"));
+        assert_eq!(mixed.letter, b'D');
+        assert_eq!(mixed.win32_root, "D:\\");
+
+        let unicode = parse_windows_drive_prefix(r"D:\dossier\facture-été.txt")
+            .unwrap_or_else(|| panic!("unicode path should parse"));
+        assert_eq!(unicode.win32_root, "D:\\");
+        assert!(is_legal_win32_mount_point(&unicode.win32_root));
+
+        let emoji = parse_windows_drive_prefix(r"D:\inbox\facture-🎉.txt")
+            .unwrap_or_else(|| panic!("emoji path should parse"));
+        assert_eq!(emoji.letter, b'D');
+        assert_eq!(emoji.win32_root, "D:\\");
+        assert!(is_legal_win32_mount_point(&emoji.win32_root));
+        assert!(!emoji.win32_root.ends_with("\\\\"));
     }
 }

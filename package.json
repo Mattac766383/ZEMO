@@ -16,6 +16,8 @@
     "test": "npm run typecheck && npm run test:ui",
     "windows:qualification": "node ./scripts/windows-qualification/run.mjs --json",
     "windows:qualification:prep": "node ./scripts/windows-qualification/run.mjs --prep-only --json",
+    "windows:qualification:native-first": "node ./scripts/windows-qualification/run.mjs --json --native-first",
+    "windows:diagnostic": "node ./scripts/windows-qualification/run.mjs --json --diagnostic",
     "windows:ci:download-granite": "node ./scripts/windows-ci/download-pinned-granite.mjs",
     "windows:ci:decide-apply": "node ./scripts/windows-ci/decide-apply-qualification.mjs",
     "macos:apply:qualification": "node ./scripts/macos-apply-qualification/run.mjs"
