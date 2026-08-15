@@ -17,8 +17,15 @@ fn cannot_mutate(platform: &WindowsPlatform, request: &RenameRequest) {
 /// Capability marker for packaging and dependency-graph tests.
 pub const MUTATION_CAPABILITY_COMPILED: bool = cfg!(feature = "mutation");
 
+mod nt_create;
 mod volume_root;
 
+pub use nt_create::{
+    DIRECTORY_CREATE_OPTION_MASK, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE,
+    FILE_OPEN_FOR_BACKUP_INTENT, FILE_OPEN_NO_RECALL, FILE_OPEN_REPARSE_POINT,
+    FILE_SYNCHRONOUS_IO_NONALERT, anchored_create_options, directory_create_options_are_legal,
+    relative_object_name_is_legal,
+};
 pub use volume_root::{
     ParsedWindowsDrivePrefix, format_win32_drive_root, is_legal_win32_mount_point,
     parse_windows_drive_prefix,
@@ -26,6 +33,7 @@ pub use volume_root::{
 
 #[cfg(windows)]
 mod windows {
+    use crate::nt_create::anchored_create_options;
     use crate::volume_root::format_win32_drive_root;
     use domain::{
         FileFingerprint, NativeFileIdentity, NativePath, PathEncoding, PlatformKind, VolumeIdentity,
@@ -55,11 +63,7 @@ mod windows {
     use windows_sys::Wdk::Storage::FileSystem::FILE_CREATE;
     use windows_sys::Wdk::{
         Foundation::OBJECT_ATTRIBUTES,
-        Storage::FileSystem::{
-            FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_NO_RECALL,
-            FILE_OPEN_REPARSE_POINT as NT_FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
-            NtCreateFile,
-        },
+        Storage::FileSystem::{FILE_OPEN, NtCreateFile},
     };
     #[cfg(feature = "mutation")]
     use windows_sys::Win32::Storage::FileSystem::{
@@ -112,6 +116,31 @@ mod windows {
         pub error_87: bool,
         pub inspect_error: Option<String>,
         pub win32_api_trace: Vec<String>,
+    }
+
+    fn os_error_code_from_message(message: &str) -> Option<u32> {
+        for marker in ["GetLastError=", "NTSTATUS=0x", "(os error "] {
+            if let Some(index) = message.find(marker) {
+                let rest = &message[index + marker.len()..];
+                if marker == "NTSTATUS=0x" {
+                    let hex: String = rest
+                        .chars()
+                        .take_while(|ch| ch.is_ascii_hexdigit())
+                        .collect();
+                    if let Ok(status) = u32::from_str_radix(&hex, 16)
+                        && status == 0xC000_000D
+                    {
+                        return Some(87);
+                    }
+                    continue;
+                }
+                let digits: String = rest.chars().take_while(|ch| ch.is_ascii_digit()).collect();
+                if let Ok(code) = digits.parse::<u32>() {
+                    return Some(code);
+                }
+            }
+        }
+        None
     }
 
     impl WindowsPlatform {
@@ -556,11 +585,17 @@ mod windows {
             let win32_api_trace = Self::instrument_inspect_chain(inspected);
             let inspected_volume = WindowsPlatform.inspect_volume(inspected);
             let inspect_error = inspected_volume.as_ref().err().map(ToString::to_string);
-            // Do not call GetLastError after inspect returns — that value is
-            // unrelated once later successful Win32 calls have run.
-            let inspect_error_87 = inspect_error
+            // Capture the failing API's error from the inspect/open_anchored
+            // message. Do not call GetLastError here — later probes overwrite it.
+            let inspect_code = inspect_error
                 .as_deref()
-                .is_some_and(|value| value.contains("87") || value.contains("INVALID_PARAMETER"));
+                .and_then(os_error_code_from_message);
+            last_error = inspect_code.or(last_error);
+            let inspect_error_87 = inspect_error.as_deref().is_some_and(|value| {
+                value.contains("87")
+                    || value.contains("INVALID_PARAMETER")
+                    || value.to_ascii_uppercase().contains("C000000D")
+            });
             let error_87 = inspect_error_87;
 
             match inspected_volume {
@@ -790,7 +825,19 @@ mod windows {
             // SAFETY: `basic` is valid writable storage for the documented query.
             let basic_ok = unsafe { GetFileInformationByHandle(handle, ptr::addr_of_mut!(basic)) };
             if basic_ok == 0 {
-                return Err(Self::last_windows_error(false));
+                let code = Self::last_win32_error_code().unwrap_or(u32::MAX);
+                return Err(Self::win32_api_error(
+                    "GetFileInformationByHandle",
+                    "-",
+                    "present",
+                    "-",
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    code,
+                ));
             }
             Self::reject_attribute_bits(basic.dwFileAttributes, 0)
         }
@@ -819,6 +866,58 @@ mod windows {
             PlatformError::from_windows_code(code, mutation_outcome_uncertain)
         }
 
+        fn win32_api_error(
+            api: &str,
+            path: &str,
+            root_directory: &str,
+            object_name: &str,
+            access: u32,
+            share: u32,
+            disposition: u32,
+            options: u32,
+            attributes: u32,
+            code: u32,
+        ) -> PlatformError {
+            let classified = PlatformError::from_windows_code(code, false);
+            match classified {
+                PlatformError::Io(_) => PlatformError::Io(std::io::Error::other(format!(
+                    "{api} path={path} RootDirectory={root_directory} ObjectName={object_name} \
+                     access=0x{access:08X} share=0x{share:08X} disposition=0x{disposition:08X} \
+                     options=0x{options:08X} attributes=0x{attributes:08X} GetLastError={code} \
+                     (os error {code})"
+                ))),
+                other => other,
+            }
+        }
+
+        fn ntcreatefile_error(
+            path: &str,
+            object_name: &str,
+            access: u32,
+            share: u32,
+            disposition: u32,
+            options: u32,
+            attributes: u32,
+            status: i32,
+        ) -> PlatformError {
+            if status == STATUS_REPARSE_POINT_ENCOUNTERED {
+                return PlatformError::ReparsePoint;
+            }
+            // SAFETY: RtlNtStatusToDosError is the documented conversion of the
+            // NTSTATUS captured immediately above; no other Win32 call runs first.
+            let code = unsafe { RtlNtStatusToDosError(status) };
+            let classified = PlatformError::from_windows_code(code, false);
+            match classified {
+                PlatformError::Io(_) => PlatformError::Io(std::io::Error::other(format!(
+                    "NtCreateFile path={path} RootDirectory=present ObjectName={object_name} \
+                     access=0x{access:08X} share=0x{share:08X} disposition=0x{disposition:08X} \
+                     options=0x{options:08X} attributes=0x{attributes:08X} \
+                     NTSTATUS=0x{status:08X} GetLastError={code} (os error {code})"
+                ))),
+                other => other,
+            }
+        }
+
         fn open_relative(
             parent: &File,
             name: &OsStr,
@@ -827,6 +926,11 @@ mod windows {
             directory: bool,
             disposition: u32,
         ) -> Result<File, PlatformError> {
+            Self::validate_component(name)?;
+            let object_name = name.to_string_lossy();
+            if !crate::relative_object_name_is_legal(&object_name) {
+                return Err(PlatformError::OutsideRoot);
+            }
             let mut name_wide = name.encode_wide().collect::<Vec<_>>();
             let name_bytes = name_wide
                 .len()
@@ -840,22 +944,25 @@ mod windows {
                 MaximumLength: name_bytes,
                 Buffer: name_wide.as_mut_ptr(),
             };
+            let object_attributes = OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE;
             let attributes = OBJECT_ATTRIBUTES {
                 Length: u32::try_from(mem::size_of::<OBJECT_ATTRIBUTES>()).unwrap_or(u32::MAX),
                 RootDirectory: parent.as_raw_handle() as HANDLE,
                 ObjectName: ptr::addr_of!(unicode),
-                Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+                Attributes: object_attributes,
                 SecurityDescriptor: ptr::null(),
                 SecurityQualityOfService: ptr::null(),
             };
             let mut status_block = IO_STATUS_BLOCK::default();
             let mut handle: HANDLE = ptr::null_mut();
-            let create_options = NT_FILE_OPEN_REPARSE_POINT
-                | FILE_OPEN_NO_RECALL
-                | FILE_SYNCHRONOUS_IO_NONALERT
-                | if directory { FILE_DIRECTORY_FILE } else { 0 };
+            let create_options = anchored_create_options(directory);
+            let file_attributes = if disposition == FILE_OPEN {
+                0
+            } else {
+                FILE_ATTRIBUTE_NORMAL
+            };
             // SAFETY: every pointer references live stack storage for the call;
-            // the child name is resolved relative to the already-open parent.
+            // ObjectName is a single relative leaf; RootDirectory is the parent.
             let status = unsafe {
                 NtCreateFile(
                     ptr::addr_of_mut!(handle),
@@ -863,7 +970,7 @@ mod windows {
                     ptr::addr_of!(attributes),
                     ptr::addr_of_mut!(status_block),
                     ptr::null(),
-                    FILE_ATTRIBUTE_NORMAL,
+                    file_attributes,
                     share_access,
                     disposition,
                     create_options,
@@ -872,16 +979,31 @@ mod windows {
                 )
             };
             if status < 0 {
-                if status == STATUS_REPARSE_POINT_ENCOUNTERED {
-                    return Err(PlatformError::ReparsePoint);
-                }
-                // SAFETY: converting an NTSTATUS returned by NtCreateFile is the
-                // documented way to expose a Win32 error.
-                let code = unsafe { RtlNtStatusToDosError(status) };
-                return Err(PlatformError::from_windows_code(code, false));
+                return Err(Self::ntcreatefile_error(
+                    &object_name,
+                    &object_name,
+                    desired_access | SYNCHRONIZE,
+                    share_access,
+                    disposition,
+                    create_options,
+                    object_attributes,
+                    status,
+                ));
             }
             if handle.is_null() {
-                return Err(PlatformError::Io(std::io::Error::last_os_error()));
+                let code = Self::last_win32_error_code().unwrap_or(u32::MAX);
+                return Err(Self::win32_api_error(
+                    "NtCreateFile",
+                    &object_name,
+                    "present",
+                    &object_name,
+                    desired_access | SYNCHRONIZE,
+                    share_access,
+                    disposition,
+                    create_options,
+                    object_attributes,
+                    code,
+                ));
             }
             // SAFETY: ownership of the successful NtCreateFile handle transfers
             // exactly once to File.
@@ -903,7 +1025,9 @@ mod windows {
             // handle that rejects FileAttributeTagInfo / FileIdInfo /
             // GetFileInformationByHandle with ERROR_INVALID_PARAMETER (87) on
             // Windows 11 26100. Open with backup semantics only. Child opens
-            // still use OBJ_DONT_REPARSE + reject_unsafe_handle.
+            // use a relative ObjectName, OBJ_DONT_REPARSE, FILE_OPEN_REPARSE_POINT,
+            // and reject_unsafe_handle. Directory CreateOptions never include
+            // FILE_OPEN_NO_RECALL (STATUS_INVALID_PARAMETER / 87).
             let root_handle = unsafe {
                 CreateFileW(
                     root_wide.as_ptr(),
@@ -916,7 +1040,19 @@ mod windows {
                 )
             };
             if root_handle == INVALID_HANDLE_VALUE {
-                return Err(Self::last_windows_error(false));
+                let code = Self::last_win32_error_code().unwrap_or(u32::MAX);
+                return Err(Self::win32_api_error(
+                    "CreateFileW",
+                    &root.display().to_string(),
+                    "null",
+                    "-",
+                    FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_NO_RECALL,
+                    0,
+                    code,
+                ));
             }
             // SAFETY: ownership of the CreateFileW handle transfers once.
             let mut current = unsafe { File::from_raw_handle(root_handle as _) };
@@ -2032,6 +2168,130 @@ mod windows {
                 .unwrap_or_else(|error| panic!("DOS temp should prepare: {error}"));
             assert_eq!(root, PathBuf::from(r"D:\"));
             assert!(crate::is_legal_win32_mount_point(&root.to_string_lossy()));
+        }
+
+        #[test]
+        fn github_runner_components_are_relative_object_names() {
+            for path in [
+                Path::new(r"D:\a\_temp\zemo-windows-qualification\zemo-windows-qualification-diag"),
+                Path::new(
+                    r"\\?\D:\a\_temp\zemo-windows-qualification\zemo-windows-qualification-diag",
+                ),
+            ] {
+                let (root, names) = WindowsPlatform::drive_root_and_components(path)
+                    .unwrap_or_else(|error| panic!("{path:?}: {error}"));
+                assert!(crate::is_legal_win32_mount_point(&root.to_string_lossy()));
+                for name in &names {
+                    assert!(
+                        crate::relative_object_name_is_legal(&name.to_string_lossy()),
+                        "ObjectName must be relative to RootDirectory, got {name:?}"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn directory_create_options_used_by_open_relative_are_legal() {
+            let directory = crate::anchored_create_options(true);
+            let file = crate::anchored_create_options(false);
+            assert!(crate::directory_create_options_are_legal(directory));
+            assert_eq!(directory & crate::FILE_OPEN_NO_RECALL, 0);
+            assert_eq!(file & crate::FILE_DIRECTORY_FILE, 0);
+            assert_eq!(
+                file & crate::FILE_OPEN_NO_RECALL,
+                crate::FILE_OPEN_NO_RECALL
+            );
+        }
+
+        #[test]
+        fn open_anchored_inspects_temp_child_directory_and_file_on_dos_and_verbatim() {
+            let temporary = tempfile::Builder::new()
+                .prefix("zemo-windows-qualification-")
+                .tempdir()
+                .unwrap_or_else(|error| panic!("temp root: {error}"));
+            let nested = temporary
+                .path()
+                .join("a")
+                .join("_temp")
+                .join("zemo-windows-qualification")
+                .join("zemo-windows-qualification-diag");
+            fs::create_dir_all(&nested).unwrap_or_else(|error| panic!("nested root: {error}"));
+            let child_dir = nested.join("child-dir");
+            fs::create_dir(&child_dir).unwrap_or_else(|error| panic!("child dir: {error}"));
+            let child_file = child_dir.join("child-file.txt");
+            fs::write(&child_file, b"anchored-identity")
+                .unwrap_or_else(|error| panic!("child file: {error}"));
+
+            let volume = WindowsPlatform
+                .inspect_volume(&nested)
+                .unwrap_or_else(|error| panic!("inspect_volume: {error}"));
+            assert!(volume.local);
+            assert!(
+                volume
+                    .filesystem_type
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case("NTFS")),
+                "expected NTFS, got {:?}",
+                volume.filesystem_type
+            );
+
+            let directory = WindowsPlatform::open_anchored(
+                &child_dir,
+                FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                true,
+            )
+            .unwrap_or_else(|error| panic!("open_anchored directory: {error}"));
+            let file = WindowsPlatform::open_anchored(
+                &child_file,
+                FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                false,
+            )
+            .unwrap_or_else(|error| panic!("open_anchored file: {error}"));
+            let (serial, file_id, links) =
+                WindowsPlatform::identity_from_handle(file.as_raw_handle() as HANDLE)
+                    .unwrap_or_else(|error| panic!("FileIdInfo: {error}"));
+            assert_ne!(serial, 0, "volume serial must be present");
+            assert_ne!(file_id, [0_u8; 16], "file id must be present");
+            assert_eq!(links, 1);
+            drop(directory);
+            drop(file);
+
+            let fingerprint = WindowsPlatform
+                .fingerprint(&child_file, true, MAX_EXECUTION_FINGERPRINT_BYTES)
+                .unwrap_or_else(|error| panic!("fingerprint: {error}"));
+            assert_eq!(fingerprint.native_identity.object_key.as_slice(), &file_id);
+
+            let verbatim = fs::canonicalize(&nested)
+                .unwrap_or_else(|error| panic!("canonicalize nested: {error}"));
+            assert!(
+                verbatim.to_string_lossy().starts_with(r"\\?\"),
+                "canonical path should be verbatim: {verbatim:?}"
+            );
+            WindowsPlatform
+                .inspect_volume(&verbatim)
+                .unwrap_or_else(|error| panic!("verbatim inspect_volume: {error}"));
+            WindowsPlatform::open_anchored(
+                &verbatim.join("child-dir").join("child-file.txt"),
+                FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                false,
+            )
+            .unwrap_or_else(|error| panic!("verbatim open_anchored file: {error}"));
+
+            let linked = child_dir.join("linked.txt");
+            if std::os::windows::fs::symlink_file(&child_file, &linked).is_ok() {
+                assert!(matches!(
+                    WindowsPlatform::open_anchored(
+                        &linked,
+                        FILE_READ_ATTRIBUTES,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        false,
+                    ),
+                    Err(PlatformError::ReparsePoint)
+                ));
+            }
         }
 
         #[test]

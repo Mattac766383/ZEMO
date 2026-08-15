@@ -73,3 +73,84 @@ fn prints_volume_path_identity_for_qualification_temp() {
         diagnostics.dos_root
     );
 }
+
+#[test]
+fn open_anchored_child_directory_and_file_on_runner_temp_forms() {
+    use platform::{MAX_EXECUTION_FINGERPRINT_BYTES, ReadOnlyPlatform};
+    use std::path::Path;
+
+    let nested = std::env::temp_dir()
+        .join("zemo-windows-qualification")
+        .join("zemo-windows-qualification-diag")
+        .join("open-anchored-child");
+    fs::create_dir_all(&nested).unwrap_or_else(|error| panic!("diag nested: {error}"));
+    let child_dir = nested.join("child-dir");
+    fs::create_dir_all(&child_dir).unwrap_or_else(|error| panic!("child dir: {error}"));
+    let child_file = child_dir.join("child-file.txt");
+    fs::write(&child_file, b"open-anchored-identity")
+        .unwrap_or_else(|error| panic!("child file: {error}"));
+
+    let volume = WindowsPlatform
+        .inspect_volume(&nested)
+        .unwrap_or_else(|error| panic!("inspect_volume: {error}"));
+    assert!(volume.local);
+    assert!(
+        volume
+            .filesystem_type
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("NTFS")),
+        "expected NTFS, got {:?}",
+        volume.filesystem_type
+    );
+
+    let fingerprint = WindowsPlatform
+        .fingerprint(&child_file, true, MAX_EXECUTION_FINGERPRINT_BYTES)
+        .unwrap_or_else(|error| panic!("open_anchored file fingerprint: {error}"));
+    assert_eq!(fingerprint.byte_size, 22);
+    assert_eq!(fingerprint.native_identity.object_key.len(), 16);
+    assert_ne!(
+        fingerprint.native_identity.object_key.as_slice(),
+        [0_u8; 16].as_slice()
+    );
+
+    let directory_volume = WindowsPlatform
+        .inspect_volume(&child_dir)
+        .unwrap_or_else(|error| panic!("open_anchored child directory: {error}"));
+    assert_eq!(directory_volume.stable_identifier, volume.stable_identifier);
+
+    let verbatim =
+        fs::canonicalize(&nested).unwrap_or_else(|error| panic!("canonicalize: {error}"));
+    assert!(
+        verbatim.to_string_lossy().contains(":\\")
+            || verbatim.to_string_lossy().starts_with(r"\\?\"),
+        "runner path should be DOS or verbatim: {verbatim:?}"
+    );
+    WindowsPlatform
+        .inspect_volume(&verbatim)
+        .unwrap_or_else(|error| panic!("verbatim inspect: {error}"));
+    WindowsPlatform
+        .fingerprint(
+            &verbatim.join("child-dir").join("child-file.txt"),
+            true,
+            MAX_EXECUTION_FINGERPRINT_BYTES,
+        )
+        .unwrap_or_else(|error| panic!("verbatim fingerprint: {error}"));
+
+    let dos_display = nested.display().to_string();
+    if !dos_display.starts_with(r"\\?\") {
+        WindowsPlatform
+            .inspect_volume(Path::new(&dos_display))
+            .unwrap_or_else(|error| panic!("DOS inspect: {error}"));
+    }
+
+    let linked = child_dir.join("linked.txt");
+    if std::os::windows::fs::symlink_file(&child_file, &linked).is_ok() {
+        assert!(
+            matches!(
+                WindowsPlatform.fingerprint(&linked, true, MAX_EXECUTION_FINGERPRINT_BYTES),
+                Err(platform::PlatformError::ReparsePoint)
+            ),
+            "reparse traversal must remain rejected"
+        );
+    }
+}

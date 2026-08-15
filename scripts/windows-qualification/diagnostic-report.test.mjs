@@ -53,7 +53,7 @@ test("workflow collects diagnostics after failures and still fails qualification
     join(scriptDirectory, "../../.github/workflows/zemo-windows-private-beta.yml"),
     "utf8",
   );
-  assert.match(yaml, /ZEMO_WINDOWS_DIAGNOSTIC_ONLY: "1"/);
+  assert.match(yaml, /ZEMO_WINDOWS_DIAGNOSTIC_ONLY: "0"/);
   assert.match(yaml, /continue-on-error: true/);
   assert.match(yaml, /windows-diagnostic-report\.txt/);
   assert.match(yaml, /windows-diagnostic-report\.json/);

@@ -631,6 +631,11 @@ fn postcondition_failure_enters_ambiguous_recovery_without_retry() {
         .unwrap_or_else(|error| panic!("recovery should classify the corruption: {error}"));
     assert_eq!(assessment.state, ExecutionRecoveryState::RecoveryAmbiguous);
     assert!(assessment.ambiguous >= 1);
+    let again = service
+        .recover_execution(approved.session.id)
+        .unwrap_or_else(|error| panic!("recovery must be idempotent: {error}"));
+    assert_eq!(again.state, ExecutionRecoveryState::RecoveryAmbiguous);
+    assert_eq!(dispatches.load(Ordering::SeqCst), 1);
     assert!(
         service
             .rollback_execution(approved.session.id, &mut |_| {})

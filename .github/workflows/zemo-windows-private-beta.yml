@@ -16,7 +16,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   ZEMO_DIST_TAG: "0.1.0-beta.6"
-  ZEMO_WINDOWS_DIAGNOSTIC_ONLY: "1"
+  ZEMO_WINDOWS_DIAGNOSTIC_ONLY: "0"
   LIBSQLITE3_FLAGS: "-DSQLCIPHER_OMIT_DLLMAIN"
 
 jobs:
@@ -28,7 +28,7 @@ jobs:
       apply_qualified: ${{ steps.decide.outputs.apply_qualified }}
       filesystem: ${{ steps.ntfs.outputs.filesystem }}
       qualification_status: ${{ steps.decide.outputs.qualification_status }}
-      diagnostic_only: "true"
+      diagnostic_only: "false"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -141,10 +141,10 @@ jobs:
           ZEMO_PINNED_MODEL_CACHE: ${{ runner.temp }}/zemo-pinned-models
         run: npm run windows:ci:download-granite
 
-      - name: Native Windows diagnostic harness
+      - name: Native Windows qualification harness
         if: always() && !cancelled()
         continue-on-error: true
-        run: npm run windows:diagnostic
+        run: npm run windows:qualification
 
       - name: Decide Apply enablement
         id: decide

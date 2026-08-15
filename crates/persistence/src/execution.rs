@@ -519,6 +519,7 @@ impl Database {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
     fn persist_execution_event_inner(
         &self,
         event: &OperationJournalEvent,

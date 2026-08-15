@@ -1,6 +1,6 @@
 use crate::{
     ApplicationError, ApplicationError::InvalidExecution, ApprovedExecutorClient,
-    ExecutorDispatchResult,
+    ApprovedExecutorSession, ExecutorDispatchResult,
 };
 use domain::{
     ApprovedExecutionPlan, ExecutionConsent, ExecutionConsentState, ExecutionDetail,
@@ -31,7 +31,10 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     path::{Component, Path, PathBuf},
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
@@ -48,6 +51,7 @@ pub struct ExecutionApplicationService {
     policy: ExecutionSafetyPolicy,
     consent_authority: ExecutionConsentAuthorityKey,
     journal_diagnostics: RwLock<Vec<JournalDiagnostic>>,
+    recovery_in_progress: AtomicBool,
 }
 
 impl std::fmt::Debug for ExecutionApplicationService {
@@ -155,8 +159,49 @@ struct JournalCursor {
     previous: Option<[u8; 32]>,
 }
 
+struct RecoveryGuard<'a>(&'a AtomicBool);
+
+impl Drop for RecoveryGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+impl RecoveryGuard<'_> {
+    fn try_enter(flag: &AtomicBool) -> Option<RecoveryGuard<'_>> {
+        if flag.swap(true, Ordering::SeqCst) {
+            None
+        } else {
+            Some(RecoveryGuard(flag))
+        }
+    }
+}
+
 impl ExecutionApplicationService {
     pub fn new(
+        database: Arc<Database>,
+        reader: Arc<dyn ReadOnlyPlatform>,
+        executor_client: Arc<dyn ApprovedExecutorClient>,
+        journal: Arc<dyn DurableJournal>,
+        gate: ApplyGate,
+        policy: ExecutionSafetyPolicy,
+        consent_authority: ExecutionConsentAuthorityKey,
+    ) -> Result<Self, ApplicationError> {
+        let service = Self::construct(
+            database,
+            reader,
+            executor_client,
+            journal,
+            gate,
+            policy,
+            consent_authority,
+        )?;
+        service.reconcile_interrupted_executions()?;
+        Ok(service)
+    }
+
+    #[inline(never)]
+    fn construct(
         database: Arc<Database>,
         reader: Arc<dyn ReadOnlyPlatform>,
         executor_client: Arc<dyn ApprovedExecutorClient>,
@@ -175,6 +220,7 @@ impl ExecutionApplicationService {
             policy,
             consent_authority,
             journal_diagnostics: RwLock::new(initial_diagnostics),
+            recovery_in_progress: AtomicBool::new(false),
         };
         for execution_id in service.database.execution_ids_with_journal()? {
             match service.database.validate_execution_journal(execution_id) {
@@ -219,15 +265,20 @@ impl ExecutionApplicationService {
                 });
             }
         }
-        if !service.journal_is_locked() {
-            service
-                .database
-                .mark_interrupted_executions_for_recovery()?;
-            for execution_id in service.database.recovery_execution_ids()? {
-                let _ = service.recover_execution(execution_id);
-            }
-        }
         Ok(service)
+    }
+
+    #[inline(never)]
+    fn reconcile_interrupted_executions(&self) -> Result<(), ApplicationError> {
+        if self.journal_is_locked() {
+            return Ok(());
+        }
+        self.database.mark_interrupted_executions_for_recovery()?;
+        for execution_id in self.database.recovery_execution_ids()? {
+            // Observation only: never re-enters start_execution / Apply.
+            let _ = self.recover_execution(execution_id);
+        }
+        Ok(())
     }
 
     pub fn system_status(&self) -> Result<ExecutionSystemStatus, ApplicationError> {
@@ -748,6 +799,7 @@ impl ExecutionApplicationService {
     }
 
     #[doc(hidden)]
+    #[inline(never)]
     pub fn start_execution_at(
         &self,
         execution_id: ExecutionId,
@@ -893,230 +945,23 @@ impl ExecutionApplicationService {
                     .map_err(Into::into);
             }
 
-            let current = match self.revalidate_operation(&root, &operation) {
-                Ok(value) => value,
-                Err(error) => {
-                    self.fail_operation(
-                        &operation,
-                        ExecutionFailureCategory::CriticalExecutionFailure,
-                        "execution_drift",
-                        &error.to_string(),
-                        &mut cursor,
-                    )?;
-                    return self
-                        .database
-                        .execution_detail(execution_id)
-                        .map_err(Into::into);
-                }
-            };
-            self.persist_event(
+            match self.apply_scheduled_operation(
                 execution_id,
-                Some(operation.id),
-                JournalEventKind::PreconditionsValidated,
-                json!({
-                    "event": "preconditions_validated",
-                    "operation_id": operation.id,
-                    "source": operation.source_relative_path,
-                    "destination": operation.destination_relative_path,
-                    "preconditions": operation.preconditions,
-                    "expected_source_hash": operation.expected_source_hash,
-                    "expected_source_size": operation.expected_source_size,
-                    "expected_source_modified_at": operation.expected_source_modified_at,
-                    "live_fingerprint": operation.live_fingerprint,
-                }),
-                Some(ExecutionOperationStatus::PreflightOk),
-                Some(OrganizationExecutionStatus::Running),
-                None,
-                None,
-                None,
+                &root,
+                &operation,
+                &mut executor_session,
                 &mut cursor,
-            )?;
-            let prepared =
-                executor_session.prepare_operation(operation.id, OperationDirection::Forward)?;
-            let intent_binding = self.persist_request_intent(
-                JournalEventKind::IntentDurable,
-                json!({
-                    "event": "intent_durable",
-                    "operation_id": operation.id,
-                    "kind": operation.kind,
-                    "source": operation.source_relative_path,
-                    "destination": operation.destination_relative_path,
-                    "rollback_destination": operation.source_relative_path,
-                    "original_source": operation.original_source_relative_path,
-                    "expected_source_state": current,
-                    "directory_existed_before": operation.directory_existed_before,
-                }),
-                &prepared,
-                executor_session.identity(),
-                &mut cursor,
-            )?;
-
-            let dispatch = executor_session.dispatch_prepared(prepared.clone(), intent_binding);
-            let dispatch = match dispatch {
-                Ok(dispatch) => dispatch,
-                Err(error) => {
-                    self.database.transition_executor_request_proof(
-                        &prepared.request_id,
-                        ExecutorRequestState::RecoveryRequired,
-                        &execution_now_iso(),
-                    )?;
-                    self.mark_executor_recovery_required(
-                        &operation,
-                        "executor_response_ambiguous",
-                        &error.to_string(),
-                        None,
-                        &mut cursor,
-                    )?;
-                    return Err(ApplicationError::ExecutionRecoveryRequired);
-                }
-            };
-            self.record_executor_response(&prepared, &dispatch)?;
-            let executor_audit = match dispatch.outcome {
-                ExecutorOutcome::Success { audit, .. } => audit,
-                ExecutorOutcome::ProvenNotApplied {
-                    code,
-                    detail,
-                    audit,
-                } => {
-                    if let Err(error) = self.revalidate_operation(&root, &operation) {
-                        self.database.transition_executor_request_proof(
-                            &prepared.request_id,
-                            ExecutorRequestState::RecoveryRequired,
-                            &execution_now_iso(),
-                        )?;
-                        self.mark_executor_recovery_required(
-                            &operation,
-                            "proven_not_applied_contradicted",
-                            &error.to_string(),
-                            Some(&audit),
-                            &mut cursor,
-                        )?;
-                        return Err(ApplicationError::ExecutionRecoveryRequired);
-                    }
-                    self.database.transition_executor_request_proof(
-                        &prepared.request_id,
-                        ExecutorRequestState::ProvenNotStarted,
-                        &execution_now_iso(),
-                    )?;
-                    self.fail_operation_with_executor_audit(
-                        &operation,
-                        ExecutionFailureCategory::CriticalExecutionFailure,
-                        &code,
-                        &detail,
-                        &audit,
-                        &mut cursor,
-                    )?;
-                    return self
-                        .database
-                        .execution_detail(execution_id)
-                        .map_err(Into::into);
-                }
-                ExecutorOutcome::ProtocolRefusal {
-                    refusal: ProtocolRefusal { code, detail, .. },
-                } => {
-                    if let Err(error) = self.revalidate_operation(&root, &operation) {
-                        self.mark_executor_recovery_required(
-                            &operation,
-                            "proven_not_applied_contradicted",
-                            &error.to_string(),
-                            None,
-                            &mut cursor,
-                        )?;
-                        return Err(ApplicationError::ExecutionRecoveryRequired);
-                    }
-                    self.database.transition_executor_request_proof(
-                        &prepared.request_id,
-                        ExecutorRequestState::ProvenNotStarted,
-                        &execution_now_iso(),
-                    )?;
-                    self.fail_operation(
-                        &operation,
-                        ExecutionFailureCategory::CriticalExecutionFailure,
-                        &code,
-                        &detail,
-                        &mut cursor,
-                    )?;
-                    return self
-                        .database
-                        .execution_detail(execution_id)
-                        .map_err(Into::into);
-                }
-                ExecutorOutcome::RecoveryRequired {
-                    code,
-                    detail,
-                    audit,
-                } => {
-                    self.mark_executor_recovery_required(
-                        &operation,
-                        &code,
-                        &detail,
-                        Some(&audit),
-                        &mut cursor,
-                    )?;
-                    return Err(ApplicationError::ExecutionRecoveryRequired);
-                }
-            };
-            let post = match self.verify_postcondition(&root, &operation) {
-                Ok(value) => value,
-                Err(error) => {
-                    self.database.transition_executor_request_proof(
-                        &prepared.request_id,
-                        ExecutorRequestState::RecoveryRequired,
-                        &execution_now_iso(),
-                    )?;
-                    self.persist_event(
-                        execution_id,
-                        Some(operation.id),
-                        JournalEventKind::StepFailed,
-                        json!({
-                            "event": "postcondition_failed",
-                            "operation_id": operation.id,
-                            "error": error.to_string(),
-                            "executor_audit": executor_audit,
-                        }),
-                        // The mutation returned success but its postcondition
-                        // is unproven. Recovery, not a terminal failure state,
-                        // must classify the observed filesystem state.
-                        Some(ExecutionOperationStatus::Running),
-                        Some(OrganizationExecutionStatus::RecoveryRequired),
-                        None,
-                        Some("postcondition_failed"),
-                        Some(&error.to_string()),
-                        &mut cursor,
-                    )?;
-                    return Err(ApplicationError::ExecutionRecoveryRequired);
-                }
-            };
-            self.persist_event_with_request_proof(
-                execution_id,
-                Some(operation.id),
-                JournalEventKind::AppliedObserved,
-                json!({
-                    "event": "applied_observed",
-                    "operation_id": operation.id,
-                    "destination": operation.destination_relative_path,
-                    "postcondition": "verified",
-                    "executor_audit": executor_audit,
-                }),
-                Some(ExecutionOperationStatus::Applied),
-                Some(OrganizationExecutionStatus::Running),
-                post.as_ref(),
-                None,
-                None,
-                &prepared.request_id,
-                ExecutorRequestState::ProvenApplied,
-                &mut cursor,
-            )?;
-            applied.insert(operation.id);
-            if operation.kind == ExecutionOperationKind::InternalStage {
-                cycle_group_started = true;
-            }
-            let current_detail = self.database.execution_detail(execution_id)?;
-            on_progress(progress_from_detail(
-                &current_detail,
                 total,
-                Some(operation.destination_relative_path.clone()),
-            ));
+                on_progress,
+            )? {
+                ApplyScheduledOutcome::Applied => {
+                    applied.insert(operation.id);
+                    if operation.kind == ExecutionOperationKind::InternalStage {
+                        cycle_group_started = true;
+                    }
+                }
+                ApplyScheduledOutcome::Terminal(detail) => return Ok(*detail),
+            }
         }
 
         let completed = self.database.execution_detail(execution_id)?;
@@ -1135,6 +980,244 @@ impl ExecutionApplicationService {
         let completed = self.database.execution_detail(execution_id)?;
         on_progress(progress_from_detail(&completed, total, None));
         Ok(completed)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
+    fn apply_scheduled_operation(
+        &self,
+        execution_id: ExecutionId,
+        root: &Path,
+        operation: &ExecutionOperation,
+        executor_session: &mut Box<dyn ApprovedExecutorSession>,
+        cursor: &mut JournalCursor,
+        total: u64,
+        on_progress: &mut dyn FnMut(ExecutionProgress),
+    ) -> Result<ApplyScheduledOutcome, ApplicationError> {
+        let current = match self.revalidate_operation(root, operation) {
+            Ok(value) => value,
+            Err(error) => {
+                self.fail_operation(
+                    operation,
+                    ExecutionFailureCategory::CriticalExecutionFailure,
+                    "execution_drift",
+                    &error.to_string(),
+                    cursor,
+                )?;
+                return self
+                    .database
+                    .execution_detail(execution_id)
+                    .map(|detail| ApplyScheduledOutcome::Terminal(Box::new(detail)))
+                    .map_err(Into::into);
+            }
+        };
+        self.persist_event(
+            execution_id,
+            Some(operation.id),
+            JournalEventKind::PreconditionsValidated,
+            json!({
+                "event": "preconditions_validated",
+                "operation_id": operation.id,
+                "source": operation.source_relative_path,
+                "destination": operation.destination_relative_path,
+                "preconditions": operation.preconditions,
+                "expected_source_hash": operation.expected_source_hash,
+                "expected_source_size": operation.expected_source_size,
+                "expected_source_modified_at": operation.expected_source_modified_at,
+                "live_fingerprint": operation.live_fingerprint,
+            }),
+            Some(ExecutionOperationStatus::PreflightOk),
+            Some(OrganizationExecutionStatus::Running),
+            None,
+            None,
+            None,
+            cursor,
+        )?;
+        let prepared =
+            executor_session.prepare_operation(operation.id, OperationDirection::Forward)?;
+        let intent_binding = self.persist_request_intent(
+            JournalEventKind::IntentDurable,
+            json!({
+                "event": "intent_durable",
+                "operation_id": operation.id,
+                "kind": operation.kind,
+                "source": operation.source_relative_path,
+                "destination": operation.destination_relative_path,
+                "rollback_destination": operation.source_relative_path,
+                "original_source": operation.original_source_relative_path,
+                "expected_source_state": current,
+                "directory_existed_before": operation.directory_existed_before,
+            }),
+            &prepared,
+            executor_session.identity(),
+            cursor,
+        )?;
+
+        let dispatch = executor_session.dispatch_prepared(prepared.clone(), intent_binding);
+        let dispatch = match dispatch {
+            Ok(dispatch) => dispatch,
+            Err(error) => {
+                self.database.transition_executor_request_proof(
+                    &prepared.request_id,
+                    ExecutorRequestState::RecoveryRequired,
+                    &execution_now_iso(),
+                )?;
+                self.mark_executor_recovery_required(
+                    operation,
+                    "executor_response_ambiguous",
+                    &error.to_string(),
+                    None,
+                    cursor,
+                )?;
+                return Err(ApplicationError::ExecutionRecoveryRequired);
+            }
+        };
+        self.record_executor_response(&prepared, &dispatch)?;
+        let executor_audit = match dispatch.outcome {
+            ExecutorOutcome::Success { audit, .. } => audit,
+            ExecutorOutcome::ProvenNotApplied {
+                code,
+                detail,
+                audit,
+            } => {
+                if let Err(error) = self.revalidate_operation(root, operation) {
+                    self.database.transition_executor_request_proof(
+                        &prepared.request_id,
+                        ExecutorRequestState::RecoveryRequired,
+                        &execution_now_iso(),
+                    )?;
+                    self.mark_executor_recovery_required(
+                        operation,
+                        "proven_not_applied_contradicted",
+                        &error.to_string(),
+                        Some(&audit),
+                        cursor,
+                    )?;
+                    return Err(ApplicationError::ExecutionRecoveryRequired);
+                }
+                self.database.transition_executor_request_proof(
+                    &prepared.request_id,
+                    ExecutorRequestState::ProvenNotStarted,
+                    &execution_now_iso(),
+                )?;
+                self.fail_operation_with_executor_audit(
+                    operation,
+                    ExecutionFailureCategory::CriticalExecutionFailure,
+                    &code,
+                    &detail,
+                    &audit,
+                    cursor,
+                )?;
+                return self
+                    .database
+                    .execution_detail(execution_id)
+                    .map(|detail| ApplyScheduledOutcome::Terminal(Box::new(detail)))
+                    .map_err(Into::into);
+            }
+            ExecutorOutcome::ProtocolRefusal {
+                refusal: ProtocolRefusal { code, detail, .. },
+            } => {
+                if let Err(error) = self.revalidate_operation(root, operation) {
+                    self.mark_executor_recovery_required(
+                        operation,
+                        "proven_not_applied_contradicted",
+                        &error.to_string(),
+                        None,
+                        cursor,
+                    )?;
+                    return Err(ApplicationError::ExecutionRecoveryRequired);
+                }
+                self.database.transition_executor_request_proof(
+                    &prepared.request_id,
+                    ExecutorRequestState::ProvenNotStarted,
+                    &execution_now_iso(),
+                )?;
+                self.fail_operation(
+                    operation,
+                    ExecutionFailureCategory::CriticalExecutionFailure,
+                    &code,
+                    &detail,
+                    cursor,
+                )?;
+                return self
+                    .database
+                    .execution_detail(execution_id)
+                    .map(|detail| ApplyScheduledOutcome::Terminal(Box::new(detail)))
+                    .map_err(Into::into);
+            }
+            ExecutorOutcome::RecoveryRequired {
+                code,
+                detail,
+                audit,
+            } => {
+                self.mark_executor_recovery_required(
+                    operation,
+                    &code,
+                    &detail,
+                    Some(&audit),
+                    cursor,
+                )?;
+                return Err(ApplicationError::ExecutionRecoveryRequired);
+            }
+        };
+        let post = match self.verify_postcondition(root, operation) {
+            Ok(value) => value,
+            Err(error) => {
+                self.database.transition_executor_request_proof(
+                    &prepared.request_id,
+                    ExecutorRequestState::RecoveryRequired,
+                    &execution_now_iso(),
+                )?;
+                self.persist_event(
+                    execution_id,
+                    Some(operation.id),
+                    JournalEventKind::StepFailed,
+                    json!({
+                        "event": "postcondition_failed",
+                        "operation_id": operation.id,
+                        "error": error.to_string(),
+                        "executor_audit": executor_audit,
+                    }),
+                    // The mutation returned success but its postcondition
+                    // is unproven. Recovery, not a terminal failure state,
+                    // must classify the observed filesystem state.
+                    Some(ExecutionOperationStatus::Running),
+                    Some(OrganizationExecutionStatus::RecoveryRequired),
+                    None,
+                    Some("postcondition_failed"),
+                    Some(&error.to_string()),
+                    cursor,
+                )?;
+                return Err(ApplicationError::ExecutionRecoveryRequired);
+            }
+        };
+        self.persist_event_with_request_proof(
+            execution_id,
+            Some(operation.id),
+            JournalEventKind::AppliedObserved,
+            json!({
+                "event": "applied_observed",
+                "operation_id": operation.id,
+                "destination": operation.destination_relative_path,
+                "postcondition": "verified",
+                "executor_audit": executor_audit,
+            }),
+            Some(ExecutionOperationStatus::Applied),
+            Some(OrganizationExecutionStatus::Running),
+            post.as_ref(),
+            None,
+            None,
+            &prepared.request_id,
+            ExecutorRequestState::ProvenApplied,
+            cursor,
+        )?;
+        let current_detail = self.database.execution_detail(execution_id)?;
+        on_progress(progress_from_detail(
+            &current_detail,
+            total,
+            Some(operation.destination_relative_path.clone()),
+        ));
+        Ok(ApplyScheduledOutcome::Applied)
     }
 
     pub fn pause_execution(&self, execution_id: ExecutionId) -> Result<bool, ApplicationError> {
@@ -1282,10 +1365,13 @@ impl ExecutionApplicationService {
         Ok(fingerprint)
     }
 
+    #[inline(never)]
     pub fn recover_execution(
         &self,
         execution_id: ExecutionId,
     ) -> Result<domain::RecoveryAssessment, ApplicationError> {
+        let _guard = RecoveryGuard::try_enter(&self.recovery_in_progress)
+            .ok_or(ApplicationError::ExecutionAlreadyActive)?;
         self.require_mutations_unlocked()?;
         let detail = self.database.execution_detail(execution_id)?;
         if !matches!(
@@ -1319,275 +1405,19 @@ impl ExecutionApplicationService {
                 .get(&request.operation_id)
                 .copied()
                 .ok_or(ApplicationError::InvalidExecution)?;
-            let item = operation.destination_relative_path.clone();
-            let binding_error =
-                executor_request_binding_error(request, &executor_sessions, &events);
-            if let Some(reason) = binding_error {
-                self.persist_event_with_request_proof(
-                    execution_id,
-                    Some(operation.id),
-                    JournalEventKind::Conflict,
-                    json!({
-                        "event": "recovery_observed",
-                        "operation_id": operation.id,
-                        "direction": request.direction,
-                        "observation": "ambiguous",
-                        "reason": reason,
-                        "request_id": request.request_id,
-                    }),
-                    None,
-                    Some(OrganizationExecutionStatus::RecoveryAmbiguous),
-                    None,
-                    Some("executor_request_binding_invalid"),
-                    Some(&reason),
-                    &request.request_id,
-                    ExecutorRequestState::Ambiguous,
-                    &mut cursor,
-                )?;
-                ambiguous_items.push(domain::RecoveryItem {
-                    operation_id: operation.id,
-                    direction: request.direction,
-                    item,
-                    reason: Some(reason),
-                });
-                continue;
-            }
-            let operation_interrupted = matches!(
-                (operation.status, request.direction),
-                (
-                    ExecutionOperationStatus::Running,
-                    ExecutorRequestDirection::Forward
-                ) | (
-                    ExecutionOperationStatus::RollingBack,
-                    ExecutorRequestDirection::Rollback
-                )
-            );
-            let interrupted_request = operation_interrupted
-                || matches!(
-                    request.state,
-                    ExecutorRequestState::IntentDurable
-                        | ExecutorRequestState::AcknowledgedSuccess
-                        | ExecutorRequestState::RecoveryRequired
-                        | ExecutorRequestState::Ambiguous
-                )
-                || request_has_recovery_observation(&events, &request.request_id);
-            if !interrupted_request {
-                continue;
-            }
-
-            match request.state {
-                ExecutorRequestState::ProvenNotApplied | ExecutorRequestState::ProvenNotStarted
-                    if !operation_interrupted =>
-                {
-                    verified_not_started_items.push(domain::RecoveryItem {
-                        operation_id: operation.id,
-                        direction: request.direction,
-                        item,
-                        reason: Some("Exact executor request was proven not applied.".to_owned()),
-                    });
-                }
-                ExecutorRequestState::ProvenApplied if !operation_interrupted => {
-                    verified_applied_items.push(domain::RecoveryItem {
-                        operation_id: operation.id,
-                        direction: request.direction,
-                        item,
-                        reason: Some(
-                            "Authenticated journal and postcondition proof recorded.".to_owned(),
-                        ),
-                    });
-                }
-                ExecutorRequestState::Ambiguous => {
-                    ambiguous_items.push(domain::RecoveryItem {
-                        operation_id: operation.id,
-                        direction: request.direction,
-                        item,
-                        reason: Some("Executor request remains ambiguous.".to_owned()),
-                    });
-                }
-                ExecutorRequestState::IntentDurable
-                | ExecutorRequestState::AcknowledgedSuccess
-                | ExecutorRequestState::RecoveryRequired
-                | ExecutorRequestState::ProvenNotApplied
-                | ExecutorRequestState::ProvenNotStarted
-                | ExecutorRequestState::ProvenApplied => {
-                    let rollback = request.direction == ExecutorRequestDirection::Rollback;
-                    let observation = if rollback {
-                        self.observe_rollback_recovery(&root, operation)?
-                    } else {
-                        self.observe_recovery(&root, operation)?
-                    };
-                    match observation {
-                        RecoveryObservation::NotStarted => {
-                            if request.state == ExecutorRequestState::ProvenApplied {
-                                let reason =
-                                    "Filesystem reality contradicts the stored applied proof."
-                                        .to_owned();
-                                self.persist_event_with_request_proof(
-                                    execution_id,
-                                    Some(operation.id),
-                                    JournalEventKind::Conflict,
-                                    json!({
-                                        "event": "recovery_observed",
-                                        "operation_id": operation.id,
-                                        "direction": request.direction,
-                                        "observation": "ambiguous",
-                                        "reason": reason,
-                                        "request_id": request.request_id,
-                                    }),
-                                    None,
-                                    Some(OrganizationExecutionStatus::RecoveryAmbiguous),
-                                    None,
-                                    Some("recovery_proof_contradicted"),
-                                    Some(&reason),
-                                    &request.request_id,
-                                    ExecutorRequestState::Ambiguous,
-                                    &mut cursor,
-                                )?;
-                                ambiguous_items.push(domain::RecoveryItem {
-                                    operation_id: operation.id,
-                                    direction: request.direction,
-                                    item,
-                                    reason: Some(reason),
-                                });
-                                continue;
-                            }
-                            let reason =
-                                "Exact identity and both paths prove mutation did not start."
-                                    .to_owned();
-                            self.persist_event_with_request_proof(
-                                execution_id,
-                                Some(operation.id),
-                                JournalEventKind::Conflict,
-                                json!({
-                                    "event": "recovery_observed",
-                                    "operation_id": operation.id,
-                                    "direction": request.direction,
-                                    "observation": "not_started",
-                                    "request_id": request.request_id,
-                                }),
-                                Some(if rollback {
-                                    ExecutionOperationStatus::Applied
-                                } else {
-                                    ExecutionOperationStatus::PreflightOk
-                                }),
-                                Some(OrganizationExecutionStatus::RecoveryRequired),
-                                None,
-                                None,
-                                None,
-                                &request.request_id,
-                                ExecutorRequestState::ProvenNotStarted,
-                                &mut cursor,
-                            )?;
-                            verified_not_started_items.push(domain::RecoveryItem {
-                                operation_id: operation.id,
-                                direction: request.direction,
-                                item,
-                                reason: Some(reason),
-                            });
-                        }
-                        RecoveryObservation::Applied(fingerprint) => {
-                            if matches!(
-                                request.state,
-                                ExecutorRequestState::ProvenNotApplied
-                                    | ExecutorRequestState::ProvenNotStarted
-                            ) {
-                                let reason =
-                                    "Filesystem reality contradicts the stored not-applied proof."
-                                        .to_owned();
-                                self.persist_event_with_request_proof(
-                                    execution_id,
-                                    Some(operation.id),
-                                    JournalEventKind::Conflict,
-                                    json!({
-                                        "event": "recovery_observed",
-                                        "operation_id": operation.id,
-                                        "direction": request.direction,
-                                        "observation": "ambiguous",
-                                        "reason": reason,
-                                        "request_id": request.request_id,
-                                    }),
-                                    None,
-                                    Some(OrganizationExecutionStatus::RecoveryAmbiguous),
-                                    None,
-                                    Some("recovery_proof_contradicted"),
-                                    Some(&reason),
-                                    &request.request_id,
-                                    ExecutorRequestState::Ambiguous,
-                                    &mut cursor,
-                                )?;
-                                ambiguous_items.push(domain::RecoveryItem {
-                                    operation_id: operation.id,
-                                    direction: request.direction,
-                                    item,
-                                    reason: Some(reason),
-                                });
-                                continue;
-                            }
-                            let reason =
-                                "Exact native identity, metadata, and content prove mutation applied."
-                                    .to_owned();
-                            self.persist_event_with_request_proof(
-                                execution_id,
-                                Some(operation.id),
-                                JournalEventKind::AppliedObserved,
-                                json!({
-                                    "event": "recovery_observed",
-                                    "operation_id": operation.id,
-                                    "direction": request.direction,
-                                    "observation": "applied",
-                                    "request_id": request.request_id,
-                                }),
-                                Some(if rollback {
-                                    ExecutionOperationStatus::RolledBack
-                                } else {
-                                    ExecutionOperationStatus::Recovered
-                                }),
-                                Some(OrganizationExecutionStatus::RecoveryRequired),
-                                (!rollback).then_some(fingerprint.as_deref()).flatten(),
-                                None,
-                                None,
-                                &request.request_id,
-                                ExecutorRequestState::ProvenApplied,
-                                &mut cursor,
-                            )?;
-                            verified_applied_items.push(domain::RecoveryItem {
-                                operation_id: operation.id,
-                                direction: request.direction,
-                                item,
-                                reason: Some(reason),
-                            });
-                        }
-                        RecoveryObservation::Ambiguous(reason) => {
-                            self.persist_event_with_request_proof(
-                                execution_id,
-                                Some(operation.id),
-                                JournalEventKind::Conflict,
-                                json!({
-                                    "event": "recovery_observed",
-                                    "operation_id": operation.id,
-                                    "direction": request.direction,
-                                    "observation": "ambiguous",
-                                    "reason": reason,
-                                    "request_id": request.request_id,
-                                }),
-                                None,
-                                Some(OrganizationExecutionStatus::RecoveryAmbiguous),
-                                None,
-                                Some("ambiguous_recovery"),
-                                Some(&reason),
-                                &request.request_id,
-                                ExecutorRequestState::Ambiguous,
-                                &mut cursor,
-                            )?;
-                            ambiguous_items.push(domain::RecoveryItem {
-                                operation_id: operation.id,
-                                direction: request.direction,
-                                item,
-                                reason: Some(reason),
-                            });
-                        }
-                    }
-                }
+            match self.reconcile_one_interrupted_request(
+                execution_id,
+                &root,
+                request,
+                operation,
+                &executor_sessions,
+                &events,
+                &mut cursor,
+            )? {
+                RecoveredRequestClass::Skip => {}
+                RecoveredRequestClass::Applied(item) => verified_applied_items.push(item),
+                RecoveredRequestClass::NotStarted(item) => verified_not_started_items.push(item),
+                RecoveredRequestClass::Ambiguous(item) => ambiguous_items.push(item),
             }
         }
 
@@ -1709,6 +1539,287 @@ impl ExecutionApplicationService {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
+    fn reconcile_one_interrupted_request(
+        &self,
+        execution_id: ExecutionId,
+        root: &Path,
+        request: &domain::ExecutorRequestFact,
+        operation: &ExecutionOperation,
+        executor_sessions: &[domain::ExecutorSessionFact],
+        events: &[OperationJournalEvent],
+        cursor: &mut JournalCursor,
+    ) -> Result<RecoveredRequestClass, ApplicationError> {
+        let item = operation.destination_relative_path.clone();
+        if let Some(reason) = executor_request_binding_error(request, executor_sessions, events) {
+            self.persist_event_with_request_proof(
+                execution_id,
+                Some(operation.id),
+                JournalEventKind::Conflict,
+                json!({
+                    "event": "recovery_observed",
+                    "operation_id": operation.id,
+                    "direction": request.direction,
+                    "observation": "ambiguous",
+                    "reason": reason,
+                    "request_id": request.request_id,
+                }),
+                None,
+                Some(OrganizationExecutionStatus::RecoveryAmbiguous),
+                None,
+                Some("executor_request_binding_invalid"),
+                Some(&reason),
+                &request.request_id,
+                ExecutorRequestState::Ambiguous,
+                cursor,
+            )?;
+            return Ok(RecoveredRequestClass::Ambiguous(domain::RecoveryItem {
+                operation_id: operation.id,
+                direction: request.direction,
+                item,
+                reason: Some(reason),
+            }));
+        }
+        let operation_interrupted = matches!(
+            (operation.status, request.direction),
+            (
+                ExecutionOperationStatus::Running,
+                ExecutorRequestDirection::Forward
+            ) | (
+                ExecutionOperationStatus::RollingBack,
+                ExecutorRequestDirection::Rollback
+            )
+        );
+        let interrupted_request = operation_interrupted
+            || matches!(
+                request.state,
+                ExecutorRequestState::IntentDurable
+                    | ExecutorRequestState::AcknowledgedSuccess
+                    | ExecutorRequestState::RecoveryRequired
+                    | ExecutorRequestState::Ambiguous
+            )
+            || request_has_recovery_observation(events, &request.request_id);
+        if !interrupted_request {
+            return Ok(RecoveredRequestClass::Skip);
+        }
+
+        Ok(match request.state {
+            ExecutorRequestState::ProvenNotApplied | ExecutorRequestState::ProvenNotStarted
+                if !operation_interrupted =>
+            {
+                RecoveredRequestClass::NotStarted(domain::RecoveryItem {
+                    operation_id: operation.id,
+                    direction: request.direction,
+                    item,
+                    reason: Some("Exact executor request was proven not applied.".to_owned()),
+                })
+            }
+            ExecutorRequestState::ProvenApplied if !operation_interrupted => {
+                RecoveredRequestClass::Applied(domain::RecoveryItem {
+                    operation_id: operation.id,
+                    direction: request.direction,
+                    item,
+                    reason: Some(
+                        "Authenticated journal and postcondition proof recorded.".to_owned(),
+                    ),
+                })
+            }
+            ExecutorRequestState::Ambiguous => {
+                RecoveredRequestClass::Ambiguous(domain::RecoveryItem {
+                    operation_id: operation.id,
+                    direction: request.direction,
+                    item,
+                    reason: Some("Executor request remains ambiguous.".to_owned()),
+                })
+            }
+            ExecutorRequestState::IntentDurable
+            | ExecutorRequestState::AcknowledgedSuccess
+            | ExecutorRequestState::RecoveryRequired
+            | ExecutorRequestState::ProvenNotApplied
+            | ExecutorRequestState::ProvenNotStarted
+            | ExecutorRequestState::ProvenApplied => {
+                let rollback = request.direction == ExecutorRequestDirection::Rollback;
+                let observation = if rollback {
+                    self.observe_rollback_recovery(root, operation)?
+                } else {
+                    self.observe_recovery(root, operation)?
+                };
+                match observation {
+                    RecoveryObservation::NotStarted => {
+                        if request.state == ExecutorRequestState::ProvenApplied {
+                            let reason = "Filesystem reality contradicts the stored applied proof."
+                                .to_owned();
+                            self.persist_event_with_request_proof(
+                                execution_id,
+                                Some(operation.id),
+                                JournalEventKind::Conflict,
+                                json!({
+                                    "event": "recovery_observed",
+                                    "operation_id": operation.id,
+                                    "direction": request.direction,
+                                    "observation": "ambiguous",
+                                    "reason": reason,
+                                    "request_id": request.request_id,
+                                }),
+                                None,
+                                Some(OrganizationExecutionStatus::RecoveryAmbiguous),
+                                None,
+                                Some("recovery_proof_contradicted"),
+                                Some(&reason),
+                                &request.request_id,
+                                ExecutorRequestState::Ambiguous,
+                                cursor,
+                            )?;
+                            RecoveredRequestClass::Ambiguous(domain::RecoveryItem {
+                                operation_id: operation.id,
+                                direction: request.direction,
+                                item,
+                                reason: Some(reason),
+                            })
+                        } else {
+                            let reason =
+                                "Exact identity and both paths prove mutation did not start."
+                                    .to_owned();
+                            self.persist_event_with_request_proof(
+                                execution_id,
+                                Some(operation.id),
+                                JournalEventKind::Conflict,
+                                json!({
+                                    "event": "recovery_observed",
+                                    "operation_id": operation.id,
+                                    "direction": request.direction,
+                                    "observation": "not_started",
+                                    "request_id": request.request_id,
+                                }),
+                                Some(if rollback {
+                                    ExecutionOperationStatus::Applied
+                                } else {
+                                    ExecutionOperationStatus::PreflightOk
+                                }),
+                                Some(OrganizationExecutionStatus::RecoveryRequired),
+                                None,
+                                None,
+                                None,
+                                &request.request_id,
+                                ExecutorRequestState::ProvenNotStarted,
+                                cursor,
+                            )?;
+                            RecoveredRequestClass::NotStarted(domain::RecoveryItem {
+                                operation_id: operation.id,
+                                direction: request.direction,
+                                item,
+                                reason: Some(reason),
+                            })
+                        }
+                    }
+                    RecoveryObservation::Applied(fingerprint) => {
+                        if matches!(
+                            request.state,
+                            ExecutorRequestState::ProvenNotApplied
+                                | ExecutorRequestState::ProvenNotStarted
+                        ) {
+                            let reason =
+                                "Filesystem reality contradicts the stored not-applied proof."
+                                    .to_owned();
+                            self.persist_event_with_request_proof(
+                                execution_id,
+                                Some(operation.id),
+                                JournalEventKind::Conflict,
+                                json!({
+                                    "event": "recovery_observed",
+                                    "operation_id": operation.id,
+                                    "direction": request.direction,
+                                    "observation": "ambiguous",
+                                    "reason": reason,
+                                    "request_id": request.request_id,
+                                }),
+                                None,
+                                Some(OrganizationExecutionStatus::RecoveryAmbiguous),
+                                None,
+                                Some("recovery_proof_contradicted"),
+                                Some(&reason),
+                                &request.request_id,
+                                ExecutorRequestState::Ambiguous,
+                                cursor,
+                            )?;
+                            RecoveredRequestClass::Ambiguous(domain::RecoveryItem {
+                                operation_id: operation.id,
+                                direction: request.direction,
+                                item,
+                                reason: Some(reason),
+                            })
+                        } else {
+                            let reason =
+                                "Exact native identity, metadata, and content prove mutation applied."
+                                    .to_owned();
+                            self.persist_event_with_request_proof(
+                                execution_id,
+                                Some(operation.id),
+                                JournalEventKind::AppliedObserved,
+                                json!({
+                                    "event": "recovery_observed",
+                                    "operation_id": operation.id,
+                                    "direction": request.direction,
+                                    "observation": "applied",
+                                    "request_id": request.request_id,
+                                }),
+                                Some(if rollback {
+                                    ExecutionOperationStatus::RolledBack
+                                } else {
+                                    ExecutionOperationStatus::Recovered
+                                }),
+                                Some(OrganizationExecutionStatus::RecoveryRequired),
+                                (!rollback).then_some(fingerprint.as_deref()).flatten(),
+                                None,
+                                None,
+                                &request.request_id,
+                                ExecutorRequestState::ProvenApplied,
+                                cursor,
+                            )?;
+                            RecoveredRequestClass::Applied(domain::RecoveryItem {
+                                operation_id: operation.id,
+                                direction: request.direction,
+                                item,
+                                reason: Some(reason),
+                            })
+                        }
+                    }
+                    RecoveryObservation::Ambiguous(reason) => {
+                        self.persist_event_with_request_proof(
+                            execution_id,
+                            Some(operation.id),
+                            JournalEventKind::Conflict,
+                            json!({
+                                "event": "recovery_observed",
+                                "operation_id": operation.id,
+                                "direction": request.direction,
+                                "observation": "ambiguous",
+                                "reason": reason,
+                                "request_id": request.request_id,
+                            }),
+                            None,
+                            Some(OrganizationExecutionStatus::RecoveryAmbiguous),
+                            None,
+                            Some("ambiguous_recovery"),
+                            Some(&reason),
+                            &request.request_id,
+                            ExecutorRequestState::Ambiguous,
+                            cursor,
+                        )?;
+                        RecoveredRequestClass::Ambiguous(domain::RecoveryItem {
+                            operation_id: operation.id,
+                            direction: request.direction,
+                            item,
+                            reason: Some(reason),
+                        })
+                    }
+                }
+            }
+        })
+    }
+
+    #[inline(never)]
     pub fn rollback_execution(
         &self,
         execution_id: ExecutionId,
@@ -2871,6 +2982,7 @@ impl ExecutionApplicationService {
         Ok(())
     }
 
+    #[inline(never)]
     fn observe_recovery(
         &self,
         root: &Path,
@@ -2930,6 +3042,7 @@ impl ExecutionApplicationService {
         }
     }
 
+    #[inline(never)]
     fn observe_rollback_recovery(
         &self,
         root: &Path,
@@ -3155,6 +3268,7 @@ impl ExecutionApplicationService {
         Ok(())
     }
 
+    #[inline(never)]
     fn persist_request_intent(
         &self,
         kind: JournalEventKind,
@@ -3260,6 +3374,7 @@ impl ExecutionApplicationService {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
     fn persist_event_with_request_proof(
         &self,
         execution_id: ExecutionId,
@@ -3319,6 +3434,7 @@ impl ExecutionApplicationService {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
     fn persist_event(
         &self,
         execution_id: ExecutionId,
@@ -3667,6 +3783,18 @@ enum RecoveryObservation {
     NotStarted,
     Applied(Option<Box<FileFingerprint>>),
     Ambiguous(String),
+}
+
+enum ApplyScheduledOutcome {
+    Applied,
+    Terminal(Box<ExecutionDetail>),
+}
+
+enum RecoveredRequestClass {
+    Skip,
+    Applied(domain::RecoveryItem),
+    NotStarted(domain::RecoveryItem),
+    Ambiguous(domain::RecoveryItem),
 }
 
 fn execution_preconditions(internal_staging: bool) -> Vec<String> {
@@ -4573,5 +4701,64 @@ mod consent_plan_tests {
         )
         .unwrap_or_else(|error| panic!("changed policy digest should build: {error}"));
         assert_ne!(baseline, changed_policy_digest);
+    }
+}
+
+#[cfg(test)]
+mod recovery_state_machine_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_guard_is_exclusive_and_releases_on_drop() {
+        let flag = AtomicBool::new(false);
+        {
+            let first = RecoveryGuard::try_enter(&flag)
+                .unwrap_or_else(|| panic!("first recovery entry must succeed"));
+            assert!(flag.load(Ordering::SeqCst));
+            assert!(
+                RecoveryGuard::try_enter(&flag).is_none(),
+                "nested recover_execution must be refused"
+            );
+            drop(first);
+        }
+        assert!(!flag.load(Ordering::SeqCst));
+        assert!(
+            RecoveryGuard::try_enter(&flag).is_some(),
+            "recovery must be one-shot per entry and reusable after drop"
+        );
+    }
+
+    #[test]
+    fn recover_execution_must_not_call_start_execution() {
+        const RECOVER_SOURCE: &str = include_str!("execution.rs");
+        let recover = RECOVER_SOURCE
+            .split("pub fn recover_execution(")
+            .nth(1)
+            .unwrap_or_else(|| panic!("recover_execution must exist"));
+        let recover_body = recover
+            .split("pub fn rollback_execution(")
+            .next()
+            .unwrap_or_else(|| panic!("rollback_execution must follow recover_execution"));
+        assert!(
+            !recover_body.contains("self.start_execution(")
+                && !recover_body.contains("self.start_execution_at("),
+            "recovery must inspect durable state and must not recursively Apply"
+        );
+        assert!(
+            !recover_body.contains("self.rollback_execution("),
+            "recovery must not recursively invoke rollback"
+        );
+        assert!(
+            !recover_body.contains("self.recover_execution("),
+            "recovery must not re-enter recover_execution"
+        );
+        assert!(
+            recover_body.contains("RecoveryGuard::try_enter"),
+            "recovery must take the exclusive state-transition guard"
+        );
+        assert!(
+            recover_body.contains("reconcile_one_interrupted_request"),
+            "recovery must classify each request in a bounded helper, not nested Apply"
+        );
     }
 }
