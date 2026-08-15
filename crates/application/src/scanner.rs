@@ -70,7 +70,7 @@ impl ScannerApplicationService {
         Self::new_with_content_engine(
             database,
             read_only_platform,
-            Arc::new(LocalExtractionEngine::local_default()),
+            default_content_engine(),
             model_root,
         )
     }
@@ -86,7 +86,7 @@ impl ScannerApplicationService {
             database,
             read_only_platform,
             content_engine,
-            Arc::new(DeterministicSemanticProvider::default()),
+            default_semantic_provider(),
             model_root,
         )
     }
@@ -203,6 +203,7 @@ impl ScannerApplicationService {
         Ok(workspace)
     }
 
+    #[inline(never)]
     pub fn register_root(
         &self,
         workspace_id: WorkspaceId,
@@ -231,6 +232,7 @@ impl ScannerApplicationService {
         Ok(root)
     }
 
+    #[inline(never)]
     pub fn scan_workspace(
         &self,
         workspace_id: WorkspaceId,
@@ -357,6 +359,17 @@ impl ScannerApplicationService {
     }
 }
 
+#[inline(never)]
+fn default_content_engine() -> Arc<dyn ContentExtractionEngine> {
+    Arc::new(LocalExtractionEngine::local_default())
+}
+
+#[inline(never)]
+fn default_semantic_provider() -> Arc<dyn SemanticProvider> {
+    Arc::new(DeterministicSemanticProvider::default())
+}
+
+#[inline(never)]
 fn production_embedding_provider(model_root: Option<PathBuf>) -> Arc<dyn LocalEmbeddingProvider> {
     match model_root {
         Some(root) => match OnnxLocalEmbeddingProvider::new(root) {

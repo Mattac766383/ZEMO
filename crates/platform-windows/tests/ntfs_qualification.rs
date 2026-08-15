@@ -103,15 +103,24 @@ impl NtfsSandbox {
 
     fn assert_resolves_within_sandbox(&self, path: &Path) {
         self.assert_scoped(path);
-        let anchor = if path.exists() {
-            path
-        } else {
-            path.parent()
-                .unwrap_or_else(|| panic!("sandbox path should have a parent: {path:?}"))
+        let parent = path
+            .parent()
+            .unwrap_or_else(|| panic!("sandbox path should have a parent: {path:?}"));
+        let anchor = if path.exists() { path } else { parent };
+        let canonical_anchor = match fs::canonicalize(anchor) {
+            Ok(value) => value,
+            Err(error)
+                if error.kind() == io::ErrorKind::PermissionDenied
+                    || error.raw_os_error() == Some(5) =>
+            {
+                fs::canonicalize(parent).unwrap_or_else(|parent_error| {
+                    panic!(
+                        "sandbox parent should canonicalize after leaf ACL denial at {path:?}: {parent_error}"
+                    )
+                })
+            }
+            Err(error) => panic!("sandbox path anchor should canonicalize: {error}"),
         };
-        let canonical_anchor = anchor
-            .canonicalize()
-            .unwrap_or_else(|error| panic!("sandbox path anchor should canonicalize: {error}"));
         assert!(
             canonical_anchor.starts_with(&self.root),
             "destructive test path resolves outside its fresh sandbox: {path:?} -> {canonical_anchor:?}"

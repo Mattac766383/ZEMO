@@ -69,6 +69,29 @@ pub const fn directory_create_options_are_legal(options: u32) -> bool {
     options & FILE_DIRECTORY_FILE != 0 && options & !DIRECTORY_CREATE_OPTION_MASK == 0
 }
 
+/// `FILE_RENAME_REPLACE_IF_EXISTS` — must stay unset. No overwrite.
+pub const FILE_RENAME_REPLACE_IF_EXISTS: u32 = 0x0000_0001;
+/// `FILE_ADD_FILE` — required on the destination parent handle used as
+/// `FILE_RENAME_INFORMATION.RootDirectory`.
+pub const FILE_ADD_FILE: u32 = 0x0000_0002;
+/// `FILE_TRAVERSE`
+pub const FILE_TRAVERSE: u32 = 0x0000_0020;
+/// `FILE_READ_ATTRIBUTES`
+pub const FILE_READ_ATTRIBUTES: u32 = 0x0080;
+/// Destination-parent access for a no-replace NT rename.
+pub const DESTINATION_PARENT_RENAME_ACCESS: u32 =
+    FILE_ADD_FILE | FILE_TRAVERSE | FILE_READ_ATTRIBUTES;
+
+/// Win32 `SetFileInformationByHandle(FileRenameInfo/Ex)` requires
+/// `RootDirectory = NULL` and a NUL-terminated Win32 path. Combining a parent
+/// handle with a relative leaf through that wrapper is ERROR 87 on Windows 11.
+/// The NT `NtSetInformationFile(FileRenameInformation)` contract is the opposite:
+/// `RootDirectory` = parent directory handle and `FileName` = one relative leaf.
+#[must_use]
+pub const fn rename_flags_are_no_replace(flags: u32) -> bool {
+    flags & FILE_RENAME_REPLACE_IF_EXISTS == 0
+}
+
 /// NtCreateFile ObjectName when RootDirectory is a handle must be a single
 /// relative leaf. An absolute Win32/NT path combined with a root handle is
 /// STATUS_OBJECT_PATH_SYNTAX_BAD or STATUS_INVALID_PARAMETER.
@@ -85,9 +108,12 @@ pub fn relative_object_name_is_legal(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        DIRECTORY_CREATE_OPTION_MASK, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE,
-        FILE_OPEN_FOR_BACKUP_INTENT, FILE_OPEN_NO_RECALL, FILE_OPEN_REPARSE_POINT,
-        FILE_SYNCHRONOUS_IO_NONALERT, anchored_create_options, directory_create_options_are_legal,
+        DESTINATION_PARENT_RENAME_ACCESS, DIRECTORY_CREATE_OPTION_MASK, FILE_ADD_FILE,
+        FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN_FOR_BACKUP_INTENT,
+        FILE_OPEN_NO_RECALL, FILE_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+        FILE_RENAME_REPLACE_IF_EXISTS, FILE_SYNCHRONOUS_IO_NONALERT, FILE_TRAVERSE,
+        anchored_create_options, directory_create_options_are_legal, relative_object_name_is_legal,
+        rename_flags_are_no_replace,
     };
 
     #[test]
@@ -153,5 +179,33 @@ mod tests {
         assert!(!relative_object_name_is_legal(""));
         assert!(!relative_object_name_is_legal("."));
         assert!(!relative_object_name_is_legal(".."));
+    }
+
+    #[test]
+    fn rename_must_use_relative_leaf_and_never_replace() {
+        assert!(rename_flags_are_no_replace(0));
+        assert!(!rename_flags_are_no_replace(FILE_RENAME_REPLACE_IF_EXISTS));
+        assert!(relative_object_name_is_legal("committed.txt"));
+        assert!(relative_object_name_is_legal("facture-été.txt"));
+        assert!(!relative_object_name_is_legal(r"D:\temp\root\file.txt"));
+        assert!(!relative_object_name_is_legal(r"\\?\D:\temp\root\file.txt"));
+        assert!(!relative_object_name_is_legal(r"child\file.txt"));
+        assert_eq!(
+            DESTINATION_PARENT_RENAME_ACCESS & FILE_ADD_FILE,
+            FILE_ADD_FILE,
+            "NtSetInformationFile rename requires FILE_ADD_FILE on RootDirectory"
+        );
+        assert_eq!(
+            DESTINATION_PARENT_RENAME_ACCESS & FILE_TRAVERSE,
+            FILE_TRAVERSE
+        );
+        assert_eq!(
+            DESTINATION_PARENT_RENAME_ACCESS & FILE_READ_ATTRIBUTES,
+            FILE_READ_ATTRIBUTES
+        );
+        assert_eq!(
+            DESTINATION_PARENT_RENAME_ACCESS & FILE_RENAME_REPLACE_IF_EXISTS,
+            0
+        );
     }
 }

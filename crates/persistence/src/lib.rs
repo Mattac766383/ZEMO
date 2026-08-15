@@ -169,137 +169,12 @@ impl Database {
         Self::initialize(Connection::open_in_memory()?, key)
     }
 
+    #[inline(never)]
     fn initialize(connection: Connection, key: &DatabaseKey) -> Result<Self, PersistenceError> {
         apply_cipher_key(&connection, key)?;
-        connection.execute_batch(
-            "
-            PRAGMA cipher_memory_security = ON;
-            PRAGMA foreign_keys = ON;
-            PRAGMA journal_mode = WAL;
-            PRAGMA synchronous = FULL;
-            PRAGMA busy_timeout = 5000;
-            PRAGMA wal_autocheckpoint = 1000;
-            PRAGMA temp_store = MEMORY;
-            PRAGMA trusted_schema = OFF;
-            ",
-        )?;
-
-        let cipher_version = connection
-            .query_row("PRAGMA cipher_version", [], |row| row.get::<_, String>(0))
-            .optional()?;
-        if cipher_version.as_deref().unwrap_or_default().is_empty() {
-            return Err(PersistenceError::InvalidCipher);
-        }
-
-        let schema_version: i64 =
-            connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        match schema_version {
-            0 => {
-                connection.execute_batch(INITIAL_MIGRATION)?;
-                connection.execute_batch(SAFE_SCANNER_MIGRATION)?;
-                connection.execute_batch(SAFE_EXTRACTION_MIGRATION)?;
-                connection.execute_batch(LOCAL_SEARCH_REVIEW_MIGRATION)?;
-                connection.execute_batch(LOCAL_SEMANTIC_MIGRATION)?;
-                connection.execute_batch(LOCAL_RELATIONSHIPS_MIGRATION)?;
-                connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
-                connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
-                connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
-                connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
-            }
-            1 => {
-                connection.execute_batch(SAFE_SCANNER_MIGRATION)?;
-                connection.execute_batch(SAFE_EXTRACTION_MIGRATION)?;
-                connection.execute_batch(LOCAL_SEARCH_REVIEW_MIGRATION)?;
-                connection.execute_batch(LOCAL_SEMANTIC_MIGRATION)?;
-                connection.execute_batch(LOCAL_RELATIONSHIPS_MIGRATION)?;
-                connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
-                connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
-                connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
-                connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
-            }
-            2 => {
-                connection.execute_batch(SAFE_EXTRACTION_MIGRATION)?;
-                connection.execute_batch(LOCAL_SEARCH_REVIEW_MIGRATION)?;
-                connection.execute_batch(LOCAL_SEMANTIC_MIGRATION)?;
-                connection.execute_batch(LOCAL_RELATIONSHIPS_MIGRATION)?;
-                connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
-                connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
-                connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
-                connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
-            }
-            3 => {
-                connection.execute_batch(LOCAL_SEARCH_REVIEW_MIGRATION)?;
-                connection.execute_batch(LOCAL_SEMANTIC_MIGRATION)?;
-                connection.execute_batch(LOCAL_RELATIONSHIPS_MIGRATION)?;
-                connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
-                connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
-                connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
-                connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
-            }
-            4 => {
-                connection.execute_batch(LOCAL_SEMANTIC_MIGRATION)?;
-                connection.execute_batch(LOCAL_RELATIONSHIPS_MIGRATION)?;
-                connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
-                connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
-                connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
-                connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
-            }
-            5 => {
-                connection.execute_batch(LOCAL_RELATIONSHIPS_MIGRATION)?;
-                connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
-                connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
-                connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
-                connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
-            }
-            6 => {
-                connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
-                connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
-                connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
-                connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
-            }
-            7 => {
-                connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
-                connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
-                connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
-            }
-            8 => {
-                connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
-                connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
-            }
-            9 => {
-                apply_monitoring_migration_if_missing(&connection, schema_version)?;
-                connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
-            }
-            10 => {
-                apply_monitoring_migration_if_missing(&connection, schema_version)?;
-            }
-            11 => {
-                apply_monitoring_migration_if_missing(&connection, schema_version)?;
-            }
-            12..=17 => {}
-            value => return Err(PersistenceError::UnsupportedSchema(value)),
-        }
-        if schema_version <= 10 {
-            connection.execute_batch(EXECUTION_CONSENT_MIGRATION)?;
-        }
-        if schema_version <= 11 {
-            apply_hybrid_search_migration(&connection)?;
-        }
-        if schema_version <= 12 {
-            connection.execute_batch(MONITORING_CORRECTNESS_MIGRATION)?;
-        }
-        if schema_version <= 13 {
-            connection.execute_batch(EXECUTION_SAFETY_POLICY_V2_MIGRATION)?;
-        }
-        if schema_version <= 14 {
-            connection.execute_batch(CROSS_PROCESS_RECOVERY_MIGRATION)?;
-        }
-        if schema_version <= 15 {
-            connection.execute_batch(LOCAL_ANN_SEMANTIC_INDEX_MIGRATION)?;
-        }
-        if schema_version <= 16 {
-            connection.execute_batch(INCREMENTAL_ORGANIZATION_PROPOSALS_MIGRATION)?;
-        }
+        apply_runtime_pragmas(&connection)?;
+        let schema_version = read_user_schema_version(&connection)?;
+        apply_schema_migrations(&connection, schema_version)?;
         repair_legacy_native_path_storage(&connection)?;
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;
 
@@ -4129,6 +4004,152 @@ fn review_items_for_file(
     Ok(output)
 }
 
+#[inline(never)]
+fn apply_runtime_pragmas(connection: &Connection) -> Result<(), PersistenceError> {
+    connection.execute_batch(
+        "
+        PRAGMA cipher_memory_security = ON;
+        PRAGMA foreign_keys = ON;
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = FULL;
+        PRAGMA busy_timeout = 5000;
+        PRAGMA wal_autocheckpoint = 1000;
+        PRAGMA temp_store = MEMORY;
+        PRAGMA trusted_schema = OFF;
+        ",
+    )?;
+    let cipher_version = connection
+        .query_row("PRAGMA cipher_version", [], |row| row.get::<_, String>(0))
+        .optional()?;
+    if cipher_version.as_deref().unwrap_or_default().is_empty() {
+        return Err(PersistenceError::InvalidCipher);
+    }
+    Ok(())
+}
+
+#[inline(never)]
+fn read_user_schema_version(connection: &Connection) -> Result<i64, PersistenceError> {
+    connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(Into::into)
+}
+
+#[inline(never)]
+fn apply_schema_migrations(
+    connection: &Connection,
+    schema_version: i64,
+) -> Result<(), PersistenceError> {
+    match schema_version {
+        0 => {
+            connection.execute_batch(INITIAL_MIGRATION)?;
+            connection.execute_batch(SAFE_SCANNER_MIGRATION)?;
+            connection.execute_batch(SAFE_EXTRACTION_MIGRATION)?;
+            connection.execute_batch(LOCAL_SEARCH_REVIEW_MIGRATION)?;
+            connection.execute_batch(LOCAL_SEMANTIC_MIGRATION)?;
+            connection.execute_batch(LOCAL_RELATIONSHIPS_MIGRATION)?;
+            connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
+            connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
+            connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
+            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+        }
+        1 => {
+            connection.execute_batch(SAFE_SCANNER_MIGRATION)?;
+            connection.execute_batch(SAFE_EXTRACTION_MIGRATION)?;
+            connection.execute_batch(LOCAL_SEARCH_REVIEW_MIGRATION)?;
+            connection.execute_batch(LOCAL_SEMANTIC_MIGRATION)?;
+            connection.execute_batch(LOCAL_RELATIONSHIPS_MIGRATION)?;
+            connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
+            connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
+            connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
+            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+        }
+        2 => {
+            connection.execute_batch(SAFE_EXTRACTION_MIGRATION)?;
+            connection.execute_batch(LOCAL_SEARCH_REVIEW_MIGRATION)?;
+            connection.execute_batch(LOCAL_SEMANTIC_MIGRATION)?;
+            connection.execute_batch(LOCAL_RELATIONSHIPS_MIGRATION)?;
+            connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
+            connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
+            connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
+            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+        }
+        3 => {
+            connection.execute_batch(LOCAL_SEARCH_REVIEW_MIGRATION)?;
+            connection.execute_batch(LOCAL_SEMANTIC_MIGRATION)?;
+            connection.execute_batch(LOCAL_RELATIONSHIPS_MIGRATION)?;
+            connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
+            connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
+            connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
+            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+        }
+        4 => {
+            connection.execute_batch(LOCAL_SEMANTIC_MIGRATION)?;
+            connection.execute_batch(LOCAL_RELATIONSHIPS_MIGRATION)?;
+            connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
+            connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
+            connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
+            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+        }
+        5 => {
+            connection.execute_batch(LOCAL_RELATIONSHIPS_MIGRATION)?;
+            connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
+            connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
+            connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
+            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+        }
+        6 => {
+            connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
+            connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
+            connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
+            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+        }
+        7 => {
+            connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
+            connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
+            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+        }
+        8 => {
+            connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
+            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+        }
+        9 => {
+            apply_monitoring_migration_if_missing(connection, schema_version)?;
+            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+        }
+        10 => {
+            apply_monitoring_migration_if_missing(connection, schema_version)?;
+        }
+        11 => {
+            apply_monitoring_migration_if_missing(connection, schema_version)?;
+        }
+        12..=17 => {}
+        value => return Err(PersistenceError::UnsupportedSchema(value)),
+    }
+    if schema_version <= 10 {
+        connection.execute_batch(EXECUTION_CONSENT_MIGRATION)?;
+    }
+    if schema_version <= 11 {
+        apply_hybrid_search_migration(connection)?;
+    }
+    if schema_version <= 12 {
+        connection.execute_batch(MONITORING_CORRECTNESS_MIGRATION)?;
+    }
+    if schema_version <= 13 {
+        connection.execute_batch(EXECUTION_SAFETY_POLICY_V2_MIGRATION)?;
+    }
+    if schema_version <= 14 {
+        connection.execute_batch(CROSS_PROCESS_RECOVERY_MIGRATION)?;
+    }
+    if schema_version <= 15 {
+        connection.execute_batch(LOCAL_ANN_SEMANTIC_INDEX_MIGRATION)?;
+    }
+    if schema_version <= 16 {
+        connection.execute_batch(INCREMENTAL_ORGANIZATION_PROPOSALS_MIGRATION)?;
+    }
+    Ok(())
+}
+
+#[inline(never)]
 fn apply_cipher_key(connection: &Connection, key: &DatabaseKey) -> Result<(), PersistenceError> {
     let mut hex = Zeroizing::new(String::with_capacity(64));
     for byte in key.0 {

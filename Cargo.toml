@@ -37,3 +37,12 @@ all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
+
+# SQLCipher's amalgamation at opt-level 0 uses deep C frames. Debug Windows
+# test threads are 2 MiB; leaving the C parser unoptimized overflows them.
+# This does not enlarge the thread stack.
+[profile.dev.package.libsqlite3-sys]
+opt-level = 1
+
+[profile.dev.package.openssl-sys]
+opt-level = 1

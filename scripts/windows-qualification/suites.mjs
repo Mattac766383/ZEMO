@@ -67,6 +67,20 @@ export const volumeSuites = [
     section: "NTFS",
     diagnostic: "VOLUME",
   },
+  {
+    name: "Windows path matrix (DOS/verbatim/unicode/long/case)",
+    args: [
+      "test",
+      "-p",
+      "platform-windows",
+      "--test",
+      "windows_path_matrix",
+      "--",
+      "--nocapture",
+    ],
+    section: "NTFS",
+    diagnostic: "PATH IDENTITY",
+  },
 ];
 
 export const ntfsSuites = [

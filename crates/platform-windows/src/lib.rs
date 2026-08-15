@@ -21,10 +21,11 @@ mod nt_create;
 mod volume_root;
 
 pub use nt_create::{
-    DIRECTORY_CREATE_OPTION_MASK, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE,
-    FILE_OPEN_FOR_BACKUP_INTENT, FILE_OPEN_NO_RECALL, FILE_OPEN_REPARSE_POINT,
-    FILE_SYNCHRONOUS_IO_NONALERT, anchored_create_options, directory_create_options_are_legal,
-    relative_object_name_is_legal,
+    DESTINATION_PARENT_RENAME_ACCESS, DIRECTORY_CREATE_OPTION_MASK, FILE_ADD_FILE,
+    FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN_FOR_BACKUP_INTENT, FILE_OPEN_NO_RECALL,
+    FILE_OPEN_REPARSE_POINT, FILE_RENAME_REPLACE_IF_EXISTS, FILE_SYNCHRONOUS_IO_NONALERT,
+    FILE_TRAVERSE, anchored_create_options, directory_create_options_are_legal,
+    relative_object_name_is_legal, rename_flags_are_no_replace,
 };
 pub use volume_root::{
     ParsedWindowsDrivePrefix, format_win32_drive_root, is_legal_win32_mount_point,
@@ -60,15 +61,17 @@ mod windows {
         ptr,
     };
     #[cfg(feature = "mutation")]
-    use windows_sys::Wdk::Storage::FileSystem::FILE_CREATE;
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FILE_CREATE, FILE_RENAME_INFORMATION, FileRenameInformation, NtSetInformationFile,
+    };
     use windows_sys::Wdk::{
         Foundation::OBJECT_ATTRIBUTES,
         Storage::FileSystem::{FILE_OPEN, NtCreateFile},
     };
     #[cfg(feature = "mutation")]
     use windows_sys::Win32::Storage::FileSystem::{
-        DELETE, FILE_ATTRIBUTE_READONLY, FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_INFO_EX,
-        FILE_RENAME_INFO, FileDispositionInfoEx, FileRenameInfoEx, SetFileInformationByHandle,
+        DELETE, FILE_ADD_FILE, FILE_ATTRIBUTE_READONLY, FILE_DISPOSITION_FLAG_DELETE,
+        FILE_DISPOSITION_INFO_EX, FILE_TRAVERSE, FileDispositionInfoEx, SetFileInformationByHandle,
     };
     use windows_sys::Win32::{
         Foundation::{
@@ -900,6 +903,30 @@ mod windows {
             attributes: u32,
             status: i32,
         ) -> PlatformError {
+            Self::ntstatus_error(
+                "NtCreateFile",
+                path,
+                object_name,
+                access,
+                share,
+                disposition,
+                options,
+                attributes,
+                status,
+            )
+        }
+
+        fn ntstatus_error(
+            api: &str,
+            path: &str,
+            object_name: &str,
+            access: u32,
+            share: u32,
+            disposition: u32,
+            options: u32,
+            attributes: u32,
+            status: i32,
+        ) -> PlatformError {
             if status == STATUS_REPARSE_POINT_ENCOUNTERED {
                 return PlatformError::ReparsePoint;
             }
@@ -909,7 +936,7 @@ mod windows {
             let classified = PlatformError::from_windows_code(code, false);
             match classified {
                 PlatformError::Io(_) => PlatformError::Io(std::io::Error::other(format!(
-                    "NtCreateFile path={path} RootDirectory=present ObjectName={object_name} \
+                    "{api} path={path} RootDirectory=present ObjectName={object_name} \
                      access=0x{access:08X} share=0x{share:08X} disposition=0x{disposition:08X} \
                      options=0x{options:08X} attributes=0x{attributes:08X} \
                      NTSTATUS=0x{status:08X} GetLastError={code} (os error {code})"
@@ -918,6 +945,7 @@ mod windows {
             }
         }
 
+        #[inline(never)]
         fn open_relative(
             parent: &File,
             name: &OsStr,
@@ -1012,6 +1040,7 @@ mod windows {
             Ok(file)
         }
 
+        #[inline(never)]
         fn open_anchored(
             path: &Path,
             desired_access: u32,
@@ -1129,6 +1158,7 @@ mod windows {
             Ok((serial, filesystem_name))
         }
 
+        #[inline(never)]
         fn volume_from_handle(
             path: &Path,
             handle: HANDLE,
@@ -1389,6 +1419,25 @@ mod windows {
 
         #[cfg(feature = "mutation")]
         fn parent_and_leaf(path: &Path) -> Result<(File, OsString), PlatformError> {
+            Self::parent_and_leaf_with_access(path, FILE_READ_ATTRIBUTES)
+        }
+
+        #[cfg(feature = "mutation")]
+        fn destination_parent_and_leaf(path: &Path) -> Result<(File, OsString), PlatformError> {
+            // NtSetInformationFile(FileRenameInformation) checks FILE_ADD_FILE
+            // on the RootDirectory handle. FILE_READ_ATTRIBUTES alone is not
+            // enough for a relative-leaf rename.
+            Self::parent_and_leaf_with_access(
+                path,
+                FILE_ADD_FILE | FILE_TRAVERSE | FILE_READ_ATTRIBUTES,
+            )
+        }
+
+        #[cfg(feature = "mutation")]
+        fn parent_and_leaf_with_access(
+            path: &Path,
+            desired_access: u32,
+        ) -> Result<(File, OsString), PlatformError> {
             let parent = path.parent().ok_or(PlatformError::PathPolicyRefusal)?;
             let leaf = path
                 .file_name()
@@ -1396,7 +1445,7 @@ mod windows {
                 .to_os_string();
             let parent = Self::open_anchored(
                 parent,
-                FILE_READ_ATTRIBUTES,
+                desired_access,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 true,
             )?;
@@ -1471,25 +1520,32 @@ mod windows {
             destination_parent: &File,
             leaf: &OsStr,
         ) -> Result<(), PlatformError> {
-            let destination_wide: Vec<u16> = leaf.encode_wide().collect();
+            let object_name = leaf.to_string_lossy();
+            if !crate::relative_object_name_is_legal(&object_name) {
+                return Err(PlatformError::OutsideRoot);
+            }
+            let mut destination_wide: Vec<u16> = leaf.encode_wide().collect();
+            destination_wide.push(0);
             let name_bytes = destination_wide
                 .len()
-                .checked_mul(mem::size_of::<u16>())
+                .checked_sub(1)
+                .and_then(|units| units.checked_mul(mem::size_of::<u16>()))
                 .ok_or_else(|| PlatformError::Unsupported("destination is too long".to_owned()))?;
-            let base_size = mem::size_of::<FILE_RENAME_INFO>() - mem::size_of::<u16>();
-            let total_size = base_size
-                .checked_add(name_bytes)
+            let file_name_offset = mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
+            let total_size = file_name_offset
+                .checked_add(destination_wide.len().saturating_mul(mem::size_of::<u16>()))
                 .ok_or_else(|| PlatformError::Unsupported("rename buffer overflow".to_owned()))?;
-            let mut buffer = vec![0_u8; total_size];
-            let rename_info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
             let name_length = u32::try_from(name_bytes)
                 .map_err(|_| PlatformError::Unsupported("destination is too long".to_owned()))?;
+            let words = total_size.div_ceil(mem::size_of::<u64>());
+            let mut storage = vec![0_u64; words];
+            let rename_info = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
 
-            // SAFETY: `buffer` is sized for the fixed struct followed by the full
-            // UTF-16 destination. Flags are zero, so the kernel must not replace an
-            // existing destination.
+            // SAFETY: `storage` is 8-byte aligned and large enough for the
+            // FILE_RENAME_INFORMATION header plus a NUL-terminated relative
+            // leaf. ReplaceIfExists stays 0 — no overwrite.
             unsafe {
-                (*rename_info).Anonymous.Flags = 0;
+                (*rename_info).Anonymous.ReplaceIfExists = false;
                 (*rename_info).RootDirectory = destination_parent.as_raw_handle() as HANDLE;
                 (*rename_info).FileNameLength = name_length;
                 ptr::copy_nonoverlapping(
@@ -1500,27 +1556,39 @@ mod windows {
             }
             let size = u32::try_from(total_size)
                 .map_err(|_| PlatformError::Unsupported("rename buffer overflow".to_owned()))?;
-            // SAFETY: the handle and rename buffer remain valid for the duration
-            // of the call; the buffer layout is documented by FILE_RENAME_INFO.
-            let result = unsafe {
-                SetFileInformationByHandle(
+            let mut status_block = IO_STATUS_BLOCK::default();
+            // SAFETY: handle and rename buffer remain valid for the call.
+            // NtSetInformationFile(FileRenameInformation) accepts RootDirectory
+            // + one relative leaf. The Win32 SetFileInformationByHandle wrapper
+            // does not — that combination is ERROR 87 on Windows 11 26100.
+            let status = unsafe {
+                NtSetInformationFile(
                     file.as_raw_handle() as HANDLE,
-                    FileRenameInfoEx,
-                    buffer.as_ptr().cast::<c_void>(),
+                    ptr::addr_of_mut!(status_block),
+                    rename_info.cast::<c_void>(),
                     size,
+                    FileRenameInformation,
                 )
             };
-            if result == 0 {
-                // A zero return from this no-replace call proves that the
-                // requested rename was not applied. Known sharing/lock errors
-                // may therefore be retried after full revalidation.
-                return Err(Self::last_windows_error(false));
+            if status < 0 {
+                return Err(Self::ntstatus_error(
+                    "NtSetInformationFile(FileRenameInformation)",
+                    &object_name,
+                    &object_name,
+                    DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                    FILE_SHARE_READ,
+                    FILE_OPEN,
+                    0,
+                    0,
+                    status,
+                ));
             }
             Ok(())
         }
     }
 
     impl ReadOnlyPlatform for WindowsPlatform {
+        #[inline(never)]
         fn inspect_volume(&self, root: &Path) -> Result<VolumeIdentity, PlatformError> {
             let metadata = fs::symlink_metadata(root)?;
             Self::reject_unsafe_attributes(&metadata)?;
@@ -1838,6 +1906,13 @@ mod windows {
             is_cancelled: &dyn Fn() -> bool,
             on_progress: &mut dyn FnMut(FingerprintProgress),
         ) -> Result<FileFingerprint, PlatformError> {
+            let metadata = fs::symlink_metadata(path)?;
+            Self::reject_unsafe_attributes(&metadata)?;
+            if !metadata.is_file() {
+                return Err(PlatformError::Unsupported(
+                    "only regular files can be fingerprinted".to_owned(),
+                ));
+            }
             let mut file = Self::open_anchored(
                 path,
                 GENERIC_READ | FILE_READ_ATTRIBUTES,
@@ -1949,7 +2024,7 @@ mod windows {
             }
             let (source_parent, source_leaf) = Self::parent_and_leaf(&request.source)?;
             let (destination_parent, destination_leaf) =
-                Self::parent_and_leaf(&request.destination)?;
+                Self::destination_parent_and_leaf(&request.destination)?;
             let mut file = Self::open_relative(
                 &source_parent,
                 &source_leaf,
@@ -2201,6 +2276,19 @@ mod windows {
                 file & crate::FILE_OPEN_NO_RECALL,
                 crate::FILE_OPEN_NO_RECALL
             );
+        }
+
+        #[cfg(all(feature = "mutation", target_pointer_width = "64"))]
+        #[test]
+        fn nt_rename_information_layout_is_x64_wdk() {
+            assert_eq!(
+                mem::offset_of!(FILE_RENAME_INFORMATION, RootDirectory),
+                8,
+                "RootDirectory must be 8-byte aligned on x64"
+            );
+            assert_eq!(mem::offset_of!(FILE_RENAME_INFORMATION, FileNameLength), 16);
+            assert_eq!(mem::align_of::<FILE_RENAME_INFORMATION>(), 8);
+            assert!(crate::rename_flags_are_no_replace(0));
         }
 
         #[test]

@@ -110,6 +110,7 @@ impl Default for LocalExtractionEngine {
 
 impl LocalExtractionEngine {
     #[must_use]
+    #[inline(never)]
     pub fn local_default() -> Self {
         let limits = ExtractionLimits::default().normalized();
         let timeout = Duration::from_millis(limits.external_process_timeout_ms);

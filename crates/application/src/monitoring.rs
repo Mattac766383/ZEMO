@@ -430,6 +430,7 @@ impl ScannerApplicationService {
         Ok(())
     }
 
+    #[inline(never)]
     fn start_root_monitor(&self, root: &MonitoredRootRecord) -> Result<(), ApplicationError> {
         if self.monitoring.monitors.lock().contains_key(&root.root_id) {
             return Ok(());

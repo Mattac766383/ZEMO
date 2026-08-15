@@ -1493,20 +1493,51 @@ impl ExecutionApplicationService {
         } else {
             ExecutionRecoveryState::RecoveryAvailable
         };
-        let observations = json!({
+        self.persist_recovery_assessment_result(
+            execution_id,
+            state,
+            not_started,
+            applied,
+            ambiguous,
+            affected_count,
+            verified_applied_items,
+            verified_not_started_items,
+            ambiguous_items,
+            executor_sessions,
+            executor_requests,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
+    fn persist_recovery_assessment_result(
+        &self,
+        execution_id: ExecutionId,
+        state: ExecutionRecoveryState,
+        not_started: u64,
+        applied: u64,
+        ambiguous: u64,
+        affected_count: u64,
+        verified_applied_items: Vec<domain::RecoveryItem>,
+        verified_not_started_items: Vec<domain::RecoveryItem>,
+        ambiguous_items: Vec<domain::RecoveryItem>,
+        executor_sessions: Vec<domain::ExecutorSessionFact>,
+        executor_requests: Vec<domain::ExecutorRequestFact>,
+    ) -> Result<domain::RecoveryAssessment, ApplicationError> {
+        let observations = Box::new(json!({
             "verified_applied_items": verified_applied_items,
             "verified_not_started_items": verified_not_started_items,
             "ambiguous_items": ambiguous_items,
             "executor_sessions": executor_sessions,
             "executor_requests": executor_requests,
-        });
+        }));
         self.database.persist_recovery_assessment(
             execution_id,
             state,
             not_started,
             applied,
             ambiguous,
-            &serde_json::to_string(&observations)
+            &serde_json::to_string(observations.as_ref())
                 .map_err(|_| ApplicationError::InvalidExecution)?,
             &execution_now_iso(),
         )?;
@@ -4736,9 +4767,11 @@ mod recovery_state_machine_tests {
             .nth(1)
             .unwrap_or_else(|| panic!("recover_execution must exist"));
         let recover_body = recover
-            .split("pub fn rollback_execution(")
+            .split("fn persist_recovery_assessment_result(")
             .next()
-            .unwrap_or_else(|| panic!("rollback_execution must follow recover_execution"));
+            .unwrap_or_else(|| {
+                panic!("persist_recovery_assessment_result must follow recover_execution")
+            });
         assert!(
             !recover_body.contains("self.start_execution(")
                 && !recover_body.contains("self.start_execution_at("),
@@ -4759,6 +4792,10 @@ mod recovery_state_machine_tests {
         assert!(
             recover_body.contains("reconcile_one_interrupted_request"),
             "recovery must classify each request in a bounded helper, not nested Apply"
+        );
+        assert!(
+            recover_body.contains("persist_recovery_assessment_result"),
+            "recovery must persist through a separate frame, not grow recover_execution"
         );
     }
 }
