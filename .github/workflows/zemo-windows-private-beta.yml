@@ -17,6 +17,7 @@ env:
   CARGO_TERM_COLOR: always
   ZEMO_DIST_TAG: "0.1.0-beta.6"
   ZEMO_WINDOWS_DIAGNOSTIC_ONLY: "1"
+  LIBSQLITE3_FLAGS: "-DSQLCIPHER_OMIT_DLLMAIN"
 
 jobs:
   windows-qualification:
@@ -59,11 +60,29 @@ jobs:
           cargo check -p platform-windows --features mutation
           cargo test -p platform-windows --lib
 
+      - name: SQLite + USearch feature tree
+        if: always() && !cancelled()
+        continue-on-error: true
+        run: |
+          New-Item -ItemType Directory -Force -Path target/windows-qualification/logs | Out-Null
+          cargo tree -p application -e features -i libsqlite3-sys | Tee-Object -FilePath target/windows-qualification/logs/cargo-tree-libsqlite3-sys.log
+          cargo tree -p search -e features -i usearch | Tee-Object -FilePath target/windows-qualification/logs/cargo-tree-usearch.log
+          cargo tree -p search -e features -i numkong | Tee-Object -FilePath target/windows-qualification/logs/cargo-tree-numkong.log
+          Write-Host "LIBSQLITE3_FLAGS=$env:LIBSQLITE3_FLAGS"
+
+      - name: Prepare Windows sidecar before desktop cargo check
+        if: always() && !cancelled()
+        continue-on-error: true
+        run: |
+          node .\apps\desktop\scripts\prepare-operation-executor-sidecar.mjs --target x86_64-pc-windows-msvc
+          node .\apps\desktop\scripts\assert-operation-executor-sidecar.mjs --target x86_64-pc-windows-msvc
+
       - name: Compile application / executor / desktop
         continue-on-error: true
         run: |
           cargo check -p application
           cargo check -p operation-executor
+          node .\apps\desktop\scripts\assert-operation-executor-sidecar.mjs --target x86_64-pc-windows-msvc
           cargo check -p desktop
           cargo test -p application --test windows_read_only_qualification --no-run
 

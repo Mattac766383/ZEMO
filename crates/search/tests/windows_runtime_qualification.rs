@@ -256,9 +256,22 @@ fn windows_ort_granite_install_embed_ann_remove_and_lexical_fallback() {
                     Ok(())
                 });
                 stages.run("PERSIST", || {
+                    let (final_path, tmp_path) = index.snapshot_file_paths();
+                    eprintln!("{}", index.persist_destination_report());
+                    eprintln!(
+                        "persist explicit file dest={} tmp={}",
+                        final_path.display(),
+                        tmp_path.display()
+                    );
                     index
                         .persist_snapshot()
                         .map_err(|error| error.to_string())?;
+                    if !final_path.is_file() {
+                        return Err(format!(
+                            "persist did not create file {}",
+                            final_path.display()
+                        ));
+                    }
                     if index.status() != AnnIndexStatus::Ready {
                         return Err(format!("persist status {:?}", index.status()));
                     }

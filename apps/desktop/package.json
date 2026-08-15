@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "sidecar:check": "node ./scripts/prepare-operation-executor-sidecar.mjs --check",
     "sidecar:prepare": "node ./scripts/prepare-operation-executor-sidecar.mjs",
+    "sidecar:assert": "node ./scripts/assert-operation-executor-sidecar.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "tauri": "tauri"

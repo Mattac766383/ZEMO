@@ -199,13 +199,23 @@ impl PersistentAnnIndex {
     }
 
     fn meta_path(&self) -> PathBuf {
-        self.root
-            .join(format!("{}.ann.meta.json", sanitize_id(&self.workspace_id)))
+        snapshot_meta_paths(&self.root, &self.workspace_id).0
     }
 
     fn index_path(&self) -> PathBuf {
-        self.root
-            .join(format!("{}.usearch", sanitize_id(&self.workspace_id)))
+        snapshot_index_paths(&self.root, &self.workspace_id).0
+    }
+
+    /// Final `.usearch` file and the explicit `.usearch.part` temp file.
+    #[must_use]
+    pub fn snapshot_file_paths(&self) -> (PathBuf, PathBuf) {
+        snapshot_index_paths(&self.root, &self.workspace_id)
+    }
+
+    #[must_use]
+    pub fn persist_destination_report(&self) -> String {
+        let (final_path, tmp_path) = self.snapshot_file_paths();
+        persist_destination_report(&final_path, &tmp_path)
     }
 
     fn load_or_init(&self) -> Result<(), String> {
@@ -280,10 +290,16 @@ impl PersistentAnnIndex {
             meta.expansion_search,
         ))
         .map_err(|e| e.to_string())?;
-        let load_path = crate::native_filesystem_path_for_c_runtime(&path);
+        let bytes = fs::read(&path).map_err(|e| {
+            format!(
+                "read ANN snapshot {}: {e}; {}",
+                path.display(),
+                persist_destination_report(&path, &path)
+            )
+        })?;
         index
-            .load(load_path.to_str().ok_or("non-utf8 ann path")?)
-            .map_err(|e| e.to_string())?;
+            .load_from_buffer(&bytes)
+            .map_err(|e| format!("load ANN snapshot {}: {e}", path.display()))?;
         if index.dimensions() != meta.embedding_dimension {
             return Err("ANN dimension mismatch".to_owned());
         }
@@ -445,22 +461,53 @@ impl PersistentAnnIndex {
             meta.vector_count = 0;
             return self.persist_meta(&meta);
         };
-        let final_path = self.index_path();
-        let tmp_path = final_path.with_extension("usearch.tmp");
-        if tmp_path.exists() {
-            fs::remove_file(&tmp_path).map_err(|e| e.to_string())?;
+        let (final_path, tmp_path) = snapshot_index_paths(&self.root, &self.workspace_id);
+        let report = persist_destination_report(&final_path, &tmp_path);
+        if tmp_path.is_dir() {
+            return Err(format!("persist tmp path is a directory; {report}"));
         }
-        let save_path = crate::native_filesystem_path_for_c_runtime(&tmp_path);
+        if final_path.is_dir() {
+            return Err(format!("persist destination is a directory; {report}"));
+        }
+        let parent = final_path
+            .parent()
+            .ok_or_else(|| format!("ANN snapshot has no parent directory; {report}"))?;
+        if !parent.is_dir() {
+            return Err(format!("ANN parent is not a directory; {report}"));
+        }
+        write_parent_probe(parent).map_err(|e| format!("{e}; {report}"))?;
+        if tmp_path.exists() {
+            fs::remove_file(&tmp_path)
+                .map_err(|e| format!("remove tmp {}: {e}; {report}", tmp_path.display()))?;
+        }
+        let length = index.serialized_length();
+        if length == 0 {
+            return Err(format!("USearch serialized_length is 0; {report}"));
+        }
+        let mut buffer = vec![0_u8; length];
         index
-            .save(save_path.to_str().ok_or("non-utf8 tmp path")?)
-            .map_err(|e| e.to_string())?;
+            .save_to_buffer(&mut buffer)
+            .map_err(|e| format!("USearch save_to_buffer: {e}; {report}"))?;
         {
-            let file = File::open(&tmp_path).map_err(|e| e.to_string())?;
-            file.sync_all().map_err(|e| e.to_string())?;
+            let mut file = File::create(&tmp_path).map_err(|e| {
+                format!("create persist file {}: {e}; {report}", tmp_path.display())
+            })?;
+            file.write_all(&buffer)
+                .map_err(|e| format!("write persist file {}: {e}; {report}", tmp_path.display()))?;
+            file.sync_all()
+                .map_err(|e| format!("sync persist file {}: {e}; {report}", tmp_path.display()))?;
+        }
+        if !tmp_path.is_file() {
+            return Err(format!("persist tmp is not a file after write; {report}"));
         }
         let digest = sha256_file(&tmp_path)?;
         let vector_count = index.size() as u64;
-        fs::rename(&tmp_path, &final_path).map_err(|e| e.to_string())?;
+        replace_file(&tmp_path, &final_path).map_err(|e| format!("{e}; {report}"))?;
+        if !final_path.is_file() {
+            return Err(format!(
+                "persist destination missing after replace; {report}"
+            ));
+        }
         if let Ok(file) = File::open(&final_path) {
             let _ = file.sync_all();
         }
@@ -477,15 +524,14 @@ impl PersistentAnnIndex {
     }
 
     fn persist_meta(&self, meta: &AnnIndexMeta) -> Result<(), String> {
-        let path = self.meta_path();
-        let tmp = path.with_extension("json.tmp");
+        let (path, tmp) = snapshot_meta_paths(&self.root, &self.workspace_id);
         let bytes = serde_json::to_vec_pretty(meta).map_err(|e| e.to_string())?;
         {
             let mut file = File::create(&tmp).map_err(|e| e.to_string())?;
             file.write_all(&bytes).map_err(|e| e.to_string())?;
             file.sync_all().map_err(|e| e.to_string())?;
         }
-        fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+        replace_file(&tmp, &path)?;
         Ok(())
     }
 
@@ -505,6 +551,83 @@ fn sanitize_id(value: &str) -> String {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect()
+}
+
+fn snapshot_index_paths(root: &Path, workspace_id: &str) -> (PathBuf, PathBuf) {
+    let id = sanitize_id(workspace_id);
+    (
+        root.join(format!("{id}.usearch")),
+        root.join(format!("{id}.usearch.part")),
+    )
+}
+
+fn snapshot_meta_paths(root: &Path, workspace_id: &str) -> (PathBuf, PathBuf) {
+    let id = sanitize_id(workspace_id);
+    (
+        root.join(format!("{id}.ann.meta.json")),
+        root.join(format!("{id}.ann.meta.json.part")),
+    )
+}
+
+fn persist_destination_report(final_path: &Path, tmp_path: &Path) -> String {
+    let parent = final_path.parent();
+    let parent_display =
+        parent.map_or_else(|| "<none>".to_owned(), |value| value.display().to_string());
+    let normalized = crate::native_filesystem_path_for_c_runtime(final_path);
+    format!(
+        "index_destination={} exists={} is_file={} is_dir={} tmp={} tmp_exists={} tmp_is_file={} tmp_is_dir={} parent={} parent_exists={} parent_is_dir={} parent_writable_probe=pending normalized={}",
+        final_path.display(),
+        final_path.exists(),
+        final_path.is_file(),
+        final_path.is_dir(),
+        tmp_path.display(),
+        tmp_path.exists(),
+        tmp_path.is_file(),
+        tmp_path.is_dir(),
+        parent_display,
+        parent.is_some_and(Path::exists),
+        parent.is_some_and(Path::is_dir),
+        normalized.display()
+    )
+}
+
+fn write_parent_probe(parent: &Path) -> Result<(), String> {
+    let probe = parent.join(".zemo-ann-persist-probe");
+    {
+        let mut file = File::create(&probe).map_err(|e| {
+            format!(
+                "parent not writable (probe create {}): {e}",
+                probe.display()
+            )
+        })?;
+        file.write_all(b"ok")
+            .map_err(|e| format!("parent not writable (probe write {}): {e}", probe.display()))?;
+    }
+    fs::remove_file(&probe)
+        .map_err(|e| format!("parent probe cleanup {}: {e}", probe.display()))?;
+    Ok(())
+}
+
+fn replace_file(from: &Path, to: &Path) -> Result<(), String> {
+    match fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(error) if cfg!(windows) => {
+            fs::copy(from, to).map_err(|copy_error| {
+                format!(
+                    "replace {} -> {} failed (rename: {error}; copy: {copy_error})",
+                    from.display(),
+                    to.display()
+                )
+            })?;
+            let _ = fs::remove_file(from);
+            Ok(())
+        }
+        Err(error) => Err(format!(
+            "replace {} -> {}: {error}",
+            from.display(),
+            to.display()
+        )),
+    }
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
@@ -550,6 +673,28 @@ mod tests {
         }
         normalize_vector(&mut values);
         values
+    }
+
+    #[test]
+    fn snapshot_paths_are_explicit_files_not_directories() {
+        let dir = tempfile::tempdir().expect("temp");
+        let (final_path, tmp_path) = snapshot_index_paths(dir.path(), "windows-qual");
+        assert_eq!(
+            final_path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned()),
+            Some("windows_qual.usearch".to_owned())
+        );
+        assert_eq!(
+            tmp_path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned()),
+            Some("windows_qual.usearch.part".to_owned())
+        );
+        assert!(!final_path.exists());
+        assert!(!tmp_path.exists());
+        assert!(final_path.parent().is_some_and(|parent| parent.is_dir()));
+        write_parent_probe(dir.path()).expect("parent writable");
     }
 
     #[test]

@@ -1,0 +1,9 @@
+# Bundled SQLCipher is compiled as a static library and statically linked
+# into application test/binaries together with USearch/NumKong.
+# Both SQLCipher's amalgamation and NumKong define Windows DllMain, which
+# produces LNK2005/LNK1169. SQLCIPHER_OMIT_DLLMAIN is the supported
+# SQLCipher flag for static linking. NumKong keeps the remaining DllMain
+# (and already initializes via the MSVC .CRT$XCU constructor).
+# SQLCipher encryption itself is unchanged.
+[env]
+LIBSQLITE3_FLAGS = "-DSQLCIPHER_OMIT_DLLMAIN"

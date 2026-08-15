@@ -36,6 +36,10 @@ fn prints_volume_path_identity_for_qualification_temp() {
     if let Some(error) = &diagnostics.inspect_error {
         eprintln!("inspect error: {error}");
     }
+    eprintln!("Win32 API trace:");
+    for line in &diagnostics.win32_api_trace {
+        eprintln!("  {line}");
+    }
     assert!(
         !diagnostics.error_87,
         "ERROR_INVALID_PARAMETER (87) still present: last_error={:?} inspect={:?}",

@@ -59,5 +59,7 @@ test("workflow collects diagnostics after failures and still fails qualification
   assert.match(yaml, /windows-diagnostic-report\.json/);
   assert.match(yaml, /Fail if required qualification gates did not pass/);
   assert.match(yaml, /diagnostic_only != 'true'/);
+  assert.match(yaml, /prepare-operation-executor-sidecar\.mjs/);
+  assert.match(yaml, /LIBSQLITE3_FLAGS: "-DSQLCIPHER_OMIT_DLLMAIN"/);
   assert.doesNotMatch(yaml, /FORCE:MULTIPLE/);
 });

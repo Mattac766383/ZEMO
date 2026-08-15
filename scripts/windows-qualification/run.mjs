@@ -286,6 +286,8 @@ function runBuildPrep(report) {
       : Status.FAIL,
   );
 
+  recordLinkerDependencyProof(report);
+
   addCheck(
     report,
     "BUILD PREP",
@@ -634,8 +636,8 @@ function mutationContainment(report) {
 }
 
 function runWindowsRuntime(report, { nativeFirst = false, diagnostic = false } = {}) {
-  report._diagnosticMapped = [];
-  report._semanticStages = [];
+  report._diagnosticMapped = report._diagnosticMapped || [];
+  report._semanticStages = report._semanticStages || [];
   const modelDir = process.env.SUPREMACY_LOCAL_EMBEDDING_MODEL_DIR;
   const containment = mutationContainment(report);
   addCheck(
@@ -656,6 +658,7 @@ function runWindowsRuntime(report, { nativeFirst = false, diagnostic = false } =
   );
 
   if (diagnostic) {
+    prepareWindowsSidecar(report);
     runCargoSuites(report, compileSuites);
     runCargoSuites(report, [
       {
@@ -757,6 +760,112 @@ function failureTail(output) {
     exitCode: 1,
     output,
   });
+}
+
+function prepareWindowsSidecar(report) {
+  const prepare = run(
+    "node",
+    [
+      "apps/desktop/scripts/prepare-operation-executor-sidecar.mjs",
+      "--target",
+      windowsTarget,
+    ],
+    { allowFailure: true, logName: "sidecar-prepare" },
+  );
+  const prepareOutput = `${prepare.stdout}\n${prepare.stderr}`.trim();
+  addCheck(
+    report,
+    "BUILD PREP",
+    "Prepare Windows operation-executor sidecar before desktop cargo check",
+    prepare.status === 0 ? Status.PASS : Status.FAIL,
+    prepare.status === 0
+      ? prepareOutput || "sidecar prepared"
+      : formatCapturedFailure({
+          command: "node prepare-operation-executor-sidecar.mjs",
+          exitCode: prepare.status,
+          output: prepareOutput,
+          logPath: prepare.logPath,
+        }),
+  );
+  report._diagnosticMapped = report._diagnosticMapped || [];
+  report._diagnosticMapped.push({
+    diagnostic: "COMPILATION",
+    name: "sidecar prepare",
+    status: prepare.status === 0 ? Status.PASS : Status.FAIL,
+    detail: prepareOutput,
+  });
+
+  const preflight = run(
+    "node",
+    [
+      "apps/desktop/scripts/assert-operation-executor-sidecar.mjs",
+      "--target",
+      windowsTarget,
+    ],
+    { allowFailure: true, logName: "sidecar-preflight" },
+  );
+  const preflightOutput = `${preflight.stdout}\n${preflight.stderr}`.trim();
+  addCheck(
+    report,
+    "BUILD PREP",
+    "Sidecar preflight: expected Windows packaged .exe exists and is non-empty",
+    preflight.status === 0 ? Status.PASS : Status.FAIL,
+    preflightOutput,
+  );
+  report._diagnosticMapped.push({
+    diagnostic: "COMPILATION",
+    name: "sidecar preflight",
+    status: preflight.status === 0 ? Status.PASS : Status.FAIL,
+    detail: preflightOutput,
+  });
+}
+
+function recordLinkerDependencyProof(report) {
+  const cargoConfig = readText(".cargo/config.toml");
+  const persistenceBuild = readText("crates/persistence/build.rs");
+  const hasOmitDllMain =
+    cargoConfig.includes("SQLCIPHER_OMIT_DLLMAIN") &&
+    cargoConfig.includes("LIBSQLITE3_FLAGS") &&
+    !cargoConfig.includes("FORCE:MULTIPLE") &&
+    persistenceBuild.includes("SQLCIPHER_OMIT_DLLMAIN");
+  addCheck(
+    report,
+    "BUILD PREP",
+    "Windows linker: SQLCIPHER_OMIT_DLLMAIN configured (no /FORCE:MULTIPLE)",
+    hasOmitDllMain ? Status.PASS : Status.FAIL,
+    `LIBSQLITE3_FLAGS=${process.env.LIBSQLITE3_FLAGS || "(from .cargo/config.toml)"}`,
+  );
+  report._diagnosticMapped = report._diagnosticMapped || [];
+  report._diagnosticMapped.push({
+    diagnostic: "LINKER",
+    name: "SQLCIPHER_OMIT_DLLMAIN configuration",
+    status: hasOmitDllMain ? Status.PASS : Status.FAIL,
+    detail: cargoConfig.trim(),
+  });
+
+  const trees = [
+    [
+      "libsqlite3-sys features",
+      ["tree", "-p", "application", "-e", "features", "-i", "libsqlite3-sys"],
+    ],
+    ["usearch features", ["tree", "-p", "search", "-e", "features", "-i", "usearch"]],
+    ["numkong features", ["tree", "-p", "search", "-e", "features", "-i", "numkong"]],
+  ];
+  for (const [name, args] of trees) {
+    const result = run("cargo", args, {
+      allowFailure: true,
+      logName: `cargo-tree-${name.replace(/\s+/g, "-")}`,
+    });
+    const output = `${result.stdout}\n${result.stderr}`.trim();
+    const status = result.status === 0 ? Status.PASS : Status.FAIL;
+    addCheck(report, "BUILD PREP", `cargo tree ${name}`, status, truncate(output, 1200));
+    report._diagnosticMapped.push({
+      diagnostic: "LINKER",
+      name: `cargo tree ${name}`,
+      status,
+      detail: output,
+    });
+  }
 }
 
 function recordCargoCheck(report, section, name, cargoArgs) {

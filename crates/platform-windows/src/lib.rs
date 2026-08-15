@@ -75,10 +75,10 @@ mod windows {
             BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_ENCRYPTED,
             FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS,
             FILE_ATTRIBUTE_RECALL_ON_OPEN, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
-            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_NO_RECALL, FILE_FLAG_OPEN_REPARSE_POINT,
-            FILE_ID_INFO, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-            FILE_SHARE_WRITE, FileAttributeTagInfo, FileIdInfo, GetDriveTypeW,
-            GetFileInformationByHandle, GetFileInformationByHandleEx,
+            FILE_CASE_SENSITIVE_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_NO_RECALL,
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+            FILE_SHARE_READ, FILE_SHARE_WRITE, FileAttributeTagInfo, FileCaseSensitiveInfo,
+            FileIdInfo, GetDriveTypeW, GetFileInformationByHandle, GetFileInformationByHandleEx,
             GetVolumeInformationByHandleW, GetVolumeInformationW,
             GetVolumeNameForVolumeMountPointW, GetVolumePathNameW, OPEN_EXISTING, SYNCHRONIZE,
         },
@@ -111,6 +111,7 @@ mod windows {
         pub last_error: Option<u32>,
         pub error_87: bool,
         pub inspect_error: Option<String>,
+        pub win32_api_trace: Vec<String>,
     }
 
     impl WindowsPlatform {
@@ -235,6 +236,273 @@ mod windows {
             )
         }
 
+        fn win32_probe_line(fields: [&str; 9]) -> String {
+            let [
+                api,
+                path,
+                handle_type,
+                access,
+                share,
+                disposition,
+                flags,
+                information_class,
+                result,
+            ] = fields;
+            format!(
+                "{api} path={path} handle={handle_type} access={access} share={share} disposition={disposition} flags={flags} information_class={information_class} result={result}"
+            )
+        }
+
+        fn win32_result_from_bool(ok: i32) -> String {
+            if ok != 0 {
+                "OK".to_owned()
+            } else {
+                match Self::last_win32_error_code() {
+                    Some(code) => format!("FAIL GetLastError={code}"),
+                    None => "FAIL GetLastError=unknown".to_owned(),
+                }
+            }
+        }
+
+        fn probe_create_file_w(
+            path: &Path,
+            handle_type: &str,
+            flags: u32,
+            flags_label: &str,
+        ) -> (Option<File>, String) {
+            let path_text = path.display().to_string();
+            let wide = Self::wide_null(path.as_os_str());
+            // SAFETY: wide is NUL-terminated; this is a diagnostic open of an
+            // existing path and does not follow an unrelated handle.
+            let handle = unsafe {
+                CreateFileW(
+                    wide.as_ptr(),
+                    FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    ptr::null(),
+                    OPEN_EXISTING,
+                    flags,
+                    ptr::null_mut(),
+                )
+            };
+            let result = if handle == INVALID_HANDLE_VALUE {
+                Self::win32_result_from_bool(0)
+            } else {
+                "OK".to_owned()
+            };
+            let line = Self::win32_probe_line([
+                "CreateFileW",
+                &path_text,
+                handle_type,
+                "FILE_READ_ATTRIBUTES|SYNCHRONIZE",
+                "FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE",
+                "OPEN_EXISTING",
+                flags_label,
+                "-",
+                &result,
+            ]);
+            if handle == INVALID_HANDLE_VALUE {
+                (None, line)
+            } else {
+                // SAFETY: ownership of the successful CreateFileW handle transfers once.
+                (Some(unsafe { File::from_raw_handle(handle as _) }), line)
+            }
+        }
+
+        fn probe_handle_information(
+            handle: HANDLE,
+            path: &str,
+            handle_type: &str,
+            information_class_name: &str,
+            class: windows_sys::Win32::Storage::FileSystem::FILE_INFO_BY_HANDLE_CLASS,
+            buffer: *mut c_void,
+            size: u32,
+        ) -> String {
+            // SAFETY: `buffer` is writable storage sized for `size` and `handle`
+            // is live. GetLastError is read only when this call fails.
+            let ok = unsafe { GetFileInformationByHandleEx(handle, class, buffer, size) };
+            Self::win32_probe_line([
+                "GetFileInformationByHandleEx",
+                path,
+                handle_type,
+                "-",
+                "-",
+                "-",
+                "-",
+                information_class_name,
+                &Self::win32_result_from_bool(ok),
+            ])
+        }
+
+        fn probe_basic_by_handle(handle: HANDLE, path: &str, handle_type: &str) -> String {
+            let mut basic = BY_HANDLE_FILE_INFORMATION::default();
+            // SAFETY: `basic` is writable storage; GetLastError is read only if
+            // this call fails.
+            let ok = unsafe { GetFileInformationByHandle(handle, ptr::addr_of_mut!(basic)) };
+            Self::win32_probe_line([
+                "GetFileInformationByHandle",
+                path,
+                handle_type,
+                "-",
+                "-",
+                "-",
+                "-",
+                "-",
+                &Self::win32_result_from_bool(ok),
+            ])
+        }
+
+        fn instrument_inspect_chain(path: &Path) -> Vec<String> {
+            let mut trace = Vec::new();
+            let Ok((root, _)) = Self::drive_root_and_components(path) else {
+                trace.push("drive_root_and_components: FAIL".to_owned());
+                return trace;
+            };
+            let root_text = root.display().to_string();
+            let target_text = path.display().to_string();
+
+            let (legacy_root, legacy_line) = Self::probe_create_file_w(
+                &root,
+                "volume-root",
+                FILE_FLAG_BACKUP_SEMANTICS
+                    | FILE_FLAG_OPEN_REPARSE_POINT
+                    | FILE_FLAG_OPEN_NO_RECALL,
+                "FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_OPEN_NO_RECALL",
+            );
+            trace.push(legacy_line);
+            if let Some(file) = legacy_root {
+                let handle = file.as_raw_handle() as HANDLE;
+                let mut tag = FILE_ATTRIBUTE_TAG_INFO::default();
+                let tag_size =
+                    u32::try_from(mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>()).unwrap_or(u32::MAX);
+                trace.push(Self::probe_handle_information(
+                    handle,
+                    &root_text,
+                    "volume-root",
+                    "FileAttributeTagInfo",
+                    FileAttributeTagInfo,
+                    ptr::addr_of_mut!(tag).cast::<c_void>(),
+                    tag_size,
+                ));
+                trace.push(Self::probe_basic_by_handle(
+                    handle,
+                    &root_text,
+                    "volume-root",
+                ));
+                let mut id = FILE_ID_INFO {
+                    VolumeSerialNumber: 0,
+                    FileId: unsafe { mem::zeroed() },
+                };
+                let id_size = u32::try_from(mem::size_of::<FILE_ID_INFO>()).unwrap_or(u32::MAX);
+                trace.push(Self::probe_handle_information(
+                    handle,
+                    &root_text,
+                    "volume-root",
+                    "FileIdInfo",
+                    FileIdInfo,
+                    ptr::addr_of_mut!(id).cast::<c_void>(),
+                    id_size,
+                ));
+                let mut case_info = FILE_CASE_SENSITIVE_INFO { Flags: 0 };
+                let case_size =
+                    u32::try_from(mem::size_of::<FILE_CASE_SENSITIVE_INFO>()).unwrap_or(u32::MAX);
+                trace.push(Self::probe_handle_information(
+                    handle,
+                    &root_text,
+                    "volume-root",
+                    "FileCaseSensitiveInfo",
+                    FileCaseSensitiveInfo,
+                    ptr::addr_of_mut!(case_info).cast::<c_void>(),
+                    case_size,
+                ));
+            }
+
+            let (production_root, production_line) = Self::probe_create_file_w(
+                &root,
+                "volume-root",
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_NO_RECALL,
+                "FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_NO_RECALL",
+            );
+            trace.push(production_line);
+            drop(production_root);
+            trace.push(
+                "GetFileInformationByHandleEx volume-root FileAttributeTagInfo: SKIPPED \
+                 (unsupported on volume-root handles; do not fail inspect)"
+                    .to_owned(),
+            );
+
+            match Self::open_anchored(
+                path,
+                FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                true,
+            ) {
+                Ok(target) => {
+                    let handle = target.as_raw_handle() as HANDLE;
+                    trace.push(Self::win32_probe_line([
+                        "open_anchored",
+                        &target_text,
+                        "directory-or-file",
+                        "FILE_READ_ATTRIBUTES",
+                        "FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE",
+                        "OPEN_EXISTING",
+                        "volume-root without FILE_FLAG_OPEN_REPARSE_POINT; children OBJ_DONT_REPARSE",
+                        "-",
+                        "OK",
+                    ]));
+                    let mut tag = FILE_ATTRIBUTE_TAG_INFO::default();
+                    let tag_size = u32::try_from(mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>())
+                        .unwrap_or(u32::MAX);
+                    trace.push(Self::probe_handle_information(
+                        handle,
+                        &target_text,
+                        "directory-or-file",
+                        "FileAttributeTagInfo",
+                        FileAttributeTagInfo,
+                        ptr::addr_of_mut!(tag).cast::<c_void>(),
+                        tag_size,
+                    ));
+                    let mut id = FILE_ID_INFO {
+                        VolumeSerialNumber: 0,
+                        FileId: unsafe { mem::zeroed() },
+                    };
+                    let id_size = u32::try_from(mem::size_of::<FILE_ID_INFO>()).unwrap_or(u32::MAX);
+                    trace.push(Self::probe_handle_information(
+                        handle,
+                        &target_text,
+                        "directory-or-file",
+                        "FileIdInfo",
+                        FileIdInfo,
+                        ptr::addr_of_mut!(id).cast::<c_void>(),
+                        id_size,
+                    ));
+                    let mut case_info = FILE_CASE_SENSITIVE_INFO { Flags: 0 };
+                    let case_size = u32::try_from(mem::size_of::<FILE_CASE_SENSITIVE_INFO>())
+                        .unwrap_or(u32::MAX);
+                    trace.push(Self::probe_handle_information(
+                        handle,
+                        &target_text,
+                        "directory-or-file",
+                        "FileCaseSensitiveInfo",
+                        FileCaseSensitiveInfo,
+                        ptr::addr_of_mut!(case_info).cast::<c_void>(),
+                        case_size,
+                    ));
+                    trace.push(Self::probe_basic_by_handle(
+                        handle,
+                        &target_text,
+                        "directory-or-file",
+                    ));
+                }
+                Err(error) => {
+                    trace.push(format!(
+                        "open_anchored path={target_text} handle=directory-or-file result=FAIL {error}"
+                    ));
+                }
+            }
+            trace
+        }
+
         #[must_use]
         pub fn volume_path_diagnostics(path: &Path) -> VolumePathDiagnostics {
             let input_path = path.display().to_string();
@@ -285,15 +553,15 @@ mod windows {
             let (get_drive_type, drive_error) = Self::probe_drive_type(&dos_root);
             last_error = last_error.or(drive_error);
 
+            let win32_api_trace = Self::instrument_inspect_chain(inspected);
             let inspected_volume = WindowsPlatform.inspect_volume(inspected);
             let inspect_error = inspected_volume.as_ref().err().map(ToString::to_string);
-            if inspect_error.is_some() {
-                last_error = last_error.or(Self::last_win32_error_code());
-            }
-            let error_87 = last_error == Some(87)
-                || inspect_error.as_deref().is_some_and(|value| {
-                    value.contains("87") || value.contains("INVALID_PARAMETER")
-                });
+            // Do not call GetLastError after inspect returns — that value is
+            // unrelated once later successful Win32 calls have run.
+            let inspect_error_87 = inspect_error
+                .as_deref()
+                .is_some_and(|value| value.contains("87") || value.contains("INVALID_PARAMETER"));
+            let error_87 = inspect_error_87;
 
             match inspected_volume {
                 Ok(volume) => VolumePathDiagnostics {
@@ -315,6 +583,7 @@ mod windows {
                     last_error,
                     error_87,
                     inspect_error: None,
+                    win32_api_trace,
                 },
                 Err(_) => VolumePathDiagnostics {
                     input_path,
@@ -335,6 +604,7 @@ mod windows {
                     last_error,
                     error_87,
                     inspect_error,
+                    win32_api_trace,
                 },
             }
         }
@@ -506,10 +776,10 @@ mod windows {
                 return Self::reject_attribute_bits(info.FileAttributes, info.ReparseTag);
             }
             let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            // FileAttributeTagInfo returns ERROR_INVALID_PARAMETER (87) on some
-            // Windows 11 volume-root handles. Fall back to basic attributes so
-            // a legal `D:\` / `\\?\D:\` open is not rejected. Reparse and cloud
-            // bits still fail closed when the fallback query can see them.
+            // FileAttributeTagInfo is unsupported on some directory handles
+            // (ERROR_INVALID_PARAMETER / 87). Fall back to basic attributes.
+            // Volume-root handles must not reach this function — those classes
+            // are unsupported and would fail the entire inspect.
             if code != 87 {
                 return Err(PlatformError::from_windows_code(
                     u32::try_from(code).unwrap_or(u32::MAX),
@@ -628,8 +898,12 @@ mod windows {
         ) -> Result<File, PlatformError> {
             let (root, components) = Self::drive_root_and_components(path)?;
             let root_wide = Self::wide_null(root.as_os_str());
-            // SAFETY: root_wide is NUL terminated and requests a handle to the
-            // local volume root without following a final reparse point.
+            // Volume-root handles are NT namespace anchors, not mutation
+            // targets. FILE_FLAG_OPEN_REPARSE_POINT on `\\?\X:\` produces a
+            // handle that rejects FileAttributeTagInfo / FileIdInfo /
+            // GetFileInformationByHandle with ERROR_INVALID_PARAMETER (87) on
+            // Windows 11 26100. Open with backup semantics only. Child opens
+            // still use OBJ_DONT_REPARSE + reject_unsafe_handle.
             let root_handle = unsafe {
                 CreateFileW(
                     root_wide.as_ptr(),
@@ -637,9 +911,7 @@ mod windows {
                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                     ptr::null(),
                     OPEN_EXISTING,
-                    FILE_FLAG_BACKUP_SEMANTICS
-                        | FILE_FLAG_OPEN_REPARSE_POINT
-                        | FILE_FLAG_OPEN_NO_RECALL,
+                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_NO_RECALL,
                     ptr::null_mut(),
                 )
             };
@@ -648,7 +920,6 @@ mod windows {
             }
             // SAFETY: ownership of the CreateFileW handle transfers once.
             let mut current = unsafe { File::from_raw_handle(root_handle as _) };
-            Self::reject_unsafe_handle(current.as_raw_handle() as HANDLE)?;
             for (index, component) in components.iter().enumerate() {
                 let final_component = index + 1 == components.len();
                 current = Self::open_relative(
@@ -770,10 +1041,27 @@ mod windows {
                 filesystem_type: Some(String::from_utf16_lossy(
                     &filesystem_name[..filesystem_length],
                 )),
-                case_sensitive: false,
+                case_sensitive: Self::case_sensitive_from_handle(handle),
                 removable: drive_type == DRIVE_REMOVABLE,
                 local: drive_type == DRIVE_FIXED || drive_type == DRIVE_REMOVABLE,
             })
+        }
+
+        fn case_sensitive_from_handle(handle: HANDLE) -> bool {
+            let mut info = FILE_CASE_SENSITIVE_INFO { Flags: 0 };
+            let size = u32::try_from(mem::size_of::<FILE_CASE_SENSITIVE_INFO>()).unwrap_or(0);
+            // SAFETY: `info` is writable storage for FileCaseSensitiveInfo.
+            // Unsupported classes (including volume-root handles) return 87;
+            // NTFS default is case-insensitive, so treat that as false.
+            let ok = unsafe {
+                GetFileInformationByHandleEx(
+                    handle,
+                    FileCaseSensitiveInfo,
+                    ptr::addr_of_mut!(info).cast::<c_void>(),
+                    size,
+                )
+            };
+            ok != 0 && info.Flags & 0x1 != 0
         }
 
         fn identity(

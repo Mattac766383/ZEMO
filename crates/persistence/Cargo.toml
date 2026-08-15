@@ -7,6 +7,9 @@ edition = "2024"
 blake3 = "1.8.6"
 domain = { version = "0.1.0", path = "../domain" }
 knowledge = { version = "0.1.0", path = "../knowledge" }
+# bundled-sqlcipher-vendored-openssl keeps SQLCipher. On Windows, .cargo/config.toml
+# sets LIBSQLITE3_FLAGS=-DSQLCIPHER_OMIT_DLLMAIN so the static amalgamation does
+# not export DllMain next to NumKong (LNK2005). Encryption is unchanged.
 rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher-vendored-openssl"] }
 search = { version = "0.1.0", path = "../search" }
 serde = { version = "1.0.229", features = ["derive"] }

@@ -33,6 +33,7 @@ export const compileSuites = [
     args: ["check", "-p", "desktop"],
     section: "BUILD PREP",
     diagnostic: "COMPILATION",
+    requiresSidecar: true,
   },
   {
     name: "application windows_read_only_qualification --no-run (LNK probe)",
