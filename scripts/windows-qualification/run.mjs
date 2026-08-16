@@ -59,7 +59,7 @@ const repositoryDirectory = path.resolve(scriptDirectory, "../..");
 const reportsDirectory = path.join(repositoryDirectory, "target", "windows-qualification");
 const hostIsWindows = process.platform === "win32";
 const windowsTarget = "x86_64-pc-windows-msvc";
-const windowsTestStackBytes = "67108864";
+const windowsTestStackBytes = "268435456";
 
 const args = new Set(process.argv.slice(2));
 const skipCargoCheck = args.has("--skip-cargo-check");

@@ -241,6 +241,7 @@ export const executorSuites = [
       "milestone8_qualification",
       "--",
       "--nocapture",
+      "--test-threads=1",
     ],
     section: "ROLLBACK",
     diagnostic: "ROLLBACK",
@@ -250,7 +251,7 @@ export const executorSuites = [
 export const readOnlySuites = [
   {
     name: "persistence encrypted database open",
-    args: ["test", "-p", "persistence", "--lib", "--", "--nocapture"],
+    args: ["test", "-p", "persistence", "--lib", "--", "--nocapture", "--test-threads=1"],
     section: "READ-ONLY",
     diagnostic: "LINKER",
   },
@@ -278,6 +279,7 @@ export const readOnlySuites = [
       "safe_scanner",
       "--",
       "--nocapture",
+      "--test-threads=1",
     ],
     section: "READ-ONLY",
     diagnostic: "LINKER",

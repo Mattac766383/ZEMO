@@ -7,10 +7,10 @@
 # SQLCipher encryption itself is unchanged.
 [env]
 LIBSQLITE3_FLAGS = "-DSQLCIPHER_OMIT_DLLMAIN"
-# Debug MSVC + SQLCipher/OpenSSL + application frames overflowed 16 MiB
-# test threads on GHA rustc 1.97 (STATUS_STACK_OVERFLOW / 0xC00000FD).
-# 64 MiB is required together with C opt-level 1 (not 3): /O2 on the
-# SQLCipher amalgamation overflowed 64 MiB on the first Database::open.
+# Debug MSVC + SQLCipher/OpenSSL + application frames overflowed 64 MiB
+# test threads on GHA rustc 1.97 after catalog open succeeded (run
+# 31973711228). Schema init now finishes on a 256 MiB worker; the test
+# thread must match that reserve for post-open SQL and scan frames.
 # This is the worker-thread stack for cargo test, not a weakened assertion.
 # Windows PE main-thread reserve is set separately via RUSTFLAGS /STACK.
-RUST_MIN_STACK = "67108864"
+RUST_MIN_STACK = "268435456"
