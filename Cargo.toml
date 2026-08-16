@@ -39,11 +39,14 @@ unwrap_used = "deny"
 expect_used = "deny"
 
 # SQLCipher's amalgamation at opt-level 0/1 uses deep C frames on MSVC.
-# Debug Windows test threads are 2 MiB; -O3 is required for the parser and
-# OpenSSL frames to fit. This does not enlarge the thread stack.
+# -O3 shrinks those C frames. GHA rustc 1.97 still overflowed 2 MiB test
+# threads; RUST_MIN_STACK=16MiB in .cargo/config.toml is also required.
 # rust-cache prefix-key hashes this file so a profile change rebuilds C objects.
 [profile.dev.package.libsqlite3-sys]
 opt-level = 3
 
 [profile.dev.package.openssl-sys]
 opt-level = 3
+
+[profile.dev.package.rusqlite]
+opt-level = 1

@@ -18,6 +18,7 @@ env:
   ZEMO_DIST_TAG: "0.1.0-beta.6"
   ZEMO_WINDOWS_DIAGNOSTIC_ONLY: "0"
   LIBSQLITE3_FLAGS: "-DSQLCIPHER_OMIT_DLLMAIN"
+  RUST_MIN_STACK: "16777216"
 
 jobs:
   windows-qualification:

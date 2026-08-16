@@ -59,6 +59,7 @@ const repositoryDirectory = path.resolve(scriptDirectory, "../..");
 const reportsDirectory = path.join(repositoryDirectory, "target", "windows-qualification");
 const hostIsWindows = process.platform === "win32";
 const windowsTarget = "x86_64-pc-windows-msvc";
+const windowsTestStackBytes = "16777216";
 
 const args = new Set(process.argv.slice(2));
 const skipCargoCheck = args.has("--skip-cargo-check");
@@ -168,6 +169,7 @@ function collectEnvironment(report) {
       .SUPREMACY_LOCAL_EMBEDDING_MODEL_DIR
       ? "set"
       : "unset",
+    RUST_MIN_STACK: process.env.RUST_MIN_STACK || windowsTestStackBytes,
   };
 
     if (hostIsWindows) {
@@ -835,6 +837,15 @@ function recordLinkerDependencyProof(report) {
     hasOmitDllMain ? Status.PASS : Status.FAIL,
     `LIBSQLITE3_FLAGS=${process.env.LIBSQLITE3_FLAGS || "(from .cargo/config.toml)"}`,
   );
+  const hasTestStack =
+    cargoConfig.includes("RUST_MIN_STACK") && cargoConfig.includes(windowsTestStackBytes);
+  addCheck(
+    report,
+    "BUILD PREP",
+    "Windows debug cargo-test threads reserve 16 MiB (SQLCipher/OpenSSL)",
+    hasTestStack ? Status.PASS : Status.FAIL,
+    `RUST_MIN_STACK=${process.env.RUST_MIN_STACK || windowsTestStackBytes}`,
+  );
   report._diagnosticMapped = report._diagnosticMapped || [];
   report._diagnosticMapped.push({
     diagnostic: "LINKER",
@@ -1007,6 +1018,17 @@ function readJson(absolute) {
   }
 }
 
+function cargoCommandEnv() {
+  const env = { ...process.env };
+  if (process.platform === "win32") {
+    const current = Number.parseInt(env.RUST_MIN_STACK || "0", 10);
+    if (!Number.isFinite(current) || current < Number.parseInt(windowsTestStackBytes, 10)) {
+      env.RUST_MIN_STACK = windowsTestStackBytes;
+    }
+  }
+  return env;
+}
+
 function commandText(command, commandArgs) {
   const result = spawnSync(command, commandArgs, {
     cwd: repositoryDirectory,
@@ -1026,7 +1048,7 @@ function run(command, commandArgs, { allowFailure = false, logName } = {}) {
     cwd: repositoryDirectory,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-    env: process.env,
+    env: cargoCommandEnv(),
     shell: isWindowsNpm,
     windowsHide: true,
     maxBuffer: 32 * 1024 * 1024,

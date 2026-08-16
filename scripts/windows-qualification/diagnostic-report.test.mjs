@@ -61,5 +61,6 @@ test("workflow collects diagnostics after failures and still fails qualification
   assert.match(yaml, /diagnostic_only != 'true'/);
   assert.match(yaml, /prepare-operation-executor-sidecar\.mjs/);
   assert.match(yaml, /LIBSQLITE3_FLAGS: "-DSQLCIPHER_OMIT_DLLMAIN"/);
+  assert.match(yaml, /RUST_MIN_STACK: "16777216"/);
   assert.doesNotMatch(yaml, /FORCE:MULTIPLE/);
 });

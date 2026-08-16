@@ -31,6 +31,7 @@ test("workflow prepares the real sidecar before cargo check -p desktop", () => {
   assert.ok(prepareAt < desktopAt);
   assert.ok(yaml.includes("assert-operation-executor-sidecar.mjs"));
   assert.ok(yaml.includes("LIBSQLITE3_FLAGS: \"-DSQLCIPHER_OMIT_DLLMAIN\""));
+  assert.ok(yaml.includes("RUST_MIN_STACK: \"16777216\""));
   assert.ok(yaml.includes("cargo tree -p application -e features -i libsqlite3-sys"));
   assert.ok(yaml.includes("cargo tree -p search -e features -i usearch"));
   assert.doesNotMatch(yaml, /FORCE:MULTIPLE/);
@@ -43,6 +44,8 @@ test("SQLCipher static Windows builds omit DllMain without weakening SQLCipher",
   const persistenceBuild = readFileSync(join(root, "crates/persistence/build.rs"), "utf8");
   assert.match(cargoConfig, /LIBSQLITE3_FLAGS/);
   assert.match(cargoConfig, /SQLCIPHER_OMIT_DLLMAIN/);
+  assert.match(cargoConfig, /RUST_MIN_STACK/);
+  assert.match(cargoConfig, /16777216/);
   assert.doesNotMatch(cargoConfig, /FORCE:MULTIPLE/);
   assert.match(persistence, /bundled-sqlcipher-vendored-openssl/);
   assert.match(persistenceBuild, /SQLCIPHER_OMIT_DLLMAIN/);

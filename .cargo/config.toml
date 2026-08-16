@@ -7,3 +7,8 @@
 # SQLCipher encryption itself is unchanged.
 [env]
 LIBSQLITE3_FLAGS = "-DSQLCIPHER_OMIT_DLLMAIN"
+# Debug MSVC + SQLCipher/OpenSSL + application frames exceed Rust's 2 MiB
+# default test-thread stack (STATUS_STACK_OVERFLOW / 0xC00000FD on GHA).
+# C opt-level 3 alone was proven insufficient on rustc 1.97 / windows-latest.
+# This is the worker-thread stack for cargo test, not a weakened assertion.
+RUST_MIN_STACK = "16777216"
