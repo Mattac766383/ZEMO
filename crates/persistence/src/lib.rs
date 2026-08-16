@@ -154,6 +154,55 @@ pub enum PersistenceError {
     InvalidMonitoringInput,
 }
 
+/// Windows SQLCipher schema application overflowed a 64 MiB stack on GHA
+/// rustc 1.97 during `apply_schema_migrations` (run 31964409617). The PE
+/// main thread is 1 MiB, so catalog open must not run on the caller stack.
+#[cfg(windows)]
+const WINDOWS_DB_INIT_STACK_BYTES: usize = 256 * 1024 * 1024;
+
+#[cfg(windows)]
+fn initialize_on_windows_stack(
+    connection: Connection,
+    key: &DatabaseKey,
+) -> Result<Database, PersistenceError> {
+    db_init_trace("spawn_init_thread");
+    let key = DatabaseKey::from_bytes(key.expose_for_secret_store());
+    std::thread::Builder::new()
+        .name("zemo-db-init".into())
+        .stack_size(WINDOWS_DB_INIT_STACK_BYTES)
+        .spawn(move || initialize_on_current_stack(connection, &key))
+        .unwrap_or_else(|error| panic!("zemo db init thread spawn failed: {error}"))
+        .join()
+        .unwrap_or_else(|_| Err(PersistenceError::WriterPoisoned))
+}
+
+#[inline(never)]
+fn initialize_on_current_stack(
+    connection: Connection,
+    key: &DatabaseKey,
+) -> Result<Database, PersistenceError> {
+    db_init_trace("apply_cipher_key");
+    apply_cipher_key(&connection, key)?;
+    db_init_trace("apply_runtime_pragmas");
+    apply_runtime_pragmas(&connection)?;
+    db_init_trace("read_user_schema_version");
+    let schema_version = read_user_schema_version(&connection)?;
+    db_init_trace("apply_schema_migrations");
+    apply_schema_migrations(&connection, schema_version)?;
+    db_init_trace("repair_legacy_native_path_storage");
+    repair_legacy_native_path_storage(&connection)?;
+    db_init_trace("foreign_keys");
+    connection.execute_batch("PRAGMA foreign_keys = ON;")?;
+
+    let database = Database {
+        connection: Mutex::new(connection),
+    };
+    db_init_trace("ensure_builtin_records");
+    database.ensure_builtin_records()?;
+    db_init_trace("done");
+    Ok(database)
+}
+
 impl Database {
     #[inline(never)]
     pub fn open(path: &Path, key: &DatabaseKey) -> Result<Self, PersistenceError> {
@@ -173,26 +222,14 @@ impl Database {
 
     #[inline(never)]
     fn initialize(connection: Connection, key: &DatabaseKey) -> Result<Self, PersistenceError> {
-        db_init_trace("apply_cipher_key");
-        apply_cipher_key(&connection, key)?;
-        db_init_trace("apply_runtime_pragmas");
-        apply_runtime_pragmas(&connection)?;
-        db_init_trace("read_user_schema_version");
-        let schema_version = read_user_schema_version(&connection)?;
-        db_init_trace("apply_schema_migrations");
-        apply_schema_migrations(&connection, schema_version)?;
-        db_init_trace("repair_legacy_native_path_storage");
-        repair_legacy_native_path_storage(&connection)?;
-        db_init_trace("foreign_keys");
-        connection.execute_batch("PRAGMA foreign_keys = ON;")?;
-
-        let database = Self {
-            connection: Mutex::new(connection),
-        };
-        db_init_trace("ensure_builtin_records");
-        database.ensure_builtin_records()?;
-        db_init_trace("done");
-        Ok(database)
+        #[cfg(windows)]
+        {
+            initialize_on_windows_stack(connection, key)
+        }
+        #[cfg(not(windows))]
+        {
+            initialize_on_current_stack(connection, key)
+        }
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, Connection>, PersistenceError> {
@@ -4045,116 +4082,363 @@ fn read_user_schema_version(connection: &Connection) -> Result<i64, PersistenceE
 }
 
 #[inline(never)]
+fn execute_migration(
+    connection: &Connection,
+    name: &'static str,
+    sql: &'static str,
+) -> Result<(), PersistenceError> {
+    db_init_trace(name);
+    connection.execute_batch(sql)?;
+    Ok(())
+}
+
+#[inline(never)]
 fn apply_schema_migrations(
     connection: &Connection,
     schema_version: i64,
 ) -> Result<(), PersistenceError> {
     match schema_version {
         0 => {
-            connection.execute_batch(INITIAL_MIGRATION)?;
-            connection.execute_batch(SAFE_SCANNER_MIGRATION)?;
-            connection.execute_batch(SAFE_EXTRACTION_MIGRATION)?;
-            connection.execute_batch(LOCAL_SEARCH_REVIEW_MIGRATION)?;
-            connection.execute_batch(LOCAL_SEMANTIC_MIGRATION)?;
-            connection.execute_batch(LOCAL_RELATIONSHIPS_MIGRATION)?;
-            connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
-            connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
-            connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
-            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+            execute_migration(connection, "0001_initial", INITIAL_MIGRATION)?;
+            execute_migration(connection, "0002_safe_scanner", SAFE_SCANNER_MIGRATION)?;
+            execute_migration(
+                connection,
+                "0003_safe_content_extraction",
+                SAFE_EXTRACTION_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0004_local_search_review",
+                LOCAL_SEARCH_REVIEW_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0005_local_semantic_understanding",
+                LOCAL_SEMANTIC_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0006_local_cross_file_relationships",
+                LOCAL_RELATIONSHIPS_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0007_local_organization_proposals",
+                LOCAL_ORGANIZATION_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0008_safety_gated_filesystem_application",
+                SAFETY_GATED_EXECUTION_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0009_continuous_monitoring",
+                CONTINUOUS_MONITORING_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0010_local_rules_learning",
+                LOCAL_RULES_LEARNING_MIGRATION,
+            )?;
         }
         1 => {
-            connection.execute_batch(SAFE_SCANNER_MIGRATION)?;
-            connection.execute_batch(SAFE_EXTRACTION_MIGRATION)?;
-            connection.execute_batch(LOCAL_SEARCH_REVIEW_MIGRATION)?;
-            connection.execute_batch(LOCAL_SEMANTIC_MIGRATION)?;
-            connection.execute_batch(LOCAL_RELATIONSHIPS_MIGRATION)?;
-            connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
-            connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
-            connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
-            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+            execute_migration(connection, "0002_safe_scanner", SAFE_SCANNER_MIGRATION)?;
+            execute_migration(
+                connection,
+                "0003_safe_content_extraction",
+                SAFE_EXTRACTION_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0004_local_search_review",
+                LOCAL_SEARCH_REVIEW_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0005_local_semantic_understanding",
+                LOCAL_SEMANTIC_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0006_local_cross_file_relationships",
+                LOCAL_RELATIONSHIPS_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0007_local_organization_proposals",
+                LOCAL_ORGANIZATION_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0008_safety_gated_filesystem_application",
+                SAFETY_GATED_EXECUTION_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0009_continuous_monitoring",
+                CONTINUOUS_MONITORING_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0010_local_rules_learning",
+                LOCAL_RULES_LEARNING_MIGRATION,
+            )?;
         }
         2 => {
-            connection.execute_batch(SAFE_EXTRACTION_MIGRATION)?;
-            connection.execute_batch(LOCAL_SEARCH_REVIEW_MIGRATION)?;
-            connection.execute_batch(LOCAL_SEMANTIC_MIGRATION)?;
-            connection.execute_batch(LOCAL_RELATIONSHIPS_MIGRATION)?;
-            connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
-            connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
-            connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
-            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+            execute_migration(
+                connection,
+                "0003_safe_content_extraction",
+                SAFE_EXTRACTION_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0004_local_search_review",
+                LOCAL_SEARCH_REVIEW_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0005_local_semantic_understanding",
+                LOCAL_SEMANTIC_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0006_local_cross_file_relationships",
+                LOCAL_RELATIONSHIPS_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0007_local_organization_proposals",
+                LOCAL_ORGANIZATION_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0008_safety_gated_filesystem_application",
+                SAFETY_GATED_EXECUTION_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0009_continuous_monitoring",
+                CONTINUOUS_MONITORING_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0010_local_rules_learning",
+                LOCAL_RULES_LEARNING_MIGRATION,
+            )?;
         }
         3 => {
-            connection.execute_batch(LOCAL_SEARCH_REVIEW_MIGRATION)?;
-            connection.execute_batch(LOCAL_SEMANTIC_MIGRATION)?;
-            connection.execute_batch(LOCAL_RELATIONSHIPS_MIGRATION)?;
-            connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
-            connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
-            connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
-            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+            execute_migration(
+                connection,
+                "0004_local_search_review",
+                LOCAL_SEARCH_REVIEW_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0005_local_semantic_understanding",
+                LOCAL_SEMANTIC_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0006_local_cross_file_relationships",
+                LOCAL_RELATIONSHIPS_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0007_local_organization_proposals",
+                LOCAL_ORGANIZATION_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0008_safety_gated_filesystem_application",
+                SAFETY_GATED_EXECUTION_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0009_continuous_monitoring",
+                CONTINUOUS_MONITORING_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0010_local_rules_learning",
+                LOCAL_RULES_LEARNING_MIGRATION,
+            )?;
         }
         4 => {
-            connection.execute_batch(LOCAL_SEMANTIC_MIGRATION)?;
-            connection.execute_batch(LOCAL_RELATIONSHIPS_MIGRATION)?;
-            connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
-            connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
-            connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
-            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+            execute_migration(
+                connection,
+                "0005_local_semantic_understanding",
+                LOCAL_SEMANTIC_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0006_local_cross_file_relationships",
+                LOCAL_RELATIONSHIPS_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0007_local_organization_proposals",
+                LOCAL_ORGANIZATION_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0008_safety_gated_filesystem_application",
+                SAFETY_GATED_EXECUTION_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0009_continuous_monitoring",
+                CONTINUOUS_MONITORING_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0010_local_rules_learning",
+                LOCAL_RULES_LEARNING_MIGRATION,
+            )?;
         }
         5 => {
-            connection.execute_batch(LOCAL_RELATIONSHIPS_MIGRATION)?;
-            connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
-            connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
-            connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
-            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+            execute_migration(
+                connection,
+                "0006_local_cross_file_relationships",
+                LOCAL_RELATIONSHIPS_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0007_local_organization_proposals",
+                LOCAL_ORGANIZATION_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0008_safety_gated_filesystem_application",
+                SAFETY_GATED_EXECUTION_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0009_continuous_monitoring",
+                CONTINUOUS_MONITORING_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0010_local_rules_learning",
+                LOCAL_RULES_LEARNING_MIGRATION,
+            )?;
         }
         6 => {
-            connection.execute_batch(LOCAL_ORGANIZATION_MIGRATION)?;
-            connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
-            connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
-            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+            execute_migration(
+                connection,
+                "0007_local_organization_proposals",
+                LOCAL_ORGANIZATION_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0008_safety_gated_filesystem_application",
+                SAFETY_GATED_EXECUTION_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0009_continuous_monitoring",
+                CONTINUOUS_MONITORING_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0010_local_rules_learning",
+                LOCAL_RULES_LEARNING_MIGRATION,
+            )?;
         }
         7 => {
-            connection.execute_batch(SAFETY_GATED_EXECUTION_MIGRATION)?;
-            connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
-            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+            execute_migration(
+                connection,
+                "0008_safety_gated_filesystem_application",
+                SAFETY_GATED_EXECUTION_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0009_continuous_monitoring",
+                CONTINUOUS_MONITORING_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0010_local_rules_learning",
+                LOCAL_RULES_LEARNING_MIGRATION,
+            )?;
         }
         8 => {
-            connection.execute_batch(CONTINUOUS_MONITORING_MIGRATION)?;
-            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+            execute_migration(
+                connection,
+                "0009_continuous_monitoring",
+                CONTINUOUS_MONITORING_MIGRATION,
+            )?;
+            execute_migration(
+                connection,
+                "0010_local_rules_learning",
+                LOCAL_RULES_LEARNING_MIGRATION,
+            )?;
         }
         9 => {
+            db_init_trace("0009_monitoring_if_missing");
             apply_monitoring_migration_if_missing(connection, schema_version)?;
-            connection.execute_batch(LOCAL_RULES_LEARNING_MIGRATION)?;
+            execute_migration(
+                connection,
+                "0010_local_rules_learning",
+                LOCAL_RULES_LEARNING_MIGRATION,
+            )?;
         }
         10 => {
+            db_init_trace("0009_monitoring_if_missing");
             apply_monitoring_migration_if_missing(connection, schema_version)?;
         }
         11 => {
+            db_init_trace("0009_monitoring_if_missing");
             apply_monitoring_migration_if_missing(connection, schema_version)?;
         }
         12..=17 => {}
         value => return Err(PersistenceError::UnsupportedSchema(value)),
     }
     if schema_version <= 10 {
-        connection.execute_batch(EXECUTION_CONSENT_MIGRATION)?;
+        execute_migration(
+            connection,
+            "0011_execution_consent_attestation",
+            EXECUTION_CONSENT_MIGRATION,
+        )?;
     }
     if schema_version <= 11 {
+        db_init_trace("0012_hybrid_semantic_search");
         apply_hybrid_search_migration(connection)?;
     }
     if schema_version <= 12 {
-        connection.execute_batch(MONITORING_CORRECTNESS_MIGRATION)?;
+        execute_migration(
+            connection,
+            "0013_monitoring_correctness_hardening",
+            MONITORING_CORRECTNESS_MIGRATION,
+        )?;
     }
     if schema_version <= 13 {
-        connection.execute_batch(EXECUTION_SAFETY_POLICY_V2_MIGRATION)?;
+        execute_migration(
+            connection,
+            "0014_execution_safety_policy_v2",
+            EXECUTION_SAFETY_POLICY_V2_MIGRATION,
+        )?;
     }
     if schema_version <= 14 {
-        connection.execute_batch(CROSS_PROCESS_RECOVERY_MIGRATION)?;
+        execute_migration(
+            connection,
+            "0015_cross_process_recovery_hardening",
+            CROSS_PROCESS_RECOVERY_MIGRATION,
+        )?;
     }
     if schema_version <= 15 {
-        connection.execute_batch(LOCAL_ANN_SEMANTIC_INDEX_MIGRATION)?;
+        execute_migration(
+            connection,
+            "0016_local_ann_semantic_index",
+            LOCAL_ANN_SEMANTIC_INDEX_MIGRATION,
+        )?;
     }
     if schema_version <= 16 {
-        connection.execute_batch(INCREMENTAL_ORGANIZATION_PROPOSALS_MIGRATION)?;
+        execute_migration(
+            connection,
+            "0017_incremental_organization_proposals",
+            INCREMENTAL_ORGANIZATION_PROPOSALS_MIGRATION,
+        )?;
     }
     Ok(())
 }
