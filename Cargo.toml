@@ -39,9 +39,9 @@ unwrap_used = "deny"
 expect_used = "deny"
 
 # SQLCipher's amalgamation at opt-level 0/1 uses deep C frames on MSVC.
-# -O3 shrinks those C frames. GHA rustc 1.97 still overflowed 2 MiB test
-# threads; RUST_MIN_STACK=16MiB in .cargo/config.toml is also required.
-# rust-cache prefix-key hashes this file so a profile change rebuilds C objects.
+# -O3 shrinks those C frames. GHA rustc 1.97 still overflowed 16 MiB test
+# threads: debug application/persistence/test frames must also be reduced.
+# rust-cache prefix-key hashes this file so a profile change rebuilds objects.
 [profile.dev.package.libsqlite3-sys]
 opt-level = 3
 
@@ -49,4 +49,13 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.rusqlite]
+opt-level = 1
+
+[profile.dev.package.persistence]
+opt-level = 1
+
+[profile.dev.package.application]
+opt-level = 1
+
+[profile.test]
 opt-level = 1

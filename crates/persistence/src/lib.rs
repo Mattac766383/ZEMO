@@ -155,6 +155,7 @@ pub enum PersistenceError {
 }
 
 impl Database {
+    #[inline(never)]
     pub fn open(path: &Path, key: &DatabaseKey) -> Result<Self, PersistenceError> {
         let connection = Connection::open_with_flags(
             path,
@@ -165,6 +166,7 @@ impl Database {
         Self::initialize(connection, key)
     }
 
+    #[inline(never)]
     pub fn open_in_memory(key: &DatabaseKey) -> Result<Self, PersistenceError> {
         Self::initialize(Connection::open_in_memory()?, key)
     }

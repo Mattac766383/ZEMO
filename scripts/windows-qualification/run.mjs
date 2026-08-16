@@ -59,7 +59,7 @@ const repositoryDirectory = path.resolve(scriptDirectory, "../..");
 const reportsDirectory = path.join(repositoryDirectory, "target", "windows-qualification");
 const hostIsWindows = process.platform === "win32";
 const windowsTarget = "x86_64-pc-windows-msvc";
-const windowsTestStackBytes = "16777216";
+const windowsTestStackBytes = "67108864";
 
 const args = new Set(process.argv.slice(2));
 const skipCargoCheck = args.has("--skip-cargo-check");
@@ -842,7 +842,7 @@ function recordLinkerDependencyProof(report) {
   addCheck(
     report,
     "BUILD PREP",
-    "Windows debug cargo-test threads reserve 16 MiB (SQLCipher/OpenSSL)",
+    "Windows debug cargo-test threads reserve 64 MiB (SQLCipher/OpenSSL)",
     hasTestStack ? Status.PASS : Status.FAIL,
     `RUST_MIN_STACK=${process.env.RUST_MIN_STACK || windowsTestStackBytes}`,
   );

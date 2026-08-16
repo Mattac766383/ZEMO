@@ -249,6 +249,12 @@ export const executorSuites = [
 
 export const readOnlySuites = [
   {
+    name: "persistence encrypted database open",
+    args: ["test", "-p", "persistence", "--lib", "--", "--nocapture"],
+    section: "READ-ONLY",
+    diagnostic: "LINKER",
+  },
+  {
     name: "Windows read-only product flow",
     args: [
       "test",

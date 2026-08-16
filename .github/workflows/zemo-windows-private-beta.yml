@@ -18,7 +18,8 @@ env:
   ZEMO_DIST_TAG: "0.1.0-beta.6"
   ZEMO_WINDOWS_DIAGNOSTIC_ONLY: "0"
   LIBSQLITE3_FLAGS: "-DSQLCIPHER_OMIT_DLLMAIN"
-  RUST_MIN_STACK: "16777216"
+  RUST_MIN_STACK: "67108864"
+  RUSTFLAGS: "-C link-arg=/STACK:67108864"
 
 jobs:
   windows-qualification:
@@ -53,7 +54,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
-          prefix-key: win-dev-${{ hashFiles('Cargo.toml') }}
+          prefix-key: win-dev-${{ hashFiles('Cargo.toml') }}-stack64
 
       - name: platform-windows compile gate
         continue-on-error: true
@@ -223,7 +224,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
-          prefix-key: win-dev-${{ hashFiles('Cargo.toml') }}
+          prefix-key: win-dev-${{ hashFiles('Cargo.toml') }}-stack64
 
       - name: Record runner environment
         run: |
@@ -304,7 +305,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
-          prefix-key: win-dev-${{ hashFiles('Cargo.toml') }}
+          prefix-key: win-dev-${{ hashFiles('Cargo.toml') }}-stack64
 
       - name: Install npm dependencies from lockfile
         run: npm ci

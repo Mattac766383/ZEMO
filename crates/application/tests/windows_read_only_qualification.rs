@@ -51,6 +51,16 @@ fn write_file(root: &Path, relative: &str, bytes: &[u8]) -> PathBuf {
 }
 
 #[test]
+fn reports_test_thread_stack_env() {
+    let stack = std::env::var("RUST_MIN_STACK").unwrap_or_else(|_| "unset".to_owned());
+    eprintln!("RUST_MIN_STACK={stack}");
+    assert!(
+        stack.parse::<u64>().unwrap_or(0) >= 16 * 1024 * 1024,
+        "Windows application tests require RUST_MIN_STACK >= 16 MiB, got {stack}"
+    );
+}
+
+#[test]
 fn windows_read_only_scan_extract_search_review_proposals_rules() {
     let sandbox = m15_sandbox();
     let root = sandbox.path();
