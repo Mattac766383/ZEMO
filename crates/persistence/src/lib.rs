@@ -199,6 +199,10 @@ fn initialize_on_current_stack(
     };
     db_init_trace("ensure_builtin_records");
     database.ensure_builtin_records()?;
+    {
+        let connection = database.lock()?;
+        apply_cipher_memory_security(&connection)?;
+    }
     db_init_trace("done");
     Ok(database)
 }
@@ -4055,7 +4059,6 @@ fn review_items_for_file(
 fn apply_runtime_pragmas(connection: &Connection) -> Result<(), PersistenceError> {
     connection.execute_batch(
         "
-        PRAGMA cipher_memory_security = ON;
         PRAGMA foreign_keys = ON;
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous = FULL;
@@ -4075,10 +4078,184 @@ fn apply_runtime_pragmas(connection: &Connection) -> Result<(), PersistenceError
 }
 
 #[inline(never)]
+fn apply_cipher_memory_security(connection: &Connection) -> Result<(), PersistenceError> {
+    db_init_trace("cipher_memory_security");
+    connection.execute_batch("PRAGMA cipher_memory_security = ON;")?;
+    Ok(())
+}
+
+#[inline(never)]
 fn read_user_schema_version(connection: &Connection) -> Result<i64, PersistenceError> {
     connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(Into::into)
+}
+
+fn keyword_at(sql: &str, index: usize, word: &str) -> bool {
+    let bytes = sql.as_bytes();
+    if index + word.len() > bytes.len() {
+        return false;
+    }
+    if index > 0 && is_sql_ident_byte(bytes[index - 1]) {
+        return false;
+    }
+    if index + word.len() < bytes.len() && is_sql_ident_byte(bytes[index + word.len()]) {
+        return false;
+    }
+    sql[index..index + word.len()].eq_ignore_ascii_case(word)
+}
+
+fn is_sql_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn skip_sql_whitespace(sql: &str, mut index: usize) -> usize {
+    let bytes = sql.as_bytes();
+    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    index
+}
+
+fn create_trigger_at(sql: &str, index: usize) -> bool {
+    if !keyword_at(sql, index, "CREATE") {
+        return false;
+    }
+    let next = skip_sql_whitespace(sql, index + "CREATE".len());
+    keyword_at(sql, next, "TRIGGER")
+}
+
+fn statement_has_sql(statement: &str) -> bool {
+    statement.lines().any(|line| {
+        let line = line.trim();
+        !line.is_empty() && !line.starts_with("--")
+    })
+}
+
+fn split_sqlite_statements(sql: &str) -> Vec<&str> {
+    let bytes = sql.as_bytes();
+    let mut statements = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut trigger_body = 0_u32;
+    let mut case_depth = 0_u32;
+    let mut pending_trigger = false;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        let next = bytes.get(index + 1).copied().unwrap_or(0);
+
+        if in_line_comment {
+            if byte == b'\n' {
+                in_line_comment = false;
+            }
+            index += 1;
+            continue;
+        }
+        if in_block_comment {
+            if byte == b'*' && next == b'/' {
+                in_block_comment = false;
+                index += 2;
+                continue;
+            }
+            index += 1;
+            continue;
+        }
+        if in_single {
+            if byte == b'\'' {
+                if next == b'\'' {
+                    index += 2;
+                    continue;
+                }
+                in_single = false;
+            }
+            index += 1;
+            continue;
+        }
+        if in_double {
+            if byte == b'"' {
+                if next == b'"' {
+                    index += 2;
+                    continue;
+                }
+                in_double = false;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'-' && next == b'-' {
+            in_line_comment = true;
+            index += 2;
+            continue;
+        }
+        if byte == b'/' && next == b'*' {
+            in_block_comment = true;
+            index += 2;
+            continue;
+        }
+        if byte == b'\'' {
+            in_single = true;
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_double = true;
+            index += 1;
+            continue;
+        }
+
+        if create_trigger_at(sql, index) {
+            pending_trigger = true;
+        }
+        if pending_trigger && keyword_at(sql, index, "BEGIN") {
+            trigger_body = trigger_body.saturating_add(1);
+            pending_trigger = false;
+        }
+        if keyword_at(sql, index, "CASE") {
+            case_depth = case_depth.saturating_add(1);
+        }
+        if keyword_at(sql, index, "END") {
+            if case_depth > 0 {
+                case_depth = case_depth.saturating_sub(1);
+            } else if trigger_body > 0 {
+                trigger_body = trigger_body.saturating_sub(1);
+            }
+        }
+        if byte == b';' && trigger_body == 0 {
+            let statement = sql[start..=index].trim();
+            if statement_has_sql(statement) {
+                statements.push(statement);
+            }
+            start = index + 1;
+        }
+        index += 1;
+    }
+
+    let tail = sql[start..].trim();
+    if statement_has_sql(tail) {
+        statements.push(tail);
+    }
+    statements
+}
+
+#[inline(never)]
+fn execute_sqlite_script(
+    connection: &Connection,
+    name: &'static str,
+    sql: &str,
+) -> Result<(), PersistenceError> {
+    for (index, statement) in split_sqlite_statements(sql).into_iter().enumerate() {
+        db_init_trace(&format!("{name}[{index}]"));
+        connection.execute_batch(statement).map_err(|error| {
+            eprintln!("zemo db init failed {name}[{index}]: {error}\n{statement}");
+            PersistenceError::Sql(error)
+        })?;
+    }
+    Ok(())
 }
 
 #[inline(never)]
@@ -4088,27 +4265,13 @@ fn execute_migration(
     sql: &'static str,
 ) -> Result<(), PersistenceError> {
     db_init_trace(name);
-    connection.execute_batch(sql)?;
+    execute_sqlite_script(connection, name, sql)?;
     Ok(())
 }
 
 #[inline(never)]
 fn apply_initial_migration(connection: &Connection) -> Result<(), PersistenceError> {
-    let sql = INITIAL_MIGRATION;
-    let fts_at = sql
-        .find("CREATE VIRTUAL TABLE search_documents_fts")
-        .ok_or(PersistenceError::UnsupportedSchema(0))?;
-    let post_at = sql[fts_at..]
-        .find("\n-- Embedding generations")
-        .map(|offset| fts_at + offset)
-        .ok_or(PersistenceError::UnsupportedSchema(0))?;
-    db_init_trace("0001_pre_fts");
-    connection.execute_batch(&sql[..fts_at])?;
-    db_init_trace("0001_fts5");
-    connection.execute_batch(&sql[fts_at..post_at])?;
-    db_init_trace("0001_post_fts");
-    connection.execute_batch(&sql[post_at..])?;
-    Ok(())
+    execute_migration(connection, "0001_initial", INITIAL_MIGRATION)
 }
 
 #[inline(never)]
@@ -5022,10 +5185,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sqlite_script_splitter_applies_all_fresh_migrations() {
+        let connection = Connection::open_in_memory()
+            .unwrap_or_else(|error| panic!("memory connection: {error}"));
+        apply_cipher_key(&connection, &DatabaseKey::from_bytes([4; 32]))
+            .unwrap_or_else(|error| panic!("cipher key: {error}"));
+        apply_runtime_pragmas(&connection).unwrap_or_else(|error| panic!("pragmas: {error}"));
+        apply_schema_migrations(&connection, 0)
+            .unwrap_or_else(|error| panic!("migrations: {error}"));
+    }
+
+    #[test]
+    fn sqlite_script_splitter_applies_0001_statement_by_statement() {
+        let connection = Connection::open_in_memory()
+            .unwrap_or_else(|error| panic!("memory connection: {error}"));
+        apply_cipher_key(&connection, &DatabaseKey::from_bytes([3; 32]))
+            .unwrap_or_else(|error| panic!("cipher key: {error}"));
+        for (index, statement) in split_sqlite_statements(INITIAL_MIGRATION)
+            .into_iter()
+            .enumerate()
+        {
+            connection
+                .execute_batch(statement)
+                .unwrap_or_else(|error| panic!("0001[{index}] failed: {error}\n{statement}"));
+        }
+    }
+
+    #[test]
+    fn sqlite_script_splitter_keeps_triggers_as_one_statement() {
+        let statements = split_sqlite_statements(INITIAL_MIGRATION);
+        assert!(
+            statements.len() > 40,
+            "0001 should split into many top-level statements, got {}",
+            statements.len()
+        );
+        assert!(
+            statements
+                .iter()
+                .any(|statement| statement.contains("CREATE VIRTUAL TABLE search_documents_fts")),
+            "FTS5 table must remain a statement"
+        );
+        assert!(
+            statements.iter().any(|statement| {
+                statement.contains("CREATE TRIGGER search_documents_fts_insert")
+                    && statement.contains("END")
+            }),
+            "FTS insert trigger must not be split on inner semicolons"
+        );
+        let search_review = split_sqlite_statements(LOCAL_SEARCH_REVIEW_MIGRATION);
+        assert!(
+            search_review.iter().any(|statement| {
+                statement.contains("CREATE TRIGGER local_search_fts_update_before")
+                    && statement.contains("CASE")
+                    && statement.contains("END;")
+            }),
+            "CASE/END inside a trigger must not close the trigger body"
+        );
+    }
+
+    #[test]
     fn encrypted_migration_is_valid_and_has_no_fk_violations() {
-        let database = Database::open_in_memory(&DatabaseKey::from_bytes([7; 32]));
-        assert!(database.is_ok());
-        let database = database.unwrap_or_else(|error| panic!("database should open: {error}"));
+        let database = Database::open_in_memory(&DatabaseKey::from_bytes([7; 32]))
+            .unwrap_or_else(|error| panic!("database should open: {error}"));
         let violations = database
             .foreign_key_violation_count()
             .unwrap_or_else(|error| panic!("foreign key check should succeed: {error}"));
