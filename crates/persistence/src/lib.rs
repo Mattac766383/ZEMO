@@ -4093,13 +4093,32 @@ fn execute_migration(
 }
 
 #[inline(never)]
+fn apply_initial_migration(connection: &Connection) -> Result<(), PersistenceError> {
+    let sql = INITIAL_MIGRATION;
+    let fts_at = sql
+        .find("CREATE VIRTUAL TABLE search_documents_fts")
+        .ok_or(PersistenceError::UnsupportedSchema(0))?;
+    let post_at = sql[fts_at..]
+        .find("\n-- Embedding generations")
+        .map(|offset| fts_at + offset)
+        .ok_or(PersistenceError::UnsupportedSchema(0))?;
+    db_init_trace("0001_pre_fts");
+    connection.execute_batch(&sql[..fts_at])?;
+    db_init_trace("0001_fts5");
+    connection.execute_batch(&sql[fts_at..post_at])?;
+    db_init_trace("0001_post_fts");
+    connection.execute_batch(&sql[post_at..])?;
+    Ok(())
+}
+
+#[inline(never)]
 fn apply_schema_migrations(
     connection: &Connection,
     schema_version: i64,
 ) -> Result<(), PersistenceError> {
     match schema_version {
         0 => {
-            execute_migration(connection, "0001_initial", INITIAL_MIGRATION)?;
+            apply_initial_migration(connection)?;
             execute_migration(connection, "0002_safe_scanner", SAFE_SCANNER_MIGRATION)?;
             execute_migration(
                 connection,

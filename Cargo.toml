@@ -38,20 +38,19 @@ pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
 
-# SQLCipher is one amalgamation. MSVC /O2 (Rust opt-level 3) inlines that
-# into giant frames: GHA rustc 1.97 overflowed a 64 MiB test stack on the
-# first Database::open (STATUS_STACK_OVERFLOW). opt-level 1 keeps C frames
-# finite; RUST_MIN_STACK=64MiB covers the remaining debug depth.
-# Release must use the same cap or the Windows app cannot open the catalog.
-# rust-cache prefix-key hashes this file so a profile change rebuilds objects.
+# SQLCipher is one amalgamation. MSVC /O1 and /O2 both overflowed a dedicated
+# 256 MiB init thread on GHA rustc 1.97 while applying 0001_initial.sql
+# (STATUS_STACK_OVERFLOW on thread zemo-db-init). opt-level 0 disables
+# amalgamation inlining. Release uses the same cap so the Windows app can
+# open the catalog. rust-cache prefix-key hashes this file.
 [profile.dev.package.libsqlite3-sys]
-opt-level = 1
+opt-level = 0
 
 [profile.dev.package.openssl-sys]
 opt-level = 1
 
 [profile.release.package.libsqlite3-sys]
-opt-level = 1
+opt-level = 0
 
 [profile.release.package.openssl-sys]
 opt-level = 1
