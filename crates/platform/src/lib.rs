@@ -1513,6 +1513,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn inspection_error_maps_io_not_found_to_source_missing() {
+        let from_std =
+            PlatformError::from(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"));
+        assert!(
+            matches!(from_std, PlatformError::Io(_)),
+            "thiserror From<io::Error> must stay Io so adapters map at the native boundary"
+        );
+        assert_eq!(from_std.class(), PlatformErrorClass::Io);
+        assert!(matches!(
+            inspection_error(from_std),
+            PlatformError::SourceMissing
+        ));
+        assert!(matches!(
+            inspection_error(PlatformError::from(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "acl",
+            ))),
+            PlatformError::PermissionDenied
+        ));
+    }
+
+    #[test]
     fn windows_error_codes_have_portable_structured_classes() {
         for (code, expected) in [
             (2, PlatformErrorClass::SourceMissing),

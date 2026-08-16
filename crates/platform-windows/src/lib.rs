@@ -1906,8 +1906,12 @@ mod windows {
             is_cancelled: &dyn Fn() -> bool,
             on_progress: &mut dyn FnMut(FingerprintProgress),
         ) -> Result<FileFingerprint, PlatformError> {
-            let metadata = fs::symlink_metadata(path)?;
-            Self::reject_unsafe_attributes(&metadata)?;
+            // symlink_metadata is the reparse-point gate. `?` would wrap
+            // ERROR_FILE_NOT_FOUND as Io via thiserror; recovery needs
+            // SourceMissing so a committed move is not an opaque I/O failure.
+            let metadata =
+                fs::symlink_metadata(path).map_err(|error| Self::inspection_error(error.into()))?;
+            Self::reject_unsafe_attributes(&metadata).map_err(Self::inspection_error)?;
             if !metadata.is_file() {
                 return Err(PlatformError::Unsupported(
                     "only regular files can be fingerprinted".to_owned(),
@@ -1918,7 +1922,8 @@ mod windows {
                 GENERIC_READ | FILE_READ_ATTRIBUTES,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 false,
-            )?;
+            )
+            .map_err(Self::inspection_error)?;
             let metadata = file.metadata()?;
             Self::reject_unsafe_attributes(&metadata)?;
             let before_identity = Self::identity_from_open_file(path, &metadata, &file)?;

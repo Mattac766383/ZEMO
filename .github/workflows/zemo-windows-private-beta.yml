@@ -52,6 +52,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
+          prefix-key: win-dev-${{ hashFiles('Cargo.toml') }}
 
       - name: platform-windows compile gate
         continue-on-error: true
@@ -221,6 +222,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
+          prefix-key: win-dev-${{ hashFiles('Cargo.toml') }}
 
       - name: Record runner environment
         run: |
@@ -301,6 +303,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
+          prefix-key: win-dev-${{ hashFiles('Cargo.toml') }}
 
       - name: Install npm dependencies from lockfile
         run: npm ci

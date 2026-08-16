@@ -864,10 +864,11 @@ fn fresh_adapter_reconciles_committed_facts_and_round_trip_restores_original_pat
     // WindowsPlatform has no in-memory transaction state. A fresh instance
     // therefore models the facts available after a coordinator restart.
     let recovered = WindowsPlatform;
-    assert!(matches!(
-        recovered.fingerprint(&source, true, MAX_EXECUTION_FINGERPRINT_BYTES),
-        Err(PlatformError::SourceMissing)
-    ));
+    let missing_source = recovered.fingerprint(&source, true, MAX_EXECUTION_FINGERPRINT_BYTES);
+    assert!(
+        matches!(missing_source, Err(PlatformError::SourceMissing)),
+        "committed move must reconcile the old path as SourceMissing, got {missing_source:?}"
+    );
     let committed = recovered
         .fingerprint(&destination, true, MAX_EXECUTION_FINGERPRINT_BYTES)
         .unwrap_or_else(|error| panic!("committed destination should reconcile: {error}"));

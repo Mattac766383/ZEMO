@@ -180,6 +180,21 @@ fn file_id_info_is_stable_across_dos_and_verbatim_opens() {
 }
 
 #[test]
+fn missing_file_fingerprint_is_source_missing() {
+    let path = qualification_root().join("definitely-absent-fingerprint.txt");
+    let _ = fs::remove_file(&path);
+    assert!(
+        !path.exists(),
+        "fixture must be absent before fingerprint: {path:?}"
+    );
+    let error = WindowsPlatform.fingerprint(&path, true, MAX_EXECUTION_FINGERPRINT_BYTES);
+    assert!(
+        matches!(error, Err(PlatformError::SourceMissing)),
+        "absent path must be SourceMissing for restart reconciliation, got {error:?}"
+    );
+}
+
+#[test]
 fn reparse_leaf_is_refused_when_the_host_can_create_one() {
     let root = qualification_root().join("reparse");
     fs::create_dir_all(&root).unwrap_or_else(|error| panic!("reparse root: {error}"));
