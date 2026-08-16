@@ -173,17 +173,25 @@ impl Database {
 
     #[inline(never)]
     fn initialize(connection: Connection, key: &DatabaseKey) -> Result<Self, PersistenceError> {
+        db_init_trace("apply_cipher_key");
         apply_cipher_key(&connection, key)?;
+        db_init_trace("apply_runtime_pragmas");
         apply_runtime_pragmas(&connection)?;
+        db_init_trace("read_user_schema_version");
         let schema_version = read_user_schema_version(&connection)?;
+        db_init_trace("apply_schema_migrations");
         apply_schema_migrations(&connection, schema_version)?;
+        db_init_trace("repair_legacy_native_path_storage");
         repair_legacy_native_path_storage(&connection)?;
+        db_init_trace("foreign_keys");
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;
 
         let database = Self {
             connection: Mutex::new(connection),
         };
+        db_init_trace("ensure_builtin_records");
         database.ensure_builtin_records()?;
+        db_init_trace("done");
         Ok(database)
     }
 
@@ -4149,6 +4157,12 @@ fn apply_schema_migrations(
         connection.execute_batch(INCREMENTAL_ORGANIZATION_PROPOSALS_MIGRATION)?;
     }
     Ok(())
+}
+
+fn db_init_trace(step: &str) {
+    if std::env::var_os("ZEMO_DB_INIT_TRACE").is_some() {
+        eprintln!("zemo db init: {step}");
+    }
 }
 
 #[inline(never)]

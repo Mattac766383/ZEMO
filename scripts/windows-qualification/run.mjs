@@ -1025,6 +1025,9 @@ function cargoCommandEnv() {
     if (!Number.isFinite(current) || current < Number.parseInt(windowsTestStackBytes, 10)) {
       env.RUST_MIN_STACK = windowsTestStackBytes;
     }
+    if (!env.ZEMO_DB_INIT_TRACE) {
+      env.ZEMO_DB_INIT_TRACE = "1";
+    }
   }
   return env;
 }

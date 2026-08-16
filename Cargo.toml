@@ -38,15 +38,23 @@ pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
 
-# SQLCipher's amalgamation at opt-level 0/1 uses deep C frames on MSVC.
-# -O3 shrinks those C frames. GHA rustc 1.97 still overflowed 16 MiB test
-# threads: debug application/persistence/test frames must also be reduced.
+# SQLCipher is one amalgamation. MSVC /O2 (Rust opt-level 3) inlines that
+# into giant frames: GHA rustc 1.97 overflowed a 64 MiB test stack on the
+# first Database::open (STATUS_STACK_OVERFLOW). opt-level 1 keeps C frames
+# finite; RUST_MIN_STACK=64MiB covers the remaining debug depth.
+# Release must use the same cap or the Windows app cannot open the catalog.
 # rust-cache prefix-key hashes this file so a profile change rebuilds objects.
 [profile.dev.package.libsqlite3-sys]
-opt-level = 3
+opt-level = 1
 
 [profile.dev.package.openssl-sys]
-opt-level = 3
+opt-level = 1
+
+[profile.release.package.libsqlite3-sys]
+opt-level = 1
+
+[profile.release.package.openssl-sys]
+opt-level = 1
 
 [profile.dev.package.rusqlite]
 opt-level = 1
