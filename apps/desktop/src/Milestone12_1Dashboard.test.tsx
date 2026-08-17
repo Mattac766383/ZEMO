@@ -18,7 +18,10 @@ import {
   resolveOrganizationHealth,
   resolvePrimaryAction,
 } from "./HomeDashboard";
-import { markOnboardingCompleted } from "./onboardingStorage";
+import {
+  markOnboardingCompleted,
+  resetOnboardingCompleted,
+} from "./onboardingStorage";
 import type {
   MonitoringDashboard,
   OrganizationOperation,
@@ -250,15 +253,34 @@ function dashboard(
 
 const noop = () => undefined;
 
+function resetClientState() {
+  cleanup();
+  try {
+    window.localStorage.clear();
+  } catch {
+    // jsdom 29 may expose a non-functional localStorage when
+    // --localstorage-file is missing; onboarding uses a memory fallback.
+  }
+  try {
+    window.sessionStorage.clear();
+  } catch {
+    // Same jsdom storage stub.
+  }
+  resetOnboardingCompleted();
+}
+
 describe("Milestone 12.1 dashboard command center", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    resetClientState();
+  });
 
   beforeEach(() => {
+    resetClientState();
     vi.clearAllMocks();
     markOnboardingCompleted();
     vi.mocked(api.getMonitoringDashboard).mockResolvedValue(dashboard());
-    vi.mocked(api.getLatestOrganizationProposal).mockRejectedValue(
-      new Error("no proposal"),
+    vi.mocked(api.getLatestOrganizationProposal).mockResolvedValue(
+      null as never,
     );
     vi.mocked(api.getEmbeddingModelStatus).mockResolvedValue({
       modelId: "granite-embedding-97m-multilingual-r2",
@@ -330,6 +352,9 @@ describe("Milestone 12.1 dashboard command center", () => {
     expect(screen.getByRole("heading", { name: "À vérifier" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Surveillance" })).toBeTruthy();
     expect(screen.getByText(/prépare des propositions uniquement/i)).toBeTruthy();
+    await waitFor(() => {
+      expect(api.getEmbeddingModelStatus).toHaveBeenCalled();
+    });
     expect(await screen.findByText("Non activée")).toBeTruthy();
     expect(
       screen.getByText(/connexion peut être utilisée pour télécharger/i),

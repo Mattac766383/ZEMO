@@ -196,10 +196,17 @@ function recoveryAssessment(
 }
 
 describe("Milestone 8 safety-gated execution UI", () => {
-  afterEach(cleanup);
+  let completeStart: ((value: ExecutionDetail) => void) | undefined;
+
+  afterEach(() => {
+    completeStart?.(detail("CANCELLED"));
+    completeStart = undefined;
+    cleanup();
+  });
 
   beforeEach(() => {
     vi.clearAllMocks();
+    completeStart = undefined;
     progressHandler = undefined;
     vi.mocked(api.getSystemStatus).mockResolvedValue({
       localFirst: true,
@@ -223,7 +230,8 @@ describe("Milestone 8 safety-gated execution UI", () => {
   });
 
   it("uses native approval and requires only the large-batch UX phrase", async () => {
-    let completeStart: ((value: ExecutionDetail) => void) | undefined;
+    const completed = detail("COMPLETED");
+    completed.session.summary.applied = 3;
     vi.mocked(api.startExecution).mockImplementation(
       () =>
         new Promise((resolve) => {
@@ -250,7 +258,9 @@ describe("Milestone 8 safety-gated execution UI", () => {
       target: { value: "ORGANIZE" },
     });
     expect(apply.disabled).toBe(false);
-    fireEvent.click(apply);
+    // Native click avoids React 19 act() waiting forever on the in-flight
+    // startExecution promise that this test keeps pending on purpose.
+    apply.click();
     await waitFor(() => {
       expect(api.approveExecution).toHaveBeenCalledWith("execution-8", "ORGANIZE");
     });
@@ -271,8 +281,6 @@ describe("Milestone 8 safety-gated execution UI", () => {
     expect(await screen.findByText("Organisation en cours")).toBeTruthy();
     expect(screen.getByText("1 / 3 fichiers")).toBeTruthy();
 
-    const completed = detail("COMPLETED");
-    completed.session.summary.applied = 3;
     await act(async () => {
       completeStart?.(completed);
     });

@@ -9,6 +9,13 @@ export default defineConfig(async () => ({
   plugins: [react()],
   test: {
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    environment: "jsdom",
+    environmentOptions: {
+      jsdom: {
+        url: "http://localhost/",
+      },
+    },
+    setupFiles: ["./src/test/setup.ts"],
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

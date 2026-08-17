@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import App from "./App";
-import { markOnboardingCompleted } from "./onboardingStorage";
+import {
+  markOnboardingCompleted,
+  resetOnboardingCompleted,
+} from "./onboardingStorage";
 
 vi.mock("./api", () => ({
   restoreWorkspaceSession: vi.fn().mockResolvedValue(null),
@@ -128,15 +131,78 @@ vi.mock("./api", () => ({
   removeMonitoringExclusion: vi.fn(),
   retryExtraction: vi.fn(),
   cancelExtractionRetry: vi.fn(),
+  cancelIdentityResolution: vi.fn(),
+  decideIdentityCandidate: vi.fn(),
+  resolveIdentities: vi.fn(),
+  generateOrganizationProposal: vi.fn(),
+  cancelOrganizationProposal: vi.fn(),
+  subscribeOrganizationProposalProgress: vi.fn().mockResolvedValue(() => undefined),
+  getOrganizationProposal: vi.fn(),
+  setOrganizationProposalOverride: vi.fn(),
+  setOrganizationProposalStatus: vi.fn(),
+  refreshOrganizationProposalDrift: vi.fn(),
+  listExecutionHistory: vi.fn().mockResolvedValue([]),
+  prepareExecution: vi.fn(),
+  approveExecution: vi.fn(),
+  startExecution: vi.fn(),
+  pauseExecution: vi.fn(),
+  cancelExecution: vi.fn(),
+  getExecutionStatus: vi.fn(),
+  rollbackExecution: vi.fn(),
+  recoverExecution: vi.fn(),
+  subscribeExecutionProgress: vi.fn().mockResolvedValue(() => undefined),
+  getRawErrorText: (error: unknown) =>
+    typeof error === "string" ? error : "raw",
   redactPaths: (value: string) => value,
   getErrorMessage: () => "Erreur locale",
   getErrorTechnicalDetails: () => null,
 }));
 
+function resetClientState() {
+  cleanup();
+  try {
+    window.localStorage.clear();
+  } catch {
+    // jsdom 29 may expose a non-functional localStorage when
+    // --localstorage-file is missing; onboarding uses a memory fallback.
+  }
+  try {
+    window.sessionStorage.clear();
+  } catch {
+    // Same jsdom storage stub.
+  }
+  resetOnboardingCompleted();
+}
+
+function openAdvancedNav() {
+  const summary = screen.getByText("Options avancées");
+  fireEvent.click(summary);
+  const details = summary.closest("details");
+  if (details) {
+    details.open = true;
+  }
+}
+
+async function waitForRestoredHome() {
+  expect(
+    await screen.findByRole("heading", { name: "Bonjour" }),
+  ).toBeTruthy();
+  expect(await screen.findByText("/Users/local/Documents")).toBeTruthy();
+  await waitFor(() => {
+    expect(
+      (screen.getByRole("button", { name: "Surveillance" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+  });
+}
+
 describe("safe scanner desktop workflow", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    resetClientState();
+  });
 
   beforeEach(() => {
+    resetClientState();
     vi.clearAllMocks();
     markOnboardingCompleted();
     vi.mocked(api.restoreWorkspaceSession).mockResolvedValue(null);
@@ -160,6 +226,34 @@ describe("safe scanner desktop workflow", () => {
     vi.mocked(api.subscribeIdentityResolutionProgress).mockResolvedValue(
       () => undefined,
     );
+    vi.mocked(api.getLatestOrganizationProposal).mockResolvedValue(
+      null as never,
+    );
+    vi.mocked(api.getEmbeddingModelStatus).mockResolvedValue({
+      modelId: "granite-embedding-97m-multilingual-r2",
+      version: "test",
+      dimensions: 384,
+      status: "not_installed",
+      approximateDiskBytes: 1,
+      license: "Apache-2.0",
+      localOnly: true,
+      downloadImplemented: true,
+      lastError: null,
+      installRoot: "/tmp/models",
+    });
+    vi.mocked(api.scanWorkspace).mockResolvedValue({
+      id: "scan-not-used",
+      status: "COMPLETED",
+      filesDiscovered: 0,
+      filesIndexed: 0,
+      directoriesDiscovered: 0,
+      bytesDiscovered: 0,
+      filesHashed: 0,
+      duplicateGroups: 0,
+      errors: 0,
+      skippedItems: 0,
+      truncated: false,
+    });
     vi.mocked(api.listIdentityReviewGroups).mockResolvedValue({
       total: 0,
       limit: 30,
@@ -219,7 +313,7 @@ describe("safe scanner desktop workflow", () => {
     expect(
       screen.getAllByText(/analysés localement|organisation proposée/i).length,
     ).toBeGreaterThan(0);
-    fireEvent.click(screen.getByText("Options avancées"));
+    openAdvancedNav();
     fireEvent.click(screen.getByRole("button", { name: "Inventaire" }));
     expect(
       (screen.getByRole("button", { name: "Scanner" }) as HTMLButtonElement)
@@ -258,16 +352,17 @@ describe("safe scanner desktop workflow", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("/Users/local/Documents")).toBeTruthy();
+    await waitForRestoredHome();
     expect(
-      await screen.findByRole("heading", { name: "Bonjour" }),
-    ).toBeTruthy();
-    fireEvent.click(screen.getByText("Options avancées"));
+      screen.getByRole("button", { name: "Accueil" }).getAttribute("aria-current"),
+    ).toBe("page");
+    openAdvancedNav();
     fireEvent.click(screen.getByRole("button", { name: "Inventaire" }));
     expect(
       await screen.findByRole("heading", { name: "Analyse terminée" }),
     ).toBeTruthy();
     expect(api.createWorkspace).not.toHaveBeenCalled();
+    expect(api.scanWorkspace).not.toHaveBeenCalled();
   });
 
   it("opens persisted monitoring review after restart without a manual scan", async () => {
@@ -287,22 +382,33 @@ describe("safe scanner desktop workflow", () => {
     });
 
     render(<App />);
-    const nav = await screen.findByRole("navigation", {
+    await waitForRestoredHome();
+    expect(
+      screen.getByRole("button", { name: "Accueil" }).getAttribute("aria-current"),
+    ).toBe("page");
+
+    const nav = screen.getByRole("navigation", {
       name: "Navigation principale",
     });
+    fireEvent.click(within(nav).getByRole("button", { name: "Surveillance" }));
+    expect(
+      await screen.findByRole("heading", { name: "Surveillance" }),
+    ).toBeTruthy();
     fireEvent.click(
-      Array.from(nav.querySelectorAll("button")).find(
-        (button) => button.textContent === "Surveillance",
-      )!,
-    );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Ouvrir À revoir" }),
+      await screen.findByRole("button", { name: /^Ouvrir À revoir$/ }),
     );
     expect(
       await screen.findByRole("heading", {
         name: "Les fichiers qui demandent votre attention",
       }),
     ).toBeTruthy();
+    openAdvancedNav();
+    expect(
+      within(nav).getByRole("button", { name: "À revoir" }).className,
+    ).toContain("app-nav__item--active");
+    expect(
+      within(nav).getByRole("button", { name: "Inventaire" }).className,
+    ).not.toContain("app-nav__item--active");
     expect(api.listReviewItems).toHaveBeenCalledWith(
       "workspace-restored",
       "needs_review",
@@ -434,14 +540,14 @@ describe("safe scanner desktop workflow", () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByText("Options avancées"));
+    openAdvancedNav();
     fireEvent.click(screen.getByRole("button", { name: "Inventaire" }));
     fireEvent.click(screen.getByRole("button", { name: "Choisir un dossier" }));
     expect(
       await screen.findByText("C:\\Users\\User\\Documents\\TestData"),
     ).toBeTruthy();
 
-    fireEvent.click(screen.getByText("Options avancées"));
+    openAdvancedNav();
     fireEvent.click(screen.getByRole("button", { name: "Inventaire" }));
     fireEvent.click(screen.getByRole("button", { name: "Scanner" }));
     expect(await screen.findByRole("heading", { name: "Analyse terminée" })).toBeTruthy();
@@ -456,7 +562,7 @@ describe("safe scanner desktop workflow", () => {
     expect(await screen.findByRole("heading", { name: "Retrouvez vos fichiers" })).toBeTruthy();
     expect(await screen.findByText("Invoice 2026")).toBeTruthy();
 
-    fireEvent.click(screen.getByText("Options avancées"));
+    openAdvancedNav();
     fireEvent.click(screen.getAllByRole("button", { name: "À revoir" })[0]);
     expect(
       await screen.findByText("La reconnaissance locale du texte est indisponible."),
@@ -467,7 +573,7 @@ describe("safe scanner desktop workflow", () => {
       }),
     ).toBeTruthy();
 
-    fireEvent.click(screen.getByText("Options avancées"));
+    openAdvancedNav();
     fireEvent.click(screen.getByRole("button", { name: "Inventaire" }));
     fireEvent.click(screen.getByRole("button", { name: "Analyser les documents" }));
     expect(
@@ -475,7 +581,7 @@ describe("safe scanner desktop workflow", () => {
     ).toBeTruthy();
     expect(screen.getByText("Invoice 2026")).toBeTruthy();
 
-    fireEvent.click(screen.getByText("Options avancées"));
+    openAdvancedNav();
     fireEvent.click(screen.getByRole("button", { name: "Préférences de rangement" }));
     expect(
       await screen.findByRole("heading", { name: "Préférences de rangement" }),
@@ -501,7 +607,7 @@ describe("safe scanner desktop workflow", () => {
 
     render(<App />);
 
-    fireEvent.click(screen.getByText("Options avancées"));
+    openAdvancedNav();
     fireEvent.click(await screen.findByRole("button", { name: "Inventaire" }));
     expect(await screen.findByText("Préparation de l’organisation…")).toBeTruthy();
     expect(screen.getByText("12482")).toBeTruthy();
