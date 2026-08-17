@@ -27,13 +27,14 @@ fn assert_windows_sidecar_present() {
              npm run sidecar:prepare --workspace @working-name/desktop -- --target {target}",
             sidecar.display()
         ),
-        Err(_) => panic!(
-            "operation-executor sidecar missing at {}. \
+        Err(e) => panic!(
+            "operation-executor sidecar missing at {}: {}. \
              cargo check/build does not run Tauri beforeBuildCommand. \
              Prepare the real sidecar first: \
              npm run sidecar:prepare --workspace @working-name/desktop -- --target {target}. \
              Do not create an empty placeholder .exe and do not commit generated binaries.",
-            sidecar.display()
+            sidecar.display(),
+            e
         ),
     }
 }
