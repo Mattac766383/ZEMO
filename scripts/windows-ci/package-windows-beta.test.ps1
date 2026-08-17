@@ -96,6 +96,16 @@ function Invoke-PackageScript {
         [string]$RepoRoot,
         [string]$DistributionKind = "apply"
     )
+
+    $powerShellCommand = Get-Command pwsh -ErrorAction SilentlyContinue
+    if (-not $powerShellCommand) {
+        $powerShellCommand = Get-Command powershell -ErrorAction Stop
+    }
+    $powerShellExe = $powerShellCommand.Source
+    if ([string]::IsNullOrWhiteSpace($powerShellExe)) {
+        throw "Unable to resolve a PowerShell executable for packaging tests."
+    }
+
     $scriptArgs = @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
@@ -107,9 +117,21 @@ function Invoke-PackageScript {
     if ($PSBoundParameters.ContainsKey("RepoRoot")) {
         $scriptArgs += @("-RepoRoot", $RepoRoot)
     }
-    $output = & powershell @scriptArgs 2>&1
+
+    # Some cases below intentionally make the child packaging process fail.
+    # Keep the parent test fail-closed, but do not let stderr from that child
+    # become a terminating ErrorRecord before we can assert its exit code/text.
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & $powerShellExe @scriptArgs 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
     return @{
-        ExitCode = $LASTEXITCODE
+        ExitCode = $exitCode
         Output = ($output | Out-String)
     }
 }
