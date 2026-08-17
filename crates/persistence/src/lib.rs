@@ -4079,9 +4079,22 @@ fn apply_runtime_pragmas(connection: &Connection) -> Result<(), PersistenceError
 
 #[inline(never)]
 fn apply_cipher_memory_security(connection: &Connection) -> Result<(), PersistenceError> {
-    db_init_trace("cipher_memory_security");
-    connection.execute_batch("PRAGMA cipher_memory_security = ON;")?;
-    Ok(())
+    // SQLCipher's secure allocator overflowed a 256 MiB test stack on GHA
+    // rustc 1.97 / MSVC after catalog open (run 32026146454): the first
+    // post-init query dies with STATUS_STACK_OVERFLOW. At-rest encryption
+    // stays on; heap wiping does not.
+    #[cfg(windows)]
+    {
+        let _ = connection;
+        db_init_trace("cipher_memory_security_skipped_windows");
+        return Ok(());
+    }
+    #[cfg(not(windows))]
+    {
+        db_init_trace("cipher_memory_security");
+        connection.execute_batch("PRAGMA cipher_memory_security = ON;")?;
+        Ok(())
+    }
 }
 
 #[inline(never)]
