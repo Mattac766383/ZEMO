@@ -2858,7 +2858,40 @@ mod tests {
         DisplayLabel, FileFingerprint, FileId, FileKind, FileObservation, FileVersionId,
         NativeFileIdentity, NativePath, PathEncoding, PlatformKind, VolumeIdentity,
     };
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+
+    fn native_path_from_relative(path: &Path) -> NativePath {
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt as _;
+            NativePath {
+                encoding: PathEncoding::WindowsUtf16Le,
+                bytes: path
+                    .as_os_str()
+                    .encode_wide()
+                    .flat_map(u16::to_le_bytes)
+                    .collect(),
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStrExt as _;
+                NativePath {
+                    encoding: PathEncoding::UnixBytes,
+                    bytes: path.as_os_str().as_bytes().to_vec(),
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                NativePath {
+                    encoding: PathEncoding::UnixBytes,
+                    bytes: path.to_string_lossy().as_bytes().to_vec(),
+                }
+            }
+        }
+    }
 
     struct MonitoringFixture {
         database: Database,
@@ -3262,16 +3295,14 @@ mod tests {
         let fixture = monitoring_fixture(34);
         let initial_scan_id = ScanId::new();
         let file_id = FileId::new();
+        let relative = PathBuf::from("Inbox").join("removed.txt");
         let observation = FileObservation {
             file_id,
             version_id: FileVersionId::new(),
             workspace_id: fixture.workspace_id,
             root_id: fixture.root_id,
             scan_id: initial_scan_id,
-            relative_path: NativePath {
-                encoding: PathEncoding::UnixBytes,
-                bytes: b"Inbox/removed.txt".to_vec(),
-            },
+            relative_path: native_path_from_relative(&relative),
             display_label: DisplayLabel::new("removed.txt")
                 .unwrap_or_else(|error| panic!("label should be valid: {error}")),
             kind: FileKind::Regular,
@@ -3281,10 +3312,7 @@ mod tests {
                     volume: fixture.volume.clone(),
                     object_key: vec![1; 16],
                     parent_key: vec![2; 16],
-                    leaf_name: NativePath {
-                        encoding: PathEncoding::UnixBytes,
-                        bytes: b"removed.txt".to_vec(),
-                    },
+                    leaf_name: native_path_from_relative(Path::new("removed.txt")),
                     link_count: 1,
                     reparse_tag: None,
                 },
@@ -3332,11 +3360,7 @@ mod tests {
         assert!(
             fixture
                 .database
-                .mark_current_path_missing(
-                    fixture.root_id,
-                    Path::new("Inbox/removed.txt"),
-                    reconciliation_scan_id,
-                )
+                .mark_current_path_missing(fixture.root_id, &relative, reconciliation_scan_id,)
                 .unwrap_or_else(|error| panic!("path should become missing: {error}"))
         );
         assert!(
