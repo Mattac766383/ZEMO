@@ -6,15 +6,57 @@ param(
     [ValidateSet("apply", "propose-only")]
     [string]$DistributionKind,
 
-    [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path,
+    [string]$RepoRoot,
     [string]$DistTag = "0.1.0-beta.6",
     [string]$GitCommit = $env:GITHUB_SHA
 )
 
 $ErrorActionPreference = "Stop"
-Set-Location $RepoRoot
 
-$outDir = Join-Path $RepoRoot "target/windows-qualification/dist"
+if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+        $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE)) {
+        $RepoRoot = (Resolve-Path $env:GITHUB_WORKSPACE).Path
+    }
+    else {
+        $RepoRoot = (Get-Location).Path
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    throw "Repository root resolved to an empty path."
+}
+if (-not (Test-Path -LiteralPath $RepoRoot)) {
+    throw "Repository root does not exist: $RepoRoot"
+}
+$RepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
+
+foreach ($marker in @("Cargo.toml", "package.json", "apps/desktop/src-tauri")) {
+    $markerPath = Join-Path $RepoRoot $marker
+    if (-not (Test-Path -LiteralPath $markerPath)) {
+        throw "Repository root is missing $marker : $RepoRoot"
+    }
+}
+
+function Assert-NonEmptyPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string]$Value
+    )
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        throw "$Name must not be an empty path."
+    }
+}
+
+Assert-NonEmptyPath -Name "RepoRoot" -Value $RepoRoot
+Set-Location -LiteralPath $RepoRoot
+
+$qualificationRoot = Join-Path $RepoRoot "target/windows-qualification"
+Assert-NonEmptyPath -Name "qualificationRoot" -Value $qualificationRoot
+$outDir = Join-Path $qualificationRoot "dist"
+Assert-NonEmptyPath -Name "artifact root" -Value $outDir
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
 $searchRoots = @(
@@ -23,6 +65,9 @@ $searchRoots = @(
     (Join-Path $RepoRoot "apps/desktop/src-tauri/target/release/bundle/nsis"),
     (Join-Path $RepoRoot "apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis")
 )
+foreach ($root in $searchRoots) {
+    Assert-NonEmptyPath -Name "bundle root" -Value $root
+}
 
 $found = @()
 foreach ($root in $searchRoots) {
@@ -36,23 +81,40 @@ if (-not $found -or $found.Count -eq 0) {
 }
 
 $source = $found[0]
+Assert-NonEmptyPath -Name "installer source" -Value $source.FullName
 $installerName = if ($DistributionKind -eq "apply") {
     "ZEMO-$DistTag-windows-x64.exe"
 } else {
     "ZEMO-$DistTag-windows-x64-propose-only.exe"
 }
 $installerPath = Join-Path $outDir $installerName
+Assert-NonEmptyPath -Name "installer destination" -Value $installerPath
 Copy-Item -LiteralPath $source.FullName -Destination $installerPath -Force
 
 $hash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $sumsPath = Join-Path $outDir "SHA256SUMS.txt"
+Assert-NonEmptyPath -Name "SHA output" -Value $sumsPath
 "${hash}  ${installerName}" | Set-Content -LiteralPath $sumsPath -Encoding ascii
 
-$osName = (Get-CimInstance Win32_OperatingSystem | Select-Object -First 1).Caption
+$osName = [System.Environment]::OSVersion.VersionString
 $osVersion = [System.Environment]::OSVersion.VersionString
+if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
+    try {
+        $caption = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop | Select-Object -First 1).Caption
+        if (-not [string]::IsNullOrWhiteSpace($caption)) {
+            $osName = $caption
+        }
+    } catch {
+        $osName = $osVersion
+    }
+}
 $arch = $env:PROCESSOR_ARCHITECTURE
+if ([string]::IsNullOrWhiteSpace($arch)) {
+    $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+}
 $applyQualified = $DistributionKind -eq "apply"
-$decisionPath = Join-Path $RepoRoot "target/windows-qualification/apply-decision.json"
+$decisionPath = Join-Path $qualificationRoot "apply-decision.json"
+Assert-NonEmptyPath -Name "apply-decision path" -Value $decisionPath
 $qualificationStatus = "UNKNOWN"
 if (Test-Path -LiteralPath $decisionPath) {
     $decision = Get-Content -LiteralPath $decisionPath -Raw | ConvertFrom-Json
@@ -83,6 +145,7 @@ build timestamp: $((Get-Date).ToUniversalTime().ToString("o"))
 source installer: $($source.Name)
 "@
 $buildInfoPath = Join-Path $outDir "BUILDINFO.txt"
+Assert-NonEmptyPath -Name "BUILDINFO output" -Value $buildInfoPath
 Set-Content -LiteralPath $buildInfoPath -Value $buildInfo.Trim() -Encoding utf8
 
 if ($applyQualified) {
@@ -143,10 +206,13 @@ Fichier : $installerName
 }
 
 $readmePath = Join-Path $outDir "README-FIRST.txt"
+Assert-NonEmptyPath -Name "README output" -Value $readmePath
 Set-Content -LiteralPath $readmePath -Value $readme.Trim() -Encoding utf8
 
-$summarySource = Join-Path $RepoRoot "target/windows-qualification/qualification-summary.txt"
+$summarySource = Join-Path $qualificationRoot "qualification-summary.txt"
 $summaryDest = Join-Path $outDir "qualification-summary.txt"
+Assert-NonEmptyPath -Name "qualification-summary source" -Value $summarySource
+Assert-NonEmptyPath -Name "qualification-summary path" -Value $summaryDest
 if (Test-Path -LiteralPath $summarySource) {
     Copy-Item -LiteralPath $summarySource -Destination $summaryDest -Force
 } else {
@@ -160,9 +226,11 @@ $package = @{
     installer_path = $installerPath
     sha256 = $hash
     distribution_kind = $DistributionKind
+    repo_root = $RepoRoot
     notes = "NSIS installer packaged. GUI interaction NOT TESTED. SmartScreen NOT QUALIFIED."
 }
-$packagePath = Join-Path $RepoRoot "target/windows-qualification/package-result.json"
+$packagePath = Join-Path $qualificationRoot "package-result.json"
+Assert-NonEmptyPath -Name "package-result path" -Value $packagePath
 ($package | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $packagePath -Encoding utf8
 
 if ($env:GITHUB_OUTPUT) {
@@ -170,6 +238,7 @@ if ($env:GITHUB_OUTPUT) {
     Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "dist_dir=$outDir"
 }
 
+Write-Host "RepoRoot $RepoRoot"
 Write-Host "Packaged $installerName"
 Write-Host "SHA-256 $hash"
 Write-Host "Dist $outDir"

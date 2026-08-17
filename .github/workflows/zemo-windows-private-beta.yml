@@ -211,6 +211,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Package script RepoRoot resolution test
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\package-windows-beta.test.ps1
+
       - name: Setup Node 22
         uses: actions/setup-node@v4
         with:
@@ -280,14 +283,14 @@ jobs:
         run: npm run tauri -- build --features windows-apply-qualified
 
       - name: Inspect packaged runtime
-        run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\inspect-bundle.ps1
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\inspect-bundle.ps1 -RepoRoot $env:GITHUB_WORKSPACE
 
       - name: Package private-beta files
-        run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\package-windows-beta.ps1 -DistributionKind apply -DistTag $env:ZEMO_DIST_TAG -GitCommit $env:GITHUB_SHA
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\package-windows-beta.ps1 -DistributionKind apply -DistTag $env:ZEMO_DIST_TAG -GitCommit $env:GITHUB_SHA -RepoRoot $env:GITHUB_WORKSPACE
 
       - name: Silent NSIS install smoke
         continue-on-error: true
-        run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\smoke-nsis.ps1
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\smoke-nsis.ps1 -RepoRoot $env:GITHUB_WORKSPACE
 
       - name: Upload private-beta artifact
         uses: actions/upload-artifact@v4
@@ -364,10 +367,10 @@ jobs:
         run: npm run tauri -- build
 
       - name: Inspect packaged runtime
-        run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\inspect-bundle.ps1
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\inspect-bundle.ps1 -RepoRoot $env:GITHUB_WORKSPACE
 
       - name: Package propose-only files
-        run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\package-windows-beta.ps1 -DistributionKind propose-only -DistTag $env:ZEMO_DIST_TAG -GitCommit $env:GITHUB_SHA
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\package-windows-beta.ps1 -DistributionKind propose-only -DistTag $env:ZEMO_DIST_TAG -GitCommit $env:GITHUB_SHA -RepoRoot $env:GITHUB_WORKSPACE
 
       - name: Upload propose-only artifact
         uses: actions/upload-artifact@v4

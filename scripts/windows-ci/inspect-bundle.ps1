@@ -2,11 +2,31 @@
 # A successful compile alone is not enough.
 
 param(
-    [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
+    [string]$RepoRoot
 )
 
 $ErrorActionPreference = "Stop"
-Set-Location $RepoRoot
+
+if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+        $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE)) {
+        $RepoRoot = (Resolve-Path $env:GITHUB_WORKSPACE).Path
+    }
+    else {
+        $RepoRoot = (Get-Location).Path
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    throw "Repository root resolved to an empty path."
+}
+if (-not (Test-Path -LiteralPath $RepoRoot)) {
+    throw "Repository root does not exist: $RepoRoot"
+}
+$RepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
+Set-Location -LiteralPath $RepoRoot
 
 $searchRoots = @(
     (Join-Path $RepoRoot "target/release"),
