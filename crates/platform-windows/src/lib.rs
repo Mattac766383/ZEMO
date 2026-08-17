@@ -1297,8 +1297,12 @@ mod windows {
             Ok(())
         }
 
-        fn metadata_ns(value: u64) -> Option<i128> {
-            (value != 0).then_some(i128::from(value) * 100)
+        fn metadata_ns(filetime: u64) -> Option<i128> {
+            // FILETIME is 100-ns intervals since 1601-01-01. Convert to
+            // nanoseconds since the Unix epoch so timestamps match macOS/Linux
+            // and fit the executor protocol's i64 `modified_at_ns`.
+            const WINDOWS_TO_UNIX_EPOCH_100NS: i128 = 11_644_473_600 * 10_000_000;
+            (filetime != 0).then_some((i128::from(filetime) - WINDOWS_TO_UNIX_EPOCH_100NS) * 100)
         }
 
         fn inspection_error(error: PlatformError) -> PlatformError {
@@ -2271,6 +2275,29 @@ mod windows {
         }
 
         #[test]
+        fn filetime_metadata_ns_is_unix_epoch_and_fits_executor_i64() {
+            const UNIX_EPOCH_FILETIME: u64 = 116_444_736_000_000_000;
+            assert_eq!(WindowsPlatform::metadata_ns(0), None);
+            assert_eq!(WindowsPlatform::metadata_ns(UNIX_EPOCH_FILETIME), Some(0));
+
+            let unix_seconds = 1_767_225_600_i128; // 2026-01-01T00:00:00Z
+            let filetime =
+                u64::try_from(unix_seconds * 10_000_000 + i128::from(UNIX_EPOCH_FILETIME))
+                    .unwrap_or_else(|_| panic!("2026 FILETIME must fit u64"));
+            let nanoseconds = WindowsPlatform::metadata_ns(filetime)
+                .unwrap_or_else(|| panic!("2026 FILETIME must convert"));
+            assert_eq!(nanoseconds, unix_seconds * 1_000_000_000);
+            assert!(
+                i64::try_from(nanoseconds).is_ok(),
+                "executor protocol cannot carry 1601-epoch nanoseconds: {nanoseconds}"
+            );
+            assert!(
+                i64::try_from(i128::from(filetime) * 100).is_err(),
+                "the previous FILETIME*100 conversion must overflow i64 in 2026"
+            );
+        }
+
+        #[test]
         fn directory_create_options_used_by_open_relative_are_legal() {
             let directory = crate::anchored_create_options(true);
             let file = crate::anchored_create_options(false);
@@ -2355,6 +2382,17 @@ mod windows {
                 .fingerprint(&child_file, true, MAX_EXECUTION_FINGERPRINT_BYTES)
                 .unwrap_or_else(|error| panic!("fingerprint: {error}"));
             assert_eq!(fingerprint.native_identity.object_key.as_slice(), &file_id);
+            let modified = fingerprint
+                .modified_at_ns
+                .unwrap_or_else(|| panic!("regular files must expose a write time"));
+            assert!(
+                i64::try_from(modified).is_ok(),
+                "executor envelopes require Unix-epoch modified_at_ns in i64, got {modified}"
+            );
+            assert!(
+                (1_600_000_000_000_000_000..=9_000_000_000_000_000_000).contains(&modified),
+                "modified_at_ns must be Unix-epoch nanoseconds, got {modified}"
+            );
 
             let verbatim = fs::canonicalize(&nested)
                 .unwrap_or_else(|error| panic!("canonicalize nested: {error}"));

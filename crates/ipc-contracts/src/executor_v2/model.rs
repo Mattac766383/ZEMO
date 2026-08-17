@@ -252,6 +252,8 @@ impl NativeFileIdentityManifest {
 pub struct ExpectedFileStateManifest {
     pub native_identity: NativeFileIdentityManifest,
     pub byte_size: u64,
+    /// Unix-epoch nanoseconds. Windows FILETIME must be converted first;
+    /// 1601-epoch nanoseconds overflow `i64` in the current century.
     pub modified_at_ns: Option<i64>,
     pub attributes: u64,
     pub content_digest: FixedBytes32,
@@ -1156,6 +1158,8 @@ fn expected_state_from_live(
         .map(i64::try_from)
         .transpose()
         .map_err(|_| ValidationError::InvalidField("modified timestamp"))?;
+    // Unix-epoch nanoseconds fit i64 until 2262. Windows FILETIME converted as
+    // 1601-epoch nanoseconds overflows here and blocks every Apply start.
     Ok(ExpectedFileStateManifest {
         native_identity: NativeFileIdentityManifest {
             volume: volume_from_live(&value.native_identity.volume),

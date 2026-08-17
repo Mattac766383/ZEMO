@@ -9,7 +9,7 @@ use crate::{
     WatchRegistrationStatus, WorkspaceMonitoringStateRecord, WorkspaceRecord, from_sql_u64,
     to_sql_u64,
 };
-use domain::{RootId, ScanId, WorkspaceId};
+use domain::{NativePath, PathEncoding, RootId, ScanId, WorkspaceId};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use std::{
     ffi::OsString,
@@ -1506,8 +1506,10 @@ impl Database {
             [root_id.to_string()],
             |row| row.get(0),
         )?;
-        let normalized_path = monitoring_path_key(&relative_path, case_sensitive != 0);
-        let normalized_path_native = encode_native_path(&normalized_path)?;
+        let normalized_path_native = crate::normalized_native_path_storage_blob(
+            &native_path_from_path(&relative_path),
+            case_sensitive != 0,
+        )?;
         let valid_scan: i64 = transaction.query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM scans
@@ -2493,6 +2495,39 @@ fn monitoring_activity_from_row(
     })
 }
 
+pub(crate) fn native_path_from_path(path: &Path) -> NativePath {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt as _;
+        NativePath {
+            encoding: PathEncoding::WindowsUtf16Le,
+            bytes: path
+                .as_os_str()
+                .encode_wide()
+                .flat_map(u16::to_le_bytes)
+                .collect(),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt as _;
+            NativePath {
+                encoding: PathEncoding::UnixBytes,
+                bytes: path.as_os_str().as_bytes().to_vec(),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            NativePath {
+                encoding: PathEncoding::UnixBytes,
+                bytes: path.to_string_lossy().as_bytes().to_vec(),
+            }
+        }
+    }
+}
+
 fn normalize_relative_native_path(value: &Path) -> Result<PathBuf, PersistenceError> {
     let mut normalized = PathBuf::new();
     for component in value.components() {
@@ -2861,36 +2896,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     fn native_path_from_relative(path: &Path) -> NativePath {
-        #[cfg(windows)]
-        {
-            use std::os::windows::ffi::OsStrExt as _;
-            NativePath {
-                encoding: PathEncoding::WindowsUtf16Le,
-                bytes: path
-                    .as_os_str()
-                    .encode_wide()
-                    .flat_map(u16::to_le_bytes)
-                    .collect(),
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            #[cfg(unix)]
-            {
-                use std::os::unix::ffi::OsStrExt as _;
-                NativePath {
-                    encoding: PathEncoding::UnixBytes,
-                    bytes: path.as_os_str().as_bytes().to_vec(),
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                NativePath {
-                    encoding: PathEncoding::UnixBytes,
-                    bytes: path.to_string_lossy().as_bytes().to_vec(),
-                }
-            }
-        }
+        native_path_from_path(path)
     }
 
     struct MonitoringFixture {
@@ -3288,6 +3294,52 @@ mod tests {
             .database
             .normalize_interrupted_monitoring_jobs(fixture.workspace_id)
             .unwrap_or_else(|error| panic!("collision must not fail restore: {error}"));
+    }
+
+    #[test]
+    fn catalog_lookup_key_canonicalizes_windows_separators_like_persist() {
+        let stored = NativePath {
+            encoding: PathEncoding::WindowsUtf16Le,
+            bytes: "Inbox\\removed.txt"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect(),
+        };
+        let persist_blob = crate::normalized_native_path_storage_blob(&stored, false)
+            .unwrap_or_else(|error| panic!("windows catalog key should encode: {error}"));
+        let expected = std::iter::once(2_u8)
+            .chain(
+                "inbox/removed.txt"
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes),
+            )
+            .collect::<Vec<_>>();
+        assert_eq!(
+            persist_blob, expected,
+            "persisted catalog keys must use lowercase forward slashes"
+        );
+
+        let relative = PathBuf::from("Inbox").join("removed.txt");
+        let lookup_blob =
+            crate::normalized_native_path_storage_blob(&native_path_from_path(&relative), false)
+                .unwrap_or_else(|error| panic!("lookup catalog key should encode: {error}"));
+        let old_lookup = encode_native_path(&monitoring_path_key(&relative, false))
+            .unwrap_or_else(|error| panic!("legacy lookup key should encode: {error}"));
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                persist_blob, lookup_blob,
+                "Windows Path lookup must share persist's slash-canonical key"
+            );
+            assert_ne!(
+                persist_blob, old_lookup,
+                "OS-separator encode_native_path lookup is the Windows miss"
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (lookup_blob, old_lookup);
+        }
     }
 
     #[test]

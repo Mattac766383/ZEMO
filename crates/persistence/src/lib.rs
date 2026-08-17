@@ -5090,7 +5090,7 @@ fn native_path_storage_blob(path: &NativePath) -> Result<Vec<u8>, PersistenceErr
     Ok(stored)
 }
 
-fn normalized_native_path_storage_blob(
+pub(crate) fn normalized_native_path_storage_blob(
     path: &NativePath,
     case_sensitive: bool,
 ) -> Result<Vec<u8>, PersistenceError> {
