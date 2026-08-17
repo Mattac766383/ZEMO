@@ -36,11 +36,12 @@ try {
     if ($p.ExitCode -ne 0) {
         throw "NSIS silent install exited $($p.ExitCode)"
     }
-    $app = Get-ChildItem -LiteralPath $installDir -Recurse -Filter "ZEMO.exe" -ErrorAction SilentlyContinue |
+    $app = Get-ChildItem -LiteralPath $installDir -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -in @("ZEMO.exe", "zemo.exe", "desktop.exe") } |
         Select-Object -First 1
     $sidecar = Get-ChildItem -LiteralPath $installDir -Recurse -Filter "operation-executor*.exe" -ErrorAction SilentlyContinue |
         Select-Object -First 1
-    if (-not $app) { throw "Installed tree is missing ZEMO.exe" }
+    if (-not $app) { throw "Installed tree is missing ZEMO.exe (or desktop.exe cargo binary)" }
     if (-not $sidecar) { throw "Installed tree is missing operation-executor sidecar" }
     $installStatus = "PASS"
     $notes += "Silent install placed ZEMO.exe and the sidecar under $installDir"

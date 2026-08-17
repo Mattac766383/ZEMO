@@ -30,7 +30,9 @@ function Find-One {
     return $null
 }
 
-$app = Find-One @("ZEMO.exe", "zemo.exe")
+# Cargo package name is `desktop`; Tauri productName is ZEMO. The release
+# binary is therefore desktop.exe. NSIS ships it as ZEMO.exe after install.
+$app = Find-One @("ZEMO.exe", "zemo.exe", "desktop.exe")
 $sidecar = Find-One @("operation-executor.exe", "operation-executor-*.exe")
 $ort = Find-One @("onnxruntime.dll", "onnxruntime*.dll")
 $nsis = Find-One @("*-setup.exe")
@@ -40,7 +42,15 @@ Write-Host "operation-executor sidecar: $(if ($sidecar) { $sidecar.FullName } el
 Write-Host "ORT DLL: $(if ($ort) { $ort.FullName } else { 'NOT FOUND beside build output' })"
 Write-Host "NSIS setup: $(if ($nsis) { $nsis.FullName } else { 'MISSING' })"
 
-if (-not $app) { throw "ZEMO.exe was not found in the release output." }
+if (-not $app) {
+    foreach ($root in $searchRoots) {
+        Write-Host "Release root $root"
+        Get-ChildItem -LiteralPath $root -File -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Name |
+            ForEach-Object { Write-Host "  $_" }
+    }
+    throw "App executable (ZEMO.exe or desktop.exe) was not found in the release output."
+}
 if (-not $sidecar) { throw "operation-executor sidecar was not found in the release output." }
 if (-not $nsis) { throw "NSIS installer was not found in the release output." }
 
