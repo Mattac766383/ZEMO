@@ -259,6 +259,18 @@ jobs:
           name: windows-qualification-evidence
           path: target/windows-qualification
 
+      - name: Prepare Windows sidecar before Apply build
+        run: |
+          node .\apps\desktop\scripts\prepare-operation-executor-sidecar.mjs --target x86_64-pc-windows-msvc
+          node .\apps\desktop\scripts\assert-operation-executor-sidecar.mjs --target x86_64-pc-windows-msvc
+
+      - name: Ensure NSIS is available
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            choco install nsis -y --no-progress
+          }
+          makensis /VERSION
+
       - name: Build Apply-enabled NSIS installer
         run: npm run tauri -- build --features windows-apply-qualified
 
@@ -325,6 +337,18 @@ jobs:
         with:
           name: windows-qualification-evidence
           path: target/windows-qualification
+
+      - name: Prepare Windows sidecar before propose-only build
+        run: |
+          node .\apps\desktop\scripts\prepare-operation-executor-sidecar.mjs --target x86_64-pc-windows-msvc
+          node .\apps\desktop\scripts\assert-operation-executor-sidecar.mjs --target x86_64-pc-windows-msvc
+
+      - name: Ensure NSIS is available
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            choco install nsis -y --no-progress
+          }
+          makensis /VERSION
 
       - name: Build propose-only NSIS installer
         run: npm run tauri -- build
