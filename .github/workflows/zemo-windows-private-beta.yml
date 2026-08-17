@@ -264,12 +264,17 @@ jobs:
           node .\apps\desktop\scripts\prepare-operation-executor-sidecar.mjs --target x86_64-pc-windows-msvc
           node .\apps\desktop\scripts\assert-operation-executor-sidecar.mjs --target x86_64-pc-windows-msvc
 
-      - name: Ensure NSIS is available
+      - name: Offer system NSIS if present
+        continue-on-error: true
         run: |
           if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
             choco install nsis -y --no-progress
           }
-          makensis /VERSION
+          if (Get-Command makensis -ErrorAction SilentlyContinue) {
+            makensis /VERSION
+          } else {
+            Write-Host "System makensis not on PATH; Tauri 2 vendors NSIS for the bundle step."
+          }
 
       - name: Build Apply-enabled NSIS installer
         run: npm run tauri -- build --features windows-apply-qualified
@@ -343,12 +348,17 @@ jobs:
           node .\apps\desktop\scripts\prepare-operation-executor-sidecar.mjs --target x86_64-pc-windows-msvc
           node .\apps\desktop\scripts\assert-operation-executor-sidecar.mjs --target x86_64-pc-windows-msvc
 
-      - name: Ensure NSIS is available
+      - name: Offer system NSIS if present
+        continue-on-error: true
         run: |
           if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
             choco install nsis -y --no-progress
           }
-          makensis /VERSION
+          if (Get-Command makensis -ErrorAction SilentlyContinue) {
+            makensis /VERSION
+          } else {
+            Write-Host "System makensis not on PATH; Tauri 2 vendors NSIS for the bundle step."
+          }
 
       - name: Build propose-only NSIS installer
         run: npm run tauri -- build

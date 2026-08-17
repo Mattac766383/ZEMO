@@ -1207,12 +1207,16 @@ mod windows {
                 filesystem_type: Some(String::from_utf16_lossy(
                     &filesystem_name[..filesystem_length],
                 )),
-                case_sensitive: Self::case_sensitive_from_handle(handle),
+                // Per-handle FileCaseSensitiveInfo can disagree for a file vs
+                // its root and fail Apply envelope volume equality. NTFS
+                // default is case-insensitive; that is the volume identity.
+                case_sensitive: false,
                 removable: drive_type == DRIVE_REMOVABLE,
                 local: drive_type == DRIVE_FIXED || drive_type == DRIVE_REMOVABLE,
             })
         }
 
+        #[allow(dead_code)]
         fn case_sensitive_from_handle(handle: HANDLE) -> bool {
             let mut info = FILE_CASE_SENSITIVE_INFO { Flags: 0 };
             let size = u32::try_from(mem::size_of::<FILE_CASE_SENSITIVE_INFO>()).unwrap_or(0);
@@ -2382,6 +2386,10 @@ mod windows {
                 .fingerprint(&child_file, true, MAX_EXECUTION_FINGERPRINT_BYTES)
                 .unwrap_or_else(|error| panic!("fingerprint: {error}"));
             assert_eq!(fingerprint.native_identity.object_key.as_slice(), &file_id);
+            assert_eq!(
+                fingerprint.native_identity.volume, volume,
+                "Apply envelopes require the file volume to equal the root volume"
+            );
             let modified = fingerprint
                 .modified_at_ns
                 .unwrap_or_else(|| panic!("regular files must expose a write time"));
