@@ -30,12 +30,46 @@ function Find-One {
     return $null
 }
 
-# Cargo package name is `desktop`; Tauri productName is ZEMO. The release
-# binary is therefore desktop.exe. NSIS ships it as ZEMO.exe after install.
-$app = Find-One @("ZEMO.exe", "zemo.exe", "desktop.exe")
-$sidecar = Find-One @("operation-executor.exe", "operation-executor-*.exe")
+function Find-Exact {
+    param([string[]]$RelativePaths)
+    foreach ($relative in $RelativePaths) {
+        $candidate = Join-Path $RepoRoot $relative
+        if (Test-Path -LiteralPath $candidate) {
+            return Get-Item -LiteralPath $candidate
+        }
+    }
+    return $null
+}
+
+# Cargo package name is `desktop`. Windows `mainBinaryName` is ZEMO, so
+# `tauri build` may emit either desktop.exe or ZEMO.exe at the repo target.
+# Prefer those exact paths before a recursive walk of target/release.
+$app = Find-Exact @(
+    "target/release/ZEMO.exe",
+    "target/release/desktop.exe",
+    "target/x86_64-pc-windows-msvc/release/ZEMO.exe",
+    "target/x86_64-pc-windows-msvc/release/desktop.exe",
+    "apps/desktop/src-tauri/target/release/ZEMO.exe",
+    "apps/desktop/src-tauri/target/release/desktop.exe"
+)
+if (-not $app) {
+    $app = Find-One @("ZEMO.exe", "zemo.exe", "desktop.exe")
+}
+$sidecar = Find-Exact @(
+    "target/release/operation-executor.exe",
+    "target/x86_64-pc-windows-msvc/release/operation-executor.exe"
+)
+if (-not $sidecar) {
+    $sidecar = Find-One @("operation-executor.exe", "operation-executor-*.exe")
+}
 $ort = Find-One @("onnxruntime.dll", "onnxruntime*.dll")
-$nsis = Find-One @("*-setup.exe")
+$nsis = Find-Exact @(
+    "target/release/bundle/nsis/ZEMO_0.1.0_x64-setup.exe",
+    "target/x86_64-pc-windows-msvc/release/bundle/nsis/ZEMO_0.1.0_x64-setup.exe"
+)
+if (-not $nsis) {
+    $nsis = Find-One @("*-setup.exe")
+}
 
 Write-Host "ZEMO executable: $(if ($app) { $app.FullName } else { 'MISSING' })"
 Write-Host "operation-executor sidecar: $(if ($sidecar) { $sidecar.FullName } else { 'MISSING' })"
