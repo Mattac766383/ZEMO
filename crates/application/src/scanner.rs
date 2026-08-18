@@ -3,15 +3,18 @@ use catalog::{
     CatalogScanner, HashingStatus, ReadabilityStatus, ScanItemStatus, ScanPhase, ScanPolicy,
     ScanProgress,
 };
-use domain::{DisplayLabel, ScanId, WorkspaceId};
+use domain::{
+    DisplayLabel, FileFingerprint, FileId, FileKind, FileObservation, FileVersionId, ScanId,
+    WorkspaceId,
+};
 use extraction::{ContentExtractionEngine, LocalExtractionEngine};
 use knowledge::{DeterministicSemanticProvider, SemanticProvider};
 use persistence::{
     Database, DuplicateGroupInput, DuplicateGroupRecord, InventorySort, RootRecord,
-    ScanCompletionInput, ScanFileInput, ScanFileRecord, ScanIssueInput, ScanIssueRecord,
-    ScanRecord, WorkspaceRecord,
+    ScanCompletionInput, ScanFileInput, ScanFileRecord, ScanIssueInput, ScanIssueRecord, ScanRecord,
+    WorkspaceRecord,
 };
-use platform::ReadOnlyPlatform;
+use platform::{PlatformError, ReadOnlyEntry, ReadOnlyPlatform};
 use search::{
     AnnIndexMeta, LocalEmbeddingProvider, OnnxLocalEmbeddingProvider, PersistentAnnIndex,
     UnavailableEmbeddingProvider,
@@ -21,16 +24,16 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
-/// Consumer one-click should organize loose files in the standard personal
-/// folders, not recursively crawl already-organized subtrees, source trees,
-/// node_modules, archives, etc.
+/// One-click intentionally organizes only loose files at the top level of the
+/// standard personal folders. Existing user folder trees are left alone.
 const CONSUMER_TOP_LEVEL_MAX_ENTRIES: usize = 20_000;
-/// Exact-duplicate hashing is optional for the one-click organizer. Never let
-/// very large files monopolize a consumer scan; organization itself only needs
-/// metadata/type classification.
-const CONSUMER_MAX_HASH_BYTES: u64 = 64 * 1024 * 1024;
+/// A normal personal folder should never monopolize the app indefinitely. The
+/// bound is checked between native metadata inspections; it never weakens the
+/// Apply-time identity/source-drift checks.
+const CONSUMER_FOLDER_TIME_BUDGET: Duration = Duration::from_secs(30);
 
 /// Scanner-only application boundary. It deliberately owns no filesystem
 /// mutation capability, parser, model gateway, or network client.
@@ -248,10 +251,8 @@ impl ScannerApplicationService {
             )
             .map_err(ApplicationError::Persistence)?;
 
-        // IMPORTANT: root registration is intentionally independent from
-        // monitoring. Starting an OS watcher can block or fail for reasons
-        // unrelated to a manual scan. Monitoring configures/starts watchers
-        // from its own explicit code path.
+        // Registration is deliberately independent from monitoring. Starting
+        // an OS watcher must never block an explicit manual organization run.
         self.database.set_current_workspace(workspace_id)?;
         self.database.set_current_root(workspace_id, root.id)?;
         Ok(root)
@@ -265,48 +266,21 @@ impl ScannerApplicationService {
         on_progress: &mut dyn FnMut(ScanProgress),
     ) -> Result<ScanRecord, ApplicationError> {
         let root = self.database.active_root(workspace_id)?;
+        if is_standard_personal_root(&root.absolute_path_native) {
+            return self.scan_workspace_consumer(workspace_id, is_cancelled, on_progress);
+        }
+
         let scan_id = ScanId::new();
         self.database.begin_scan(workspace_id, root.id, scan_id)?;
-
-        let consumer_top_level = is_standard_personal_root(&root.absolute_path_native);
-        let policy = if consumer_top_level {
-            ScanPolicy {
-                max_entries: CONSUMER_TOP_LEVEL_MAX_ENTRIES,
-                max_hash_bytes: CONSUMER_MAX_HASH_BYTES,
-                include_hidden: false,
-            }
-        } else {
-            ScanPolicy::default()
-        };
-
-        let output = if consumer_top_level {
-            let paths = top_level_regular_paths(
-                &root.absolute_path_native,
-                CONSUMER_TOP_LEVEL_MAX_ENTRIES,
-                is_cancelled,
-            )?;
-            self.scanner.scan_paths_with_id_and_control(
-                scan_id,
-                workspace_id,
-                root.id,
-                &root.absolute_path_native,
-                &paths,
-                policy,
-                is_cancelled,
-                on_progress,
-            )
-        } else {
-            self.scanner.scan_with_id_and_control(
-                scan_id,
-                workspace_id,
-                root.id,
-                &root.absolute_path_native,
-                policy,
-                is_cancelled,
-                on_progress,
-            )
-        };
-
+        let output = self.scanner.scan_with_id_and_control(
+            scan_id,
+            workspace_id,
+            root.id,
+            &root.absolute_path_native,
+            ScanPolicy::default(),
+            is_cancelled,
+            on_progress,
+        );
         let output = match output {
             Ok(output) => output,
             Err(error) => {
@@ -314,7 +288,171 @@ impl ScannerApplicationService {
                 return Err(ApplicationError::Catalog(error));
             }
         };
+        self.persist_catalog_output(workspace_id, &root, scan_id, output, on_progress)
+    }
 
+    /// Fast path used by the consumer "Ranger mon ordinateur" experience.
+    ///
+    /// It is intentionally metadata-only: no `read_prefix`, no content
+    /// extraction, no duplicate hashing, no model call and no watcher startup.
+    /// That prevents iCloud/OneDrive placeholders from being hydrated merely
+    /// because the user wants to tidy the visible files in a personal folder.
+    #[inline(never)]
+    pub fn scan_workspace_consumer(
+        &self,
+        workspace_id: WorkspaceId,
+        is_cancelled: &dyn Fn() -> bool,
+        on_progress: &mut dyn FnMut(ScanProgress),
+    ) -> Result<ScanRecord, ApplicationError> {
+        let root = self.database.active_root(workspace_id)?;
+        let scan_id = ScanId::new();
+        self.database.begin_scan(workspace_id, root.id, scan_id)?;
+
+        let mut progress = ScanProgress {
+            scan_id,
+            phase: ScanPhase::Discovering,
+            files_discovered: 0,
+            files_indexed: 0,
+            directories_discovered: 1,
+            bytes_discovered: 0,
+            files_hashed: 0,
+            errors: 0,
+            skipped_items: 0,
+            duplicate_groups: 0,
+        };
+        on_progress(progress);
+
+        let started = Instant::now();
+        let (paths, mut truncated) = top_level_regular_paths(
+            &root.absolute_path_native,
+            CONSUMER_TOP_LEVEL_MAX_ENTRIES,
+            is_cancelled,
+        )?;
+        let mut files = Vec::with_capacity(paths.len());
+        let mut issues = Vec::new();
+        let mut cancelled = false;
+
+        progress.phase = ScanPhase::Inspecting;
+        on_progress(progress);
+
+        for relative_path in paths {
+            if is_cancelled() {
+                cancelled = true;
+                break;
+            }
+            if started.elapsed() >= CONSUMER_FOLDER_TIME_BUDGET {
+                truncated = true;
+                issues.push(ScanIssueInput {
+                    relative_path: ".".to_owned(),
+                    code: "time_budget_exceeded".to_owned(),
+                    message: "consumer metadata scan reached its per-folder time budget".to_owned(),
+                    is_directory: true,
+                    is_error: false,
+                    skipped: true,
+                });
+                progress.skipped_items = progress.skipped_items.saturating_add(1);
+                break;
+            }
+
+            match self
+                .read_only_platform
+                .inspect_regular_file(&root.absolute_path_native, &relative_path)
+            {
+                Ok(entry) => {
+                    if entry.hidden {
+                        progress.skipped_items = progress.skipped_items.saturating_add(1);
+                        continue;
+                    }
+                    progress.files_discovered = progress.files_discovered.saturating_add(1);
+                    progress.bytes_discovered =
+                        progress.bytes_discovered.saturating_add(entry.byte_size);
+                    if entry.cloud_placeholder {
+                        issues.push(ScanIssueInput {
+                            relative_path: relative_path.to_string_lossy().into_owned(),
+                            code: "cloud_placeholder".to_owned(),
+                            message: "cloud placeholder left in place; content was not hydrated"
+                                .to_owned(),
+                            is_directory: false,
+                            is_error: false,
+                            skipped: true,
+                        });
+                        progress.skipped_items = progress.skipped_items.saturating_add(1);
+                        continue;
+                    }
+                    files.push(metadata_scan_file_input(
+                        workspace_id,
+                        root.id,
+                        scan_id,
+                        entry,
+                    )?);
+                    progress.files_indexed =
+                        u64::try_from(files.len()).unwrap_or(u64::MAX);
+                }
+                Err(error) => {
+                    let issue = scan_issue_for_platform_error(&relative_path, &error);
+                    if issue.is_error {
+                        progress.errors = progress.errors.saturating_add(1);
+                    }
+                    progress.skipped_items = progress.skipped_items.saturating_add(1);
+                    issues.push(issue);
+                }
+            }
+            on_progress(progress);
+        }
+
+        progress.phase = if cancelled {
+            ScanPhase::Cancelled
+        } else {
+            ScanPhase::Persisting
+        };
+        on_progress(progress);
+
+        let completion = ScanCompletionInput {
+            scan_id,
+            workspace_id,
+            root_id: root.id,
+            status: if cancelled {
+                "cancelled".to_owned()
+            } else {
+                "completed".to_owned()
+            },
+            files_discovered: progress.files_discovered,
+            directories_discovered: progress.directories_discovered,
+            bytes_discovered: progress.bytes_discovered,
+            files_hashed: 0,
+            errors: progress.errors,
+            skipped_items: progress.skipped_items,
+            truncated,
+            files,
+            issues,
+            duplicate_groups: Vec::new(),
+        };
+
+        let persisted = match self.database.complete_scan(&completion) {
+            Ok(persisted) => persisted,
+            Err(error) => {
+                let _ = self.database.fail_scan(scan_id, "persistence_failed");
+                return Err(ApplicationError::Persistence(error));
+            }
+        };
+        progress.files_indexed = persisted.scan.indexed_count;
+        progress.phase = if cancelled {
+            ScanPhase::Cancelled
+        } else {
+            ScanPhase::Completed
+        };
+        on_progress(progress);
+        Ok(persisted.scan)
+    }
+
+    fn persist_catalog_output(
+        &self,
+        workspace_id: WorkspaceId,
+        root: &RootRecord,
+        scan_id: ScanId,
+        output: catalog::ScanOutput,
+        on_progress: &mut dyn FnMut(ScanProgress),
+    ) -> Result<ScanRecord, ApplicationError> {
         let files = output
             .files
             .iter()
@@ -416,6 +554,117 @@ impl ScannerApplicationService {
     }
 }
 
+fn metadata_scan_file_input(
+    workspace_id: WorkspaceId,
+    root_id: domain::RootId,
+    scan_id: ScanId,
+    entry: ReadOnlyEntry,
+) -> Result<ScanFileInput, ApplicationError> {
+    let label = entry
+        .absolute_path
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "fichier".to_owned());
+    let display_label =
+        DisplayLabel::new(label).map_err(|_| ApplicationError::InvalidWorkspaceName)?;
+    let extension = entry
+        .absolute_path
+        .extension()
+        .map(|value| value.to_string_lossy().to_ascii_lowercase());
+    let observation = FileObservation {
+        file_id: FileId::new(),
+        version_id: FileVersionId::new(),
+        workspace_id,
+        root_id,
+        scan_id,
+        relative_path: entry.relative_path,
+        display_label,
+        kind: FileKind::Regular,
+        detected_mime: metadata_mime_from_extension(&entry.absolute_path),
+        fingerprint: FileFingerprint {
+            native_identity: entry.identity,
+            byte_size: entry.byte_size,
+            modified_at_ns: entry.modified_at_ns,
+            created_at_ns: entry.created_at_ns,
+            attributes: entry.attributes,
+            quick_digest: None,
+            content_digest: None,
+        },
+        read_only: entry.read_only,
+        hidden: entry.hidden,
+        cloud_placeholder: entry.cloud_placeholder,
+        encrypted: entry.encrypted,
+    };
+    Ok(ScanFileInput {
+        observation,
+        extension,
+        accessed_at_ns: entry.accessed_at_ns,
+        readability_status: "not_checked".to_owned(),
+        scan_status: "indexed".to_owned(),
+        hashing_status: "not_candidate".to_owned(),
+        error_code: None,
+    })
+}
+
+fn scan_issue_for_platform_error(relative_path: &Path, error: &PlatformError) -> ScanIssueInput {
+    let (code, is_error, skipped) = match error {
+        PlatformError::ReparsePoint | PlatformError::PathPolicyRefusal | PlatformError::OutsideRoot => {
+            ("reparse_point", false, true)
+        }
+        PlatformError::CloudPlaceholder => ("cloud_placeholder", false, true),
+        PlatformError::PermissionDenied => ("permission_denied", true, true),
+        PlatformError::SourceMissing => ("source_missing", false, true),
+        PlatformError::SharingViolation | PlatformError::LockViolation => ("locked", false, true),
+        PlatformError::Cancelled => ("cancelled", false, true),
+        PlatformError::Unsupported(_) | PlatformError::VerificationLimitExceeded { .. } => {
+            ("unsupported", false, true)
+        }
+        PlatformError::Io(_)
+        | PlatformError::Precondition(_)
+        | PlatformError::DestinationExists
+        | PlatformError::DiskFull
+        | PlatformError::AmbiguousMutationOutcome
+        | PlatformError::SecretStore(_) => ("io", true, true),
+    };
+    ScanIssueInput {
+        relative_path: relative_path.to_string_lossy().into_owned(),
+        code: code.to_owned(),
+        message: error.to_string(),
+        is_directory: false,
+        is_error,
+        skipped,
+    }
+}
+
+fn metadata_mime_from_extension(path: &Path) -> Option<String> {
+    let extension = path.extension()?.to_string_lossy().to_ascii_lowercase();
+    let mime = match extension.as_str() {
+        "txt" | "log" | "md" => "text/plain",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "pdf" => "application/pdf",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "zip" => "application/zip",
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" => "image/heic",
+        "mp4" => "video/mp4",
+        "mov" => "video/quicktime",
+        "mkv" => "video/x-matroska",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        _ => return None,
+    };
+    Some(mime.to_owned())
+}
+
 fn same_registered_path(left: &Path, right: &Path) -> bool {
     if left == right {
         return true;
@@ -453,14 +702,22 @@ fn top_level_regular_paths(
     root: &Path,
     max_entries: usize,
     is_cancelled: &dyn Fn() -> bool,
-) -> Result<Vec<PathBuf>, ApplicationError> {
+) -> Result<(Vec<PathBuf>, bool), ApplicationError> {
     let mut paths = Vec::new();
+    let mut truncated = false;
     let entries = fs::read_dir(root).map_err(ApplicationError::Io)?;
     for entry in entries {
-        if is_cancelled() || paths.len() >= max_entries {
+        if is_cancelled() {
             break;
         }
-        let entry = entry.map_err(ApplicationError::Io)?;
+        if paths.len() >= max_entries {
+            truncated = true;
+            break;
+        }
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
         let name = entry.file_name();
         if name.to_string_lossy().starts_with('.') {
             continue;
@@ -473,7 +730,7 @@ fn top_level_regular_paths(
             paths.push(PathBuf::from(name));
         }
     }
-    Ok(paths)
+    Ok((paths, truncated))
 }
 
 #[inline(never)]
