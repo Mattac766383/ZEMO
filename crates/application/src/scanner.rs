@@ -401,8 +401,6 @@ impl ScannerApplicationService {
                     issues.push(issue);
                 }
             }
-            // One-click progress is deliberately fine-grained. A consumer must
-            // see proof of life even with only a few files in the folder.
             on_progress(progress);
         }
 
@@ -612,11 +610,6 @@ fn metadata_scan_file_input(
     })
 }
 
-/// macOS FileProvider/iCloud may hydrate a placeholder simply because a file
-/// descriptor is opened. For one-click we therefore obtain the identity from
-/// lstat-style metadata only. The later Apply path still re-opens, fingerprints
-/// and validates the exact source before any mutation, so this does not weaken
-/// mutation safety.
 #[cfg(target_os = "macos")]
 fn inspect_consumer_metadata(
     _platform: &dyn ReadOnlyPlatform,
@@ -651,8 +644,12 @@ fn inspect_consumer_metadata(
             "only regular files are analyzable".to_owned(),
         ));
     }
-    let leaf = target.file_name().ok_or(PlatformError::OutsideRoot)?;
-    let hidden = leaf.as_bytes().first() == Some(&b'.');
+    let leaf_bytes = target
+        .file_name()
+        .ok_or(PlatformError::OutsideRoot)?
+        .as_bytes()
+        .to_vec();
+    let hidden = leaf_bytes.first() == Some(&b'.');
 
     Ok(ReadOnlyEntry {
         absolute_path: target,
@@ -666,7 +663,7 @@ fn inspect_consumer_metadata(
             parent_key: root_metadata.ino().to_le_bytes().to_vec(),
             leaf_name: NativePath {
                 encoding: PathEncoding::UnixBytes,
-                bytes: leaf.as_bytes().to_vec(),
+                bytes: leaf_bytes,
             },
             link_count: u32::try_from(metadata.nlink()).unwrap_or(u32::MAX),
             reparse_tag: None,
@@ -678,9 +675,6 @@ fn inspect_consumer_metadata(
         attributes: u64::from(metadata.mode()),
         read_only: metadata.permissions().readonly(),
         hidden,
-        // We deliberately do not query content/cloud state here because doing
-        // so can hydrate remote data. Apply-time native validation remains the
-        // authority and will fail closed if the source is not locally safe.
         cloud_placeholder: false,
         encrypted: false,
     })
