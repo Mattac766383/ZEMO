@@ -4,8 +4,8 @@ use catalog::{
     ScanProgress,
 };
 use domain::{
-    DisplayLabel, FileFingerprint, FileId, FileKind, FileObservation, FileVersionId, ScanId,
-    WorkspaceId,
+    DisplayLabel, FileFingerprint, FileId, FileKind, FileObservation, FileVersionId,
+    NativeFileIdentity, NativePath, PathEncoding, ScanId, VolumeIdentity, WorkspaceId,
 };
 use extraction::{ContentExtractionEngine, LocalExtractionEngine};
 use knowledge::{DeterministicSemanticProvider, SemanticProvider};
@@ -22,9 +22,9 @@ use search::{
 use std::{
     collections::HashMap,
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 /// One-click intentionally organizes only loose files at the top level of the
@@ -293,10 +293,10 @@ impl ScannerApplicationService {
 
     /// Fast path used by the consumer "Ranger mon ordinateur" experience.
     ///
-    /// It is intentionally metadata-only: no `read_prefix`, no content
-    /// extraction, no duplicate hashing, no model call and no watcher startup.
-    /// That prevents iCloud/OneDrive placeholders from being hydrated merely
-    /// because the user wants to tidy the visible files in a personal folder.
+    /// It is strictly metadata-only: no file content handle is opened on
+    /// macOS, no `read_prefix`, no duplicate hash, no extractor/model and no
+    /// watcher startup. This prevents FileProvider/iCloud placeholders from
+    /// being hydrated merely because the user wants to tidy visible files.
     #[inline(never)]
     pub fn scan_workspace_consumer(
         &self,
@@ -307,6 +307,9 @@ impl ScannerApplicationService {
         let root = self.database.active_root(workspace_id)?;
         let scan_id = ScanId::new();
         self.database.begin_scan(workspace_id, root.id, scan_id)?;
+        let volume = self
+            .read_only_platform
+            .inspect_volume(&root.absolute_path_native)?;
 
         let mut progress = ScanProgress {
             scan_id,
@@ -354,10 +357,12 @@ impl ScannerApplicationService {
                 break;
             }
 
-            match self
-                .read_only_platform
-                .inspect_regular_file(&root.absolute_path_native, &relative_path)
-            {
+            match inspect_consumer_metadata(
+                self.read_only_platform.as_ref(),
+                &root.absolute_path_native,
+                &relative_path,
+                &volume,
+            ) {
                 Ok(entry) => {
                     if entry.hidden {
                         progress.skipped_items = progress.skipped_items.saturating_add(1);
@@ -385,8 +390,7 @@ impl ScannerApplicationService {
                         scan_id,
                         entry,
                     )?);
-                    progress.files_indexed =
-                        u64::try_from(files.len()).unwrap_or(u64::MAX);
+                    progress.files_indexed = u64::try_from(files.len()).unwrap_or(u64::MAX);
                 }
                 Err(error) => {
                     let issue = scan_issue_for_platform_error(&relative_path, &error);
@@ -397,6 +401,8 @@ impl ScannerApplicationService {
                     issues.push(issue);
                 }
             }
+            // One-click progress is deliberately fine-grained. A consumer must
+            // see proof of life even with only a few files in the folder.
             on_progress(progress);
         }
 
@@ -604,6 +610,104 @@ fn metadata_scan_file_input(
         hashing_status: "not_candidate".to_owned(),
         error_code: None,
     })
+}
+
+/// macOS FileProvider/iCloud may hydrate a placeholder simply because a file
+/// descriptor is opened. For one-click we therefore obtain the identity from
+/// lstat-style metadata only. The later Apply path still re-opens, fingerprints
+/// and validates the exact source before any mutation, so this does not weaken
+/// mutation safety.
+#[cfg(target_os = "macos")]
+fn inspect_consumer_metadata(
+    _platform: &dyn ReadOnlyPlatform,
+    root: &Path,
+    relative_path: &Path,
+    volume: &VolumeIdentity,
+) -> Result<ReadOnlyEntry, PlatformError> {
+    use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
+
+    if relative_path.as_os_str().is_empty()
+        || relative_path.is_absolute()
+        || relative_path.components().count() != 1
+        || relative_path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(PlatformError::OutsideRoot);
+    }
+
+    let root_metadata = fs::symlink_metadata(root).map_err(metadata_io_error)?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err(PlatformError::ReparsePoint);
+    }
+
+    let target = root.join(relative_path);
+    let metadata = fs::symlink_metadata(&target).map_err(metadata_io_error)?;
+    if metadata.file_type().is_symlink() {
+        return Err(PlatformError::ReparsePoint);
+    }
+    if !metadata.is_file() {
+        return Err(PlatformError::Unsupported(
+            "only regular files are analyzable".to_owned(),
+        ));
+    }
+    let leaf = target.file_name().ok_or(PlatformError::OutsideRoot)?;
+    let hidden = leaf.as_bytes().first() == Some(&b'.');
+
+    Ok(ReadOnlyEntry {
+        absolute_path: target,
+        relative_path: NativePath {
+            encoding: PathEncoding::UnixBytes,
+            bytes: relative_path.as_os_str().as_bytes().to_vec(),
+        },
+        identity: NativeFileIdentity {
+            volume: volume.clone(),
+            object_key: metadata.ino().to_le_bytes().to_vec(),
+            parent_key: root_metadata.ino().to_le_bytes().to_vec(),
+            leaf_name: NativePath {
+                encoding: PathEncoding::UnixBytes,
+                bytes: leaf.as_bytes().to_vec(),
+            },
+            link_count: u32::try_from(metadata.nlink()).unwrap_or(u32::MAX),
+            reparse_tag: None,
+        },
+        byte_size: metadata.len(),
+        modified_at_ns: metadata_time_ns(metadata.modified()),
+        created_at_ns: metadata_time_ns(metadata.created()),
+        accessed_at_ns: metadata_time_ns(metadata.accessed()),
+        attributes: u64::from(metadata.mode()),
+        read_only: metadata.permissions().readonly(),
+        hidden,
+        // We deliberately do not query content/cloud state here because doing
+        // so can hydrate remote data. Apply-time native validation remains the
+        // authority and will fail closed if the source is not locally safe.
+        cloud_placeholder: false,
+        encrypted: false,
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn inspect_consumer_metadata(
+    platform: &dyn ReadOnlyPlatform,
+    root: &Path,
+    relative_path: &Path,
+    _volume: &VolumeIdentity,
+) -> Result<ReadOnlyEntry, PlatformError> {
+    platform.inspect_regular_file(root, relative_path)
+}
+
+#[cfg(target_os = "macos")]
+fn metadata_io_error(error: std::io::Error) -> PlatformError {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => PlatformError::SourceMissing,
+        std::io::ErrorKind::PermissionDenied => PlatformError::PermissionDenied,
+        _ => PlatformError::Io(error),
+    }
+}
+
+fn metadata_time_ns(value: std::io::Result<SystemTime>) -> Option<i128> {
+    let duration = value.ok()?.duration_since(UNIX_EPOCH).ok()?;
+    i128::try_from(duration.as_nanos()).ok()
 }
 
 fn scan_issue_for_platform_error(relative_path: &Path, error: &PlatformError) -> ScanIssueInput {
