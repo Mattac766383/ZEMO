@@ -18,9 +18,17 @@ use search::{
 };
 use std::{
     collections::HashMap,
+    fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
+
+/// Consumer one-click should organize loose files in the standard personal
+/// folders, not recursively crawl already-organized subtrees, source trees,
+/// node_modules, archives, etc. A bounded top-level scan keeps the product
+/// responsive and, more importantly, prevents a one-click action from
+/// proposing changes deep inside an existing folder structure.
+const CONSUMER_TOP_LEVEL_MAX_ENTRIES: usize = 20_000;
 
 /// Scanner-only application boundary. It deliberately owns no filesystem
 /// mutation capability, parser, model gateway, or network client.
@@ -242,15 +250,47 @@ impl ScannerApplicationService {
         let root = self.database.active_root(workspace_id)?;
         let scan_id = ScanId::new();
         self.database.begin_scan(workspace_id, root.id, scan_id)?;
-        let output = match self.scanner.scan_with_id_and_control(
-            scan_id,
-            workspace_id,
-            root.id,
-            &root.absolute_path_native,
-            ScanPolicy::default(),
-            is_cancelled,
-            on_progress,
-        ) {
+
+        let consumer_top_level = is_standard_personal_root(&root.absolute_path_native);
+        let policy = if consumer_top_level {
+            ScanPolicy {
+                max_entries: CONSUMER_TOP_LEVEL_MAX_ENTRIES,
+                max_hash_bytes: u64::MAX,
+                include_hidden: false,
+            }
+        } else {
+            ScanPolicy::default()
+        };
+
+        let output = if consumer_top_level {
+            let paths = top_level_regular_paths(
+                &root.absolute_path_native,
+                CONSUMER_TOP_LEVEL_MAX_ENTRIES,
+                is_cancelled,
+            )?;
+            self.scanner.scan_paths_with_id_and_control(
+                scan_id,
+                workspace_id,
+                root.id,
+                &root.absolute_path_native,
+                &paths,
+                policy,
+                is_cancelled,
+                on_progress,
+            )
+        } else {
+            self.scanner.scan_with_id_and_control(
+                scan_id,
+                workspace_id,
+                root.id,
+                &root.absolute_path_native,
+                policy,
+                is_cancelled,
+                on_progress,
+            )
+        };
+
+        let output = match output {
             Ok(output) => output,
             Err(error) => {
                 let _ = self.database.fail_scan(scan_id, "catalog_failed");
@@ -348,7 +388,7 @@ impl ScannerApplicationService {
         scan_id: ScanId,
     ) -> Result<Vec<DuplicateGroupRecord>, ApplicationError> {
         self.database
-            .scan_duplicate_groups(scan_id)
+            .scan_duplicate_groups(parse_scan_id_compat(scan_id)?,)
             .map_err(ApplicationError::Persistence)
     }
 
@@ -357,6 +397,62 @@ impl ScannerApplicationService {
             .scan_issues(scan_id)
             .map_err(ApplicationError::Persistence)
     }
+}
+
+fn is_standard_personal_root(path: &Path) -> bool {
+    let Some(name) = path.file_name().map(|value| value.to_string_lossy().to_ascii_lowercase()) else {
+        return false;
+    };
+    matches!(
+        name.as_str(),
+        "desktop"
+            | "bureau"
+            | "documents"
+            | "downloads"
+            | "téléchargements"
+            | "telechargements"
+            | "pictures"
+            | "images"
+            | "movies"
+            | "videos"
+            | "vidéos"
+    )
+}
+
+fn top_level_regular_paths(
+    root: &Path,
+    max_entries: usize,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<PathBuf>, ApplicationError> {
+    let mut paths = Vec::new();
+    let entries = fs::read_dir(root).map_err(ApplicationError::Io)?;
+    for entry in entries {
+        if is_cancelled() || paths.len() >= max_entries {
+            break;
+        }
+        let entry = entry.map_err(ApplicationError::Io)?;
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let file_type = match entry.file_type() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        // Do not descend into directories and do not follow symlinks/reparse
+        // points. `inspect_regular_file` performs the authoritative anchored
+        // safety validation for every accepted leaf afterwards.
+        if file_type.is_file() && !file_type.is_symlink() {
+            paths.push(PathBuf::from(name));
+        }
+    }
+    Ok(paths)
+}
+
+// Compatibility helper kept deliberately trivial so the duplicate-group path
+// stays visually symmetric with the surrounding read APIs.
+fn parse_scan_id_compat(scan_id: ScanId) -> Result<ScanId, ApplicationError> {
+    Ok(scan_id)
 }
 
 #[inline(never)]
