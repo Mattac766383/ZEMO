@@ -26,8 +26,8 @@ use std::{
 /// Consumer one-click should organize loose files in the standard personal
 /// folders, not recursively crawl already-organized subtrees, source trees,
 /// node_modules, archives, etc. A bounded top-level scan keeps the product
-/// responsive and, more importantly, prevents a one-click action from
-/// proposing changes deep inside an existing folder structure.
+/// responsive and prevents a one-click action from proposing changes deep
+/// inside an existing folder structure.
 const CONSUMER_TOP_LEVEL_MAX_ENTRIES: usize = 20_000;
 
 /// Scanner-only application boundary. It deliberately owns no filesystem
@@ -219,6 +219,25 @@ impl ScannerApplicationService {
     ) -> Result<RootRecord, ApplicationError> {
         self.database.workspace(workspace_id)?;
         let volume = self.read_only_platform.inspect_volume(absolute_path)?;
+
+        // One-click repeatedly visits the same five personal folders. Reuse an
+        // existing root instead of inserting a fresh row on every retry/run.
+        // This makes registration idempotent and prevents stale/duplicate
+        // monitoring state from being misreported as a permission problem.
+        if let Some(existing) = self
+            .database
+            .list_roots(workspace_id)?
+            .into_iter()
+            .find(|root| same_registered_path(&root.absolute_path_native, absolute_path))
+        {
+            self.database.set_current_workspace(workspace_id)?;
+            self.database.set_current_root(workspace_id, existing.id)?;
+            // Monitoring is secondary to the explicit one-click scan. Refresh
+            // it best-effort; watcher startup failure must not block organizing.
+            let _ = self.register_root_for_monitoring(&existing);
+            return Ok(existing);
+        }
+
         let display_value = absolute_path
             .file_name()
             .map(|value| value.to_string_lossy().into_owned())
@@ -236,7 +255,12 @@ impl ScannerApplicationService {
                 &volume,
             )
             .map_err(ApplicationError::Persistence)?;
-        self.register_root_for_monitoring(&root)?;
+
+        // A watcher is a convenience feature. The explicit read-only scan must
+        // remain usable even when watcher setup is unavailable for this folder.
+        let _ = self.register_root_for_monitoring(&root);
+        self.database.set_current_workspace(workspace_id)?;
+        self.database.set_current_root(workspace_id, root.id)?;
         Ok(root)
     }
 
@@ -388,7 +412,7 @@ impl ScannerApplicationService {
         scan_id: ScanId,
     ) -> Result<Vec<DuplicateGroupRecord>, ApplicationError> {
         self.database
-            .scan_duplicate_groups(parse_scan_id_compat(scan_id)?,)
+            .scan_duplicate_groups(scan_id)
             .map_err(ApplicationError::Persistence)
     }
 
@@ -399,8 +423,21 @@ impl ScannerApplicationService {
     }
 }
 
+fn same_registered_path(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
 fn is_standard_personal_root(path: &Path) -> bool {
-    let Some(name) = path.file_name().map(|value| value.to_string_lossy().to_ascii_lowercase()) else {
+    let Some(name) = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_ascii_lowercase())
+    else {
         return false;
     };
     matches!(
@@ -447,12 +484,6 @@ fn top_level_regular_paths(
         }
     }
     Ok(paths)
-}
-
-// Compatibility helper kept deliberately trivial so the duplicate-group path
-// stays visually symmetric with the surrounding read APIs.
-fn parse_scan_id_compat(scan_id: ScanId) -> Result<ScanId, ApplicationError> {
-    Ok(scan_id)
 }
 
 #[inline(never)]
