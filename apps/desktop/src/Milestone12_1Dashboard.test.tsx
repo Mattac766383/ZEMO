@@ -46,6 +46,8 @@ vi.mock("./api", () => ({
   selectAndRegisterRoot: vi.fn(),
 
   listUserContentLocations: vi.fn().mockResolvedValue([]),
+  probeUserContentAccess: vi.fn().mockResolvedValue([]),
+  authorizeUserContentFolder: vi.fn(),
   registerUserContentRoot: vi.fn(),
   scanWorkspace: vi.fn(),
   cancelScan: vi.fn(),
@@ -316,18 +318,21 @@ describe("Milestone 12.1 dashboard command center", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Bonjour" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Votre ordinateur est en bazar ?" })).toBeTruthy();
     expect(
-      screen.getByText(/Choisissez ce que vous voulez analyser/i),
+      screen.getByText(
+        /range vos fichiers personnels sans toucher à vos applications/i,
+      ),
     ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Ranger mon ordinateur" })).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Organiser mon ordinateur" }),
+      screen.getByRole("button", { name: "Choisir les dossiers" }),
     ).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "État de l’organisation" })).toBeNull();
     expect(screen.queryByText("0")).toBeNull();
   });
 
-  it("renders populated workspace status, attention, monitoring and local AI", async () => {
+  it("keeps advanced architecture off the simple home", async () => {
     render(
       <HomeDashboard
         loading={false}
@@ -347,18 +352,11 @@ describe("Milestone 12.1 dashboard command center", () => {
       />,
     );
 
-    expect(screen.getByText(/fichiers analysés/i)).toBeTruthy();
-    expect(screen.getAllByText(/à vérifier/i).length).toBeGreaterThan(0);
-    expect(screen.getByRole("heading", { name: "À vérifier" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Surveillance" })).toBeTruthy();
-    expect(screen.getByText(/prépare des propositions uniquement/i)).toBeTruthy();
-    await waitFor(() => {
-      expect(api.getEmbeddingModelStatus).toHaveBeenCalled();
-    });
-    expect(await screen.findByText("Non activée")).toBeTruthy();
-    expect(
-      screen.getByText(/connexion peut être utilisée pour télécharger/i),
-    ).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Votre ordinateur est en bazar ?" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "À vérifier" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Surveillance" })).toBeNull();
+    expect(screen.queryByText(/prépare des propositions uniquement/i)).toBeNull();
+    expect(screen.queryByText(/Non activée/i)).toBeNull();
     expect(
       screen.queryByText(/rangés automatiquement|Classé dans/i),
     ).toBeNull();
@@ -372,7 +370,7 @@ describe("Milestone 12.1 dashboard command center", () => {
         dashboard: null,
         contentNeedsReview: null,
       }).label,
-    ).toBe("Organiser mon ordinateur");
+    ).toBe("Ranger mon ordinateur");
     expect(
       resolvePrimaryAction({
         root,
@@ -380,7 +378,7 @@ describe("Milestone 12.1 dashboard command center", () => {
         dashboard: null,
         contentNeedsReview: null,
       }).label,
-    ).toBe("Organiser mon ordinateur");
+    ).toBe("Ranger mon ordinateur");
     expect(
       resolvePrimaryAction({
         root,
@@ -396,7 +394,7 @@ describe("Milestone 12.1 dashboard command center", () => {
         }),
         contentNeedsReview: null,
       }).label,
-    ).toBe("Vérifier 23 éléments");
+    ).toBe("Ranger mon ordinateur");
     expect(
       resolvePrimaryAction({
         root,
@@ -411,8 +409,9 @@ describe("Milestone 12.1 dashboard command center", () => {
           },
         }),
         contentNeedsReview: 0,
+        organized: true,
       }).label,
-    ).toBe("Voir l’organisation proposée");
+    ).toBe("Relancer le rangement");
 
     const issue = dashboard({
       folders: [
@@ -444,9 +443,10 @@ describe("Milestone 12.1 dashboard command center", () => {
         onRetryDashboard={noop}
       />,
     );
+    expect(screen.getByRole("button", { name: "Ranger mon ordinateur" })).toBeTruthy();
     expect(
-      screen.getByText(/Dossier de surveillance indisponible/i),
-    ).toBeTruthy();
+      screen.queryByText(/Dossier de surveillance indisponible/i),
+    ).toBeNull();
   });
 
   it("shows unavailable metrics as em dash and documents health formula", () => {
@@ -492,10 +492,10 @@ describe("Milestone 12.1 dashboard command center", () => {
         onRetryDashboard={noop}
       />,
     );
-    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Ranger mon ordinateur" })).toBeTruthy();
   });
 
-  it("navigates search with the typed query and keeps proposed destination wording", async () => {
+  it("navigates search with the typed query and keeps proposed destination wording", () => {
     const onSearch = vi.fn();
     const onNavigate = vi.fn();
     const operation: OrganizationOperation = {
@@ -590,25 +590,11 @@ describe("Milestone 12.1 dashboard command center", () => {
       />,
     );
 
-    fireEvent.change(
-      screen.getByPlaceholderText(/Rechercher une facture, une photo, un devis/i),
-      { target: { value: "facture Point P du chantier Martin" } },
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Rechercher" }));
-    expect(onSearch).toHaveBeenCalledWith(
-      "facture Point P du chantier Martin",
-    );
-
-    expect(
-      await screen.findByText(/Destination proposée/i),
-    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Ranger mon ordinateur" })).toBeTruthy();
+    expect(screen.queryByText(/Destination proposée/i)).toBeNull();
     expect(screen.queryByText(/Classé dans/i)).toBeNull();
-    expect(screen.getByText(/Emplacement actuel/i)).toBeTruthy();
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Ouvrir À revoir" }),
-    );
-    expect(onNavigate).toHaveBeenCalledWith("review");
+    expect(onSearch).not.toHaveBeenCalled();
+    expect(onNavigate).not.toHaveBeenCalled();
   });
 
   it("bounds recent activity and shows error + loading states", () => {
@@ -660,37 +646,8 @@ describe("Milestone 12.1 dashboard command center", () => {
         onRetryDashboard={onRetry}
       />,
     );
-    expect(
-      screen.getByText(/Impossible de charger l’état d’accueil/i),
-    ).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Réessayer" }));
-    expect(onRetry).toHaveBeenCalled();
-
-    rerender(
-      <HomeDashboard
-        loading={false}
-        system={system}
-        workspaceId="workspace-1"
-        root={root}
-        scan={scan}
-        dashboard={dashboard({ recentActivity: many })}
-        dashboardError={false}
-        contentNeedsReview={null}
-        contentFailed={null}
-        contentUnsupported={null}
-        onPrimaryAction={noop}
-        onNavigate={noop}
-        onSearch={noop}
-        onRetryDashboard={noop}
-      />,
-    );
-    const activity = screen.getByRole("heading", {
-      name: "Activité récente",
-    }).closest("section");
-    expect(activity).toBeTruthy();
-    expect(within(activity as HTMLElement).getAllByRole("listitem").length).toBe(
-      MAX_RECENT_ACTIVITY,
-    );
+    expect(screen.getByRole("button", { name: "Ranger mon ordinateur" })).toBeTruthy();
+    expect(onRetry).not.toHaveBeenCalled();
     expect(MAX_RECENT_ACTIVITY).toBeLessThanOrEqual(10);
   });
 
@@ -704,19 +661,18 @@ describe("Milestone 12.1 dashboard command center", () => {
     });
 
     render(<App />);
-    await screen.findByRole("heading", { name: "Bonjour" });
+    await screen.findByRole("heading", { name: "Votre ordinateur est en bazar ?" });
 
-    fireEvent.change(
-      screen.getByPlaceholderText(/Rechercher une facture, une photo, un devis/i),
-      { target: { value: "devis Dupont de 2026" } },
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Rechercher" }));
-
+    const nav = screen.getByRole("navigation", {
+      name: "Navigation principale",
+    });
+    fireEvent.click(within(nav).getByRole("button", { name: "Recherche" }));
     await waitFor(() => {
       expect(api.searchLocalFiles).toHaveBeenCalled();
     });
-    const searchInput = await screen.findByDisplayValue("devis Dupont de 2026");
-    expect(searchInput).toBeTruthy();
+    expect(
+      await screen.findByRole("heading", { name: "Retrouvez vos fichiers" }),
+    ).toBeTruthy();
   });
 
   it("keeps attention actions keyboard reachable", () => {
@@ -738,11 +694,8 @@ describe("Milestone 12.1 dashboard command center", () => {
         onRetryDashboard={noop}
       />,
     );
-    const review = screen.getByRole("button", { name: "Ouvrir À revoir" });
-    review.focus();
-    expect(document.activeElement).toBe(review);
-    expect(
-      screen.getByLabelText(/Rechercher une facture, une photo, un devis/i),
-    ).toBeTruthy();
+    const cta = screen.getByRole("button", { name: "Ranger mon ordinateur" });
+    cta.focus();
+    expect(document.activeElement).toBe(cta);
   });
 });

@@ -1,4 +1,5 @@
 mod executor_client;
+mod folder_access;
 
 #[cfg(all(test, target_os = "macos"))]
 mod packaged_macos_apply;
@@ -46,7 +47,8 @@ use ipc_contracts::{
     OrganizationOperationDto, OrganizationPreferencesDto, OrganizationProposalChangeDto,
     OrganizationProposalDto, OrganizationProposalProgressDto, OrganizationProposalSummaryDto,
     OrganizationReasonDto, QueryChipDto, RecoveryAssessmentDto, RecoveryItemDto,
-    RegisterUserContentRootResultDto, RegisteredRootDto, RestoredWorkspaceSessionDto,
+    FolderAccessProbeDto, RegisterUserContentRootResultDto, RegisteredRootDto,
+    RestoredWorkspaceSessionDto,
     RuleSuggestionDto, RulesPreferencesStateDto, ScanFileDto, ScanIssueDto, ScanProgressDto,
     ScanResultDto, SearchTimingsDto, SemanticAnalysisDetailDto, SemanticAnalysisDto,
     SemanticAnalysisProgressDto, SemanticCandidateValueDto, SemanticCorrectionDto,
@@ -66,18 +68,17 @@ use persistence::{
     SemanticAnalysisDetailRecord, SemanticCandidateValueRecord, SemanticCorrectionRecord,
     SemanticEntityRecord, SemanticEvidenceRecord, SemanticFieldRecord,
 };
-use platform::{ReadOnlyPlatform, SecretStore};
+use platform::{PlatformError, ReadOnlyPlatform, SecretStore};
 use privacy::OsSecretStore;
 use search::{
     ContextFilter, DocumentTypeFilter, EmbeddingAvailability, ExtractionFilter, FileTypeFilter,
     LocalEmbeddingProvider, MatchSource, ModifiedFilter, OcrFilter, OnnxLocalEmbeddingProvider,
     SearchFilters, SearchQuery, SearchSort, SemanticStatusFilter,
 };
-#[cfg(debug_assertions)]
-use std::path::PathBuf;
 use std::{
     collections::HashMap,
     fs, io,
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -354,186 +355,276 @@ async fn select_and_register_root(
     .await
 }
 
-#[derive(Debug, Clone, Copy)]
-enum UserContentKind {
-    Desktop,
-    Documents,
-    Downloads,
-    Pictures,
-    Movies,
-    Music,
+fn folder_access_store_dir(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    app.path().app_local_data_dir().ok()
 }
 
-impl UserContentKind {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Desktop => "desktop",
-            Self::Documents => "documents",
-            Self::Downloads => "downloads",
-            Self::Pictures => "pictures",
-            Self::Movies => "movies",
-            Self::Music => "music",
-        }
-    }
-
-    fn display_label_fr(self) -> &'static str {
-        match self {
-            Self::Desktop => "Bureau",
-            Self::Documents => "Documents",
-            Self::Downloads => "Téléchargements",
-            Self::Pictures => "Images",
-            Self::Movies => "Vidéos",
-            Self::Music => "Musique",
-        }
-    }
-
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "desktop" => Some(Self::Desktop),
-            "documents" => Some(Self::Documents),
-            "downloads" => Some(Self::Downloads),
-            "pictures" => Some(Self::Pictures),
-            "movies" => Some(Self::Movies),
-            "music" => Some(Self::Music),
-            _ => None,
-        }
-    }
-
-    fn all() -> [Self; 6] {
-        [
-            Self::Desktop,
-            Self::Documents,
-            Self::Downloads,
-            Self::Pictures,
-            Self::Movies,
-            Self::Music,
-        ]
-    }
-
-    fn resolve_path(self) -> Option<std::path::PathBuf> {
-        match self {
-            Self::Desktop => dirs::desktop_dir(),
-            Self::Documents => dirs::document_dir(),
-            Self::Downloads => dirs::download_dir(),
-            Self::Pictures => dirs::picture_dir(),
-            Self::Movies => dirs::video_dir(),
-            Self::Music => dirs::audio_dir(),
-        }
+fn probe_to_dto(probe: folder_access::FolderAccessProbe) -> FolderAccessProbeDto {
+    FolderAccessProbeDto {
+        logical_name: probe.logical_name,
+        kind: probe.kind,
+        display_label: probe.display_label,
+        resolved_path: probe.resolved_path,
+        exists: probe.exists,
+        is_dir: probe.is_dir,
+        readable: probe.readable,
+        writable: probe.writable,
+        recommended: probe.recommended,
+        raw_os_error: probe.raw_os_error,
+        platform_error: probe.platform_error,
+        access_state: probe.access_state,
+        human_status: probe.human_status,
+        canonical_path: probe.canonical_path,
+        failed_stage: probe.failed_stage,
+        error_kind: probe.error_kind,
+        inspect_result: probe.inspect_result,
+        technical_details: probe.technical_details,
     }
 }
 
-fn user_content_location(kind: UserContentKind) -> Option<UserContentLocationDto> {
-    let path = kind.resolve_path()?;
-    // Never accept filesystem root or system paths as "user content".
-    path.parent()?;
-    let exists = path.is_dir();
-    let readable = exists && std::fs::read_dir(&path).is_ok();
-    Some(UserContentLocationDto {
-        kind: kind.as_str().to_owned(),
-        display_label: kind.display_label_fr().to_owned(),
-        absolute_path: path.to_string_lossy().into_owned(),
-        exists,
-        readable,
-        recommended: matches!(
-            kind,
-            UserContentKind::Desktop
-                | UserContentKind::Documents
-                | UserContentKind::Downloads
-                | UserContentKind::Pictures
+fn enrich_probe(probe: folder_access::FolderAccessProbe) -> folder_access::FolderAccessProbe {
+    let Some(path) = probe.resolved_path_buf() else {
+        return probe;
+    };
+    if !probe.exists {
+        return probe;
+    }
+    folder_access::with_inspect_outcome(probe, inspect_user_content_path(&path))
+}
+
+fn inspect_user_content_path(
+    path: &std::path::Path,
+) -> Result<String, (Option<i32>, String, String, &'static str)> {
+    #[cfg(target_os = "macos")]
+    {
+        match platform_macos::MacOsPlatform.inspect_volume(path) {
+            Ok(volume) => Ok(format!(
+                "ok local={} fs={:?}",
+                volume.local, volume.filesystem_type
+            )),
+            Err(error) => Err(describe_platform_inspect_error(&error)),
+        }
+    }
+    #[cfg(windows)]
+    {
+        match platform_windows::WindowsPlatform.inspect_volume(path) {
+            Ok(volume) => Ok(format!(
+                "ok local={} fs={:?}",
+                volume.local, volume.filesystem_type
+            )),
+            Err(error) => Err(describe_platform_inspect_error(&error)),
+        }
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = path;
+        Ok("inspect_skipped".to_owned())
+    }
+}
+
+fn describe_platform_inspect_error(
+    error: &PlatformError,
+) -> (Option<i32>, String, String, &'static str) {
+    let state = access_state_from_platform(error);
+    match error {
+        PlatformError::Io(inner) => (
+            inner.raw_os_error(),
+            format!("{:?}", inner.kind()),
+            error.to_string(),
+            state,
         ),
+        PlatformError::PermissionDenied => {
+            (Some(13), "PermissionDenied".to_owned(), error.to_string(), state)
+        }
+        PlatformError::ReparsePoint => {
+            (None, "ReparsePoint".to_owned(), error.to_string(), state)
+        }
+        PlatformError::SourceMissing => {
+            (Some(2), "NotFound".to_owned(), error.to_string(), state)
+        }
+        other => (None, format!("{other:?}"), other.to_string(), state),
+    }
+}
+
+fn access_state_from_platform(error: &PlatformError) -> &'static str {
+    match error {
+        PlatformError::PermissionDenied => folder_access::ACCESS_AUTHORIZATION_REQUIRED,
+        PlatformError::ReparsePoint => folder_access::ACCESS_AUTHORIZATION_REQUIRED,
+        PlatformError::CloudPlaceholder => folder_access::ACCESS_TEMPORARILY_UNAVAILABLE,
+        PlatformError::SourceMissing => folder_access::ACCESS_MISSING,
+        PlatformError::SharingViolation | PlatformError::LockViolation => {
+            folder_access::ACCESS_LOCKED
+        }
+        PlatformError::Unsupported(_) => folder_access::ACCESS_UNSUPPORTED,
+        PlatformError::Io(inner) => folder_access::classify_io_error(inner),
+        _ => folder_access::ACCESS_AUTHORIZATION_REQUIRED,
+    }
+}
+
+fn access_state_from_register_error(error: &ApplicationError) -> &'static str {
+    match error {
+        ApplicationError::Platform(inner) => access_state_from_platform(inner),
+        ApplicationError::Io(inner) => folder_access::classify_io_error(inner),
+        ApplicationError::InvalidMonitoringRequest => folder_access::ACCESS_AUTHORIZATION_REQUIRED,
+        _ => folder_access::ACCESS_AUTHORIZATION_REQUIRED,
+    }
+}
+
+fn pick_folder_on_main_thread(
+    app: &AppHandle,
+    title: &str,
+    directory: Option<PathBuf>,
+) -> Result<Option<PathBuf>, String> {
+    let title = title.to_owned();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.run_on_main_thread(move || {
+        let mut dialog = rfd::FileDialog::new().set_title(title);
+        if let Some(directory) = directory.filter(|path| path.exists()) {
+            dialog = dialog.set_directory(directory);
+        }
+        let _ = tx.send(dialog.pick_folder());
     })
+    .map_err(|error| error.to_string())?;
+    rx.recv().map_err(|error| error.to_string())
+}
+
+fn register_result_from_probe(
+    probe: &folder_access::FolderAccessProbe,
+    root: Option<RegisteredRootDto>,
+    status: &str,
+) -> RegisterUserContentRootResultDto {
+    RegisterUserContentRootResultDto {
+        root,
+        kind: probe.kind.clone(),
+        display_label: probe.display_label.clone(),
+        absolute_path: probe.resolved_path.clone(),
+        status: status.to_owned(),
+        access_state: probe.access_state.clone(),
+        human_status: probe.human_status.clone(),
+        message: Some(folder_access::human_message_for(&probe.access_state).to_owned()),
+    }
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn list_user_content_locations() -> Result<Vec<UserContentLocationDto>, String> {
-    run_blocking_string(|| {
-        let locations = UserContentKind::all()
+async fn list_user_content_locations(
+    app: AppHandle,
+) -> Result<Vec<UserContentLocationDto>, String> {
+    let store = folder_access_store_dir(&app);
+    run_blocking_string(move || {
+        let probes = folder_access::UserContentKind::all()
             .into_iter()
-            .filter_map(user_content_location)
-            .collect::<Vec<_>>();
-        Ok(locations)
+            .map(|kind| enrich_probe(folder_access::probe_kind(kind, store.as_deref())))
+            .map(|probe| UserContentLocationDto {
+                kind: probe.kind,
+                display_label: probe.display_label,
+                absolute_path: probe.resolved_path,
+                exists: probe.exists,
+                readable: probe.readable,
+                recommended: probe.recommended,
+                access_state: probe.access_state,
+                human_status: probe.human_status,
+                writable: probe.writable,
+                raw_os_error: probe.raw_os_error,
+                platform_error: probe.platform_error,
+            })
+            .collect();
+        Ok(probes)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn probe_user_content_access(app: AppHandle) -> Result<Vec<FolderAccessProbeDto>, String> {
+    let store = folder_access_store_dir(&app);
+    run_blocking_string(move || {
+        Ok(folder_access::probe_recommended(store.as_deref())
+            .into_iter()
+            .map(enrich_probe)
+            .map(probe_to_dto)
+            .collect())
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn authorize_user_content_folder(
+    app: AppHandle,
+    kind: String,
+) -> Result<FolderAccessProbeDto, String> {
+    let parsed = folder_access::UserContentKind::parse(&kind)
+        .ok_or_else(|| "Emplacement utilisateur inconnu.".to_owned())?;
+    let hint = parsed.resolve_native_path().or_else(dirs::home_dir);
+    let selected = pick_folder_on_main_thread(
+        &app,
+        "ZEMO a besoin de votre autorisation pour accéder à ce dossier.",
+        hint,
+    )?;
+    let store = folder_access_store_dir(&app);
+    run_blocking_string(move || {
+        let Some(selected) = selected else {
+            return Ok(probe_to_dto(enrich_probe(folder_access::probe_kind(
+                parsed,
+                store.as_deref(),
+            ))));
+        };
+        let Some(accepted) = folder_access::accept_authorized_selection(parsed, &selected) else {
+            return Ok(probe_to_dto(enrich_probe(folder_access::probe_kind(
+                parsed,
+                store.as_deref(),
+            ))));
+        };
+        if let Some(store) = store.as_ref() {
+            let _ = folder_access::persist_authorized_path(store, parsed.as_str(), &accepted);
+        }
+        Ok(probe_to_dto(enrich_probe(folder_access::probe_kind(
+            parsed,
+            store.as_deref(),
+        ))))
     })
     .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 async fn register_user_content_root(
+    app: AppHandle,
     state: State<'_, ManagedScanner>,
     workspace_id: String,
     kind: String,
 ) -> Result<RegisterUserContentRootResultDto, String> {
     let service = state.service.clone();
+    let store = folder_access_store_dir(&app);
     run_blocking_string(move || {
         let workspace_id = parse_workspace_id(&workspace_id).map_err(command_error)?;
-        let kind = UserContentKind::parse(&kind)
+        let kind = folder_access::UserContentKind::parse(&kind)
             .ok_or_else(|| "Emplacement utilisateur inconnu.".to_owned())?;
-        // Re-resolve in Rust so the renderer cannot inject arbitrary paths.
-        let Some(path) = kind.resolve_path() else {
-            return Ok(RegisterUserContentRootResultDto {
-                root: None,
-                kind: kind.as_str().to_owned(),
-                display_label: kind.display_label_fr().to_owned(),
-                absolute_path: String::new(),
-                status: "unavailable".to_owned(),
-                message: Some(
-                    "Cet emplacement n’est pas disponible sur cet ordinateur.".to_owned(),
-                ),
-            });
-        };
-        if path.parent().is_none() {
-            return Ok(RegisterUserContentRootResultDto {
-                root: None,
-                kind: kind.as_str().to_owned(),
-                display_label: kind.display_label_fr().to_owned(),
-                absolute_path: path.to_string_lossy().into_owned(),
-                status: "rejected".to_owned(),
-                message: Some(
-                    "Le disque système ne peut pas être analysé comme contenu utilisateur."
-                        .to_owned(),
-                ),
-            });
+        let probe = enrich_probe(folder_access::probe_kind(kind, store.as_deref()));
+        if !probe.can_scan() {
+            return Ok(register_result_from_probe(&probe, None, &probe.access_state));
         }
-        if !path.is_dir() {
-            return Ok(RegisterUserContentRootResultDto {
-                root: None,
-                kind: kind.as_str().to_owned(),
-                display_label: kind.display_label_fr().to_owned(),
-                absolute_path: path.to_string_lossy().into_owned(),
-                status: "missing".to_owned(),
-                message: Some("Ce dossier est introuvable.".to_owned()),
-            });
-        }
+        let path = probe
+            .resolved_path_buf()
+            .ok_or_else(|| "Ce dossier est introuvable.".to_owned())?;
         match service.register_root(workspace_id, &path) {
-            Ok(root) => Ok(RegisterUserContentRootResultDto {
-                root: Some(RegisteredRootDto {
+            Ok(root) => Ok(register_result_from_probe(
+                &probe,
+                Some(RegisteredRootDto {
                     id: root.id.to_string(),
                     display_label: root.display_label,
                     selected_path: root.absolute_path,
                 }),
-                kind: kind.as_str().to_owned(),
-                display_label: kind.display_label_fr().to_owned(),
-                absolute_path: path.to_string_lossy().into_owned(),
-                status: "registered".to_owned(),
-                message: None,
-            }),
+                "registered",
+            )),
             Err(error) => {
-                let text = command_error(error);
-                let lowered = text.to_ascii_lowercase();
-                let denied = lowered.contains("permission")
-                    || lowered.contains("denied")
-                    || lowered.contains("accès")
-                    || lowered.contains("accessible");
+                let state = access_state_from_register_error(&error);
                 Ok(RegisterUserContentRootResultDto {
                     root: None,
                     kind: kind.as_str().to_owned(),
                     display_label: kind.display_label_fr().to_owned(),
                     absolute_path: path.to_string_lossy().into_owned(),
-                    status: if denied {
-                        "denied".to_owned()
-                    } else {
-                        "error".to_owned()
-                    },
-                    message: Some(text),
+                    status: state.to_owned(),
+                    access_state: state.to_owned(),
+                    human_status: folder_access::human_status_for(state, kind.display_label_fr()),
+                    message: Some(folder_access::human_message_for(state).to_owned()),
                 })
             }
         }
@@ -1047,6 +1138,7 @@ async fn generate_organization_proposal(
     workspace_id: String,
     root_id: Option<String>,
     recompute_current: bool,
+    consumer_mode: Option<bool>,
 ) -> Result<OrganizationProposalDto, String> {
     let workspace_id = parse_workspace_id(&workspace_id).map_err(command_error)?;
     let root_id = root_id
@@ -1093,14 +1185,25 @@ async fn generate_organization_proposal(
                 last_phase = Some(progress.phase);
             }
         };
+        let consumer = consumer_mode.unwrap_or(false);
         let generated = if let Some(root_id) = root_id {
-            service.generate_organization_proposal_for_root(
-                workspace_id,
-                root_id,
-                recompute_current,
-                &|| cancellation.load(Ordering::Relaxed),
-                &mut emit_progress,
-            )
+            if consumer {
+                service.generate_consumer_organization_proposal_for_root(
+                    workspace_id,
+                    root_id,
+                    recompute_current,
+                    &|| cancellation.load(Ordering::Relaxed),
+                    &mut emit_progress,
+                )
+            } else {
+                service.generate_organization_proposal_for_root(
+                    workspace_id,
+                    root_id,
+                    recompute_current,
+                    &|| cancellation.load(Ordering::Relaxed),
+                    &mut emit_progress,
+                )
+            }
         } else {
             service.generate_organization_proposal(
                 workspace_id,
@@ -3577,7 +3680,74 @@ fn run_packaged_nsopenpanel_qualification(
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+fn run_packaged_folder_access_diagnose() -> bool {
+    let requested = std::env::args().any(|arg| arg == "--diagnose-folder-access")
+        || std::env::var_os("ZEMO_DIAGNOSE_FOLDER_ACCESS").is_some();
+    if !requested {
+        return false;
+    }
+    let mut folders = Vec::new();
+    for kind in folder_access::UserContentKind::all()
+        .into_iter()
+        .filter(|kind| kind.recommended())
+    {
+        let probe = enrich_probe(folder_access::probe_kind(kind, None));
+        folders.push(serde_json::json!({
+            "logical_name": probe.logical_name,
+            "resolved_path": probe.resolved_path,
+            "canonical_path": probe.canonical_path,
+            "exists": probe.exists,
+            "is_dir": probe.is_dir,
+            "readable": probe.readable,
+            "writable": probe.writable,
+            "raw_os_error": probe.raw_os_error,
+            "error_kind": probe.error_kind,
+            "platform_error": probe.platform_error,
+            "failed_stage": probe.failed_stage,
+            "inspect_result": probe.inspect_result,
+            "access_state": probe.access_state,
+            "human_status": probe.human_status,
+            "technical_details": probe.technical_details,
+        }));
+    }
+    let exe = std::env::current_exe().ok();
+    let plist_path = exe.as_ref().and_then(|path| {
+        path.parent()
+            .and_then(std::path::Path::parent)
+            .map(|contents| contents.join("Info.plist"))
+    });
+    let plist_text = plist_path
+        .as_ref()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    let report = serde_json::json!({
+        "exe": exe.as_ref().map(|path| path.display().to_string()),
+        "info_plist": plist_path.as_ref().map(|path| path.display().to_string()),
+        "info_plist_keys": {
+            "NSDesktopFolderUsageDescription": plist_text.contains("NSDesktopFolderUsageDescription"),
+            "NSDocumentsFolderUsageDescription": plist_text.contains("NSDocumentsFolderUsageDescription"),
+            "NSDownloadsFolderUsageDescription": plist_text.contains("NSDownloadsFolderUsageDescription"),
+            "NSPicturesFolderUsageDescription": plist_text.contains("NSPicturesFolderUsageDescription"),
+            "NSMoviesFolderUsageDescription": plist_text.contains("NSMoviesFolderUsageDescription"),
+        },
+        "folders": folders,
+    });
+    let encoded = serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_owned());
+    let tmp = std::env::temp_dir().join("zemo-packaged-folder-access.json");
+    let _ = fs::write(&tmp, &encoded);
+    if let Some(home) = dirs::home_dir() {
+        let logs = home.join("Library/Logs");
+        let _ = fs::create_dir_all(&logs);
+        let _ = fs::write(logs.join("ZEMO-folder-access.json"), &encoded);
+    }
+    eprintln!("{encoded}");
+    true
+}
+
 pub fn run() {
+    if run_packaged_folder_access_diagnose() {
+        return;
+    }
     let result = tauri::Builder::default()
         .setup(|app| {
             let services = initialize_application(app)?;
@@ -3614,6 +3784,8 @@ pub fn run() {
             create_workspace,
             select_and_register_root,
             list_user_content_locations,
+            probe_user_content_access,
+            authorize_user_content_folder,
             register_user_content_root,
             scan_workspace,
             cancel_scan,

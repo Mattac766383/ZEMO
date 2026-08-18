@@ -145,6 +145,7 @@ impl ScannerApplicationService {
                 root_id,
                 proposal_id,
                 "algorithm_changed",
+                false,
                 is_cancelled,
                 on_progress,
             )?);

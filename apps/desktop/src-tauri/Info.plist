@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>ZEMO range vos fichiers du Bureau, sans toucher à vos applications.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>ZEMO range vos documents personnels, sans toucher à vos applications.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>ZEMO range vos téléchargements personnels, sans toucher à vos applications.</string>
+	<key>NSPicturesFolderUsageDescription</key>
+	<string>ZEMO range vos images personnelles, sans toucher à vos applications.</string>
+	<key>NSMoviesFolderUsageDescription</key>
+	<string>ZEMO range vos vidéos personnelles, sans toucher à vos applications.</string>
+</dict>
+</plist>

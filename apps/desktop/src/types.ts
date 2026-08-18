@@ -37,6 +37,17 @@ export type UserContentKind =
   | "movies"
   | "music";
 
+export type FolderAccessState =
+  | "accessible"
+  | "authorization_required"
+  | "missing"
+  | "unsupported"
+  | "locked"
+  | "permission_denied"
+  | "temporarily_unavailable"
+  | "unexpected_error"
+  | string;
+
 export interface UserContentLocation {
   kind: UserContentKind | string;
   displayLabel: string;
@@ -44,6 +55,32 @@ export interface UserContentLocation {
   exists: boolean;
   readable: boolean;
   recommended: boolean;
+  accessState?: FolderAccessState;
+  humanStatus?: string;
+  writable?: boolean;
+  rawOsError?: number | null;
+  platformError?: string | null;
+}
+
+export interface FolderAccessProbe {
+  logicalName: string;
+  kind: string;
+  displayLabel: string;
+  resolvedPath: string;
+  exists: boolean;
+  isDir: boolean;
+  readable: boolean;
+  writable: boolean;
+  recommended: boolean;
+  rawOsError?: number | null;
+  platformError?: string | null;
+  accessState: FolderAccessState;
+  humanStatus: string;
+  canonicalPath?: string;
+  failedStage?: string | null;
+  errorKind?: string | null;
+  inspectResult?: string | null;
+  technicalDetails?: string;
 }
 
 export interface RegisterUserContentRootResult {
@@ -58,7 +95,10 @@ export interface RegisterUserContentRootResult {
     | "unavailable"
     | "rejected"
     | "error"
+    | FolderAccessState
     | string;
+  accessState?: FolderAccessState;
+  humanStatus?: string;
   message?: string | null;
 }
 

@@ -1,9 +1,11 @@
 //! Deterministic organization compiler.
 
+mod consumer;
 mod organization;
 mod path_safety;
 mod rules;
 
+pub use consumer::*;
 pub use organization::*;
 pub use path_safety::*;
 pub use rules::*;

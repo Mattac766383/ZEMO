@@ -31,6 +31,8 @@ vi.mock("./api", () => ({
   selectAndRegisterRoot: vi.fn(),
 
   listUserContentLocations: vi.fn().mockResolvedValue([]),
+  probeUserContentAccess: vi.fn().mockResolvedValue([]),
+  authorizeUserContentFolder: vi.fn(),
   registerUserContentRoot: vi.fn(),
   scanWorkspace: vi.fn(),
   cancelScan: vi.fn(),
@@ -218,38 +220,26 @@ describe("Milestone 12 main desktop UX", () => {
     render(<App />);
 
     expect(
-      await screen.findByRole("heading", { name: "Bonjour" }),
+      await screen.findByRole("heading", { name: "Votre ordinateur est en bazar ?" }),
     ).toBeTruthy();
     expect(
-      await screen.findByText((_, element) => {
-        const text = element?.textContent ?? "";
-        return (
-          element?.classList.contains("home-hero-stat") === true &&
-          /12/.test(text) &&
-          /fichiers analysés/i.test(text)
-        );
-      }),
+      screen.getByText(
+        /range vos fichiers personnels sans toucher à vos applications/i,
+      ),
     ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Ranger mon ordinateur" })).toBeTruthy();
     expect(
-      await screen.findByRole("button", { name: "Vérifier 3 éléments" }),
+      screen.getByRole("button", { name: "Choisir les dossiers" }),
     ).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "À vérifier" })).toBeNull();
     expect(
-      screen.getByText(/analyse de vos fichiers et vos recherches s.effectuent localement/i),
-    ).toBeTruthy();
-    expect(
-      await screen.findByText(/3 nouveaux fichiers détectés/i),
-    ).toBeTruthy();
-    expect(
-      screen.getByRole("heading", { name: "À vérifier" }),
-    ).toBeTruthy();
-    expect(
-      screen.getByPlaceholderText(/Rechercher une facture, une photo, un devis/i),
-    ).toBeTruthy();
+      screen.queryByPlaceholderText(/Rechercher une facture, une photo, un devis/i),
+    ).toBeNull();
   });
 
   it("navigates through the main product areas from the shell", async () => {
     render(<App />);
-    await screen.findByRole("heading", { name: "Bonjour" });
+    await screen.findByRole("heading", { name: "Votre ordinateur est en bazar ?" });
 
     const nav = screen.getByRole("navigation", {
       name: "Navigation principale",
@@ -299,7 +289,7 @@ describe("Milestone 12 main desktop UX", () => {
         dashboard: null,
         contentNeedsReview: null,
       }).label,
-    ).toBe("Organiser mon ordinateur");
+    ).toBe("Ranger mon ordinateur");
 
     expect(
       resolvePrimaryAction({
@@ -312,7 +302,7 @@ describe("Milestone 12 main desktop UX", () => {
         dashboard: null,
         contentNeedsReview: null,
       }).label,
-    ).toBe("Organiser mon ordinateur");
+    ).toBe("Ranger mon ordinateur");
 
     expect(
       resolvePrimaryAction({
@@ -353,7 +343,7 @@ describe("Milestone 12 main desktop UX", () => {
         },
         contentNeedsReview: null,
       }).label,
-    ).toBe("Vérifier 12 éléments");
+    ).toBe("Ranger mon ordinateur");
   });
 
   it("keeps primary navigation keyboard reachable", async () => {
@@ -390,7 +380,7 @@ describe("Milestone 12 main desktop UX", () => {
 
     render(<App />);
     expect(
-      await screen.findByText(/Choisissez ce que vous voulez analyser/i),
+      await screen.findByRole("heading", { name: "Votre ordinateur est en bazar ?" }),
     ).toBeTruthy();
 
     vi.mocked(api.createWorkspace).mockResolvedValue({
@@ -402,9 +392,7 @@ describe("Milestone 12 main desktop UX", () => {
       displayLabel: "Documents",
       selectedPath: "/Users/local/Documents",
     });
-    fireEvent.click(
-      screen.getByRole("button", { name: "Organiser mon ordinateur" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Choisir les dossiers" }));
     await waitFor(() => {
       expect(api.selectAndRegisterRoot).toHaveBeenCalled();
     });

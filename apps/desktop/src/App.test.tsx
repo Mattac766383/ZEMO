@@ -25,6 +25,8 @@ vi.mock("./api", () => ({
   selectAndRegisterRoot: vi.fn(),
 
   listUserContentLocations: vi.fn().mockResolvedValue([]),
+  probeUserContentAccess: vi.fn().mockResolvedValue([]),
+  authorizeUserContentFolder: vi.fn(),
   registerUserContentRoot: vi.fn(),
   scanWorkspace: vi.fn(),
   cancelScan: vi.fn(),
@@ -185,9 +187,9 @@ function openAdvancedNav() {
 
 async function waitForRestoredHome() {
   expect(
-    await screen.findByRole("heading", { name: "Bonjour" }),
+    await screen.findByRole("heading", { name: "Votre ordinateur est en bazar ?" }),
   ).toBeTruthy();
-  expect(await screen.findByText("/Users/local/Documents")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Ranger mon ordinateur" })).toBeTruthy();
   await waitFor(() => {
     expect(
       (screen.getByRole("button", { name: "Surveillance" }) as HTMLButtonElement)
@@ -293,26 +295,22 @@ describe("safe scanner desktop workflow", () => {
   it("shows explicit scope and read-only privacy guarantees", async () => {
     render(<App />);
 
+    expect(await screen.findByText("ZEMO")).toBeTruthy();
     expect(
-      await screen.findByRole("heading", {
-        name: "Organisez et retrouvez vos fichiers.",
-      }),
-    ).toBeTruthy();
-    expect(await screen.findByText("Traitement local")).toBeTruthy();
-    expect(screen.getByText("Rien n’est déplacé au scan")).toBeTruthy();
-    expect(screen.getByText("Aucun upload")).toBeTruthy();
-    expect(
-      screen.getByText(/ZEMO · Bêta privée macOS · 0.1.0-beta.5/i),
+      await screen.findByRole("heading", { name: "Votre ordinateur est en bazar ?" }),
     ).toBeTruthy();
     expect(
-      await screen.findByRole("heading", { name: "Bonjour" }),
+      screen.getByText(
+        /range vos fichiers personnels sans toucher à vos applications/i,
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Ranger mon ordinateur" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Choisir les dossiers" }),
     ).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Organiser mon ordinateur" }),
+      screen.getByText(/Aucun fichier source n’est modifié/i),
     ).toBeTruthy();
-    expect(
-      screen.getAllByText(/analysés localement|organisation proposée/i).length,
-    ).toBeGreaterThan(0);
     openAdvancedNav();
     fireEvent.click(screen.getByRole("button", { name: "Inventaire" }));
     expect(

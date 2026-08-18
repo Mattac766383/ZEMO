@@ -10,6 +10,7 @@ import type {
   ExecutionProgress,
   ExecutionSession,
   ExtractionRetry,
+  FolderAccessProbe,
   FileReviewItem,
   FileReviewPage,
   IdentityDetail,
@@ -233,6 +234,16 @@ export function registerUserContentRoot(
   });
 }
 
+export function probeUserContentAccess(): Promise<FolderAccessProbe[]> {
+  return invoke<FolderAccessProbe[]>("probe_user_content_access");
+}
+
+export function authorizeUserContentFolder(
+  kind: string,
+): Promise<FolderAccessProbe> {
+  return invoke<FolderAccessProbe>("authorize_user_content_folder", { kind });
+}
+
 export function scanWorkspace(workspaceId: string): Promise<ScanResult> {
   return invoke<ScanResult>("scan_workspace", { workspaceId });
 }
@@ -384,11 +395,13 @@ export function generateOrganizationProposal(
   workspaceId: string,
   recomputeCurrent = false,
   rootId?: string,
+  consumerMode = false,
 ): Promise<OrganizationProposal> {
   return invoke<OrganizationProposal>("generate_organization_proposal", {
     workspaceId,
     recomputeCurrent,
     rootId,
+    consumerMode,
   });
 }
 

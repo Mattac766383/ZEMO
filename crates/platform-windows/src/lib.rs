@@ -1599,7 +1599,9 @@ mod windows {
         #[inline(never)]
         fn inspect_volume(&self, root: &Path) -> Result<VolumeIdentity, PlatformError> {
             let metadata = fs::symlink_metadata(root)?;
-            Self::reject_unsafe_attributes(&metadata)?;
+            if !metadata.is_dir() {
+                Self::reject_unsafe_attributes(&metadata)?;
+            }
             let root_handle = Self::open_anchored(
                 root,
                 FILE_READ_ATTRIBUTES,
@@ -1617,7 +1619,6 @@ mod windows {
             on_progress: &mut dyn FnMut(EnumerationProgress),
         ) -> Result<ReadOnlyEnumeration, PlatformError> {
             let metadata = fs::symlink_metadata(root)?;
-            Self::reject_unsafe_attributes(&metadata)?;
             if !metadata.is_dir() {
                 return Err(PlatformError::Unsupported(
                     "registered root must be a directory".to_owned(),

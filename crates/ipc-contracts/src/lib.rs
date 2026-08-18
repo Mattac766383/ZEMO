@@ -56,6 +56,34 @@ pub struct UserContentLocationDto {
     pub exists: bool,
     pub readable: bool,
     pub recommended: bool,
+    pub access_state: String,
+    pub human_status: String,
+    pub writable: bool,
+    pub raw_os_error: Option<i32>,
+    pub platform_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderAccessProbeDto {
+    pub logical_name: String,
+    pub kind: String,
+    pub display_label: String,
+    pub resolved_path: String,
+    pub exists: bool,
+    pub is_dir: bool,
+    pub readable: bool,
+    pub writable: bool,
+    pub recommended: bool,
+    pub raw_os_error: Option<i32>,
+    pub platform_error: Option<String>,
+    pub access_state: String,
+    pub human_status: String,
+    pub canonical_path: String,
+    pub failed_stage: Option<String>,
+    pub error_kind: Option<String>,
+    pub inspect_result: Option<String>,
+    pub technical_details: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -66,6 +94,8 @@ pub struct RegisterUserContentRootResultDto {
     pub display_label: String,
     pub absolute_path: String,
     pub status: String,
+    pub access_state: String,
+    pub human_status: String,
     pub message: Option<String>,
 }
 

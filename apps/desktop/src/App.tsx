@@ -2,20 +2,28 @@ import { useEffect, useMemo, useState } from "react";
 import {
   analyzeContent,
   analyzeSemantics,
+  approveExecution,
   cancelContentAnalysis,
   cancelScan,
   cancelSemanticAnalysis,
   createWorkspace,
+  generateOrganizationProposal,
   getMonitoringDashboard,
   getSystemStatus,
   listScanDuplicates,
   listScanErrors,
   listScanFiles,
   listContentResults,
+  authorizeUserContentFolder,
+  prepareExecution,
+  probeUserContentAccess,
   restoreWorkspaceSession,
   registerUserContentRoot,
+  rollbackExecution,
   scanWorkspace,
   selectAndRegisterRoot,
+  setOrganizationProposalStatus,
+  startExecution,
   subscribeScanProgress,
   subscribeContentAnalysisProgress,
   subscribeSemanticAnalysisProgress,
@@ -27,6 +35,8 @@ import type {
   DuplicateGroup,
   InventorySort,
   MonitoringDashboard,
+  FolderAccessProbe,
+  OrganizationProposal,
   RegisterUserContentRootResult,
   RegisteredRoot,
   ScanFile,
@@ -49,14 +59,29 @@ import { IdentityDetailPanel } from "./IdentityDetailPanel";
 import { IdentityReviewView } from "./IdentityReviewView";
 import { MonitoringView } from "./MonitoringView";
 import { OnboardingView } from "./OnboardingView";
+import {
+  OneClickAccessView,
+  OneClickDoneView,
+  OneClickPreviewView,
+  OneClickScanView,
+  folderStatusFromProbe,
+  needsUserGrant,
+  type OneClickFolderStatus,
+} from "./OneClickOrganize";
 import { OrganizationPreviewView } from "./OrganizationPreviewView";
 import { ReviewView } from "./ReviewView";
 import { RulesPreferencesView } from "./RulesPreferencesView";
 import { SearchView } from "./SearchView";
+import { summarizeProposals } from "./oneClickSummary";
 import {
   isOnboardingCompleted,
   markOnboardingCompleted,
 } from "./onboardingStorage";
+import {
+  clearLastOrganizeResult,
+  readLastOrganizeResult,
+  writeLastOrganizeResult,
+} from "./organizeStorage";
 import "./App.css";
 
 type ResultView =
@@ -71,7 +96,15 @@ type ResultView =
   | "relationships"
   | "monitoring"
   | "rules"
-  | "organization";
+  | "organization"
+  | "oneclick-access"
+  | "oneclick-scan"
+  | "oneclick-preview"
+  | "oneclick-done";
+
+function isOneClickView(view: ResultView): boolean {
+  return view.startsWith("oneclick-");
+}
 
 const EMPTY_PROGRESS: Omit<ScanProgress, "scanId"> = {
   phase: "DISCOVERING",
@@ -191,6 +224,19 @@ function App() {
   const [accessSummary, setAccessSummary] = useState<
     RegisterUserContentRootResult[] | null
   >(null);
+  const [accessProbes, setAccessProbes] = useState<FolderAccessProbe[]>([]);
+  const [oneClickFolders, setOneClickFolders] = useState<OneClickFolderStatus[]>(
+    [],
+  );
+  const [oneClickProposals, setOneClickProposals] = useState<
+    OrganizationProposal[]
+  >([]);
+  const [oneClickFilesAnalyzed, setOneClickFilesAnalyzed] = useState(0);
+  const [applyBusy, setApplyBusy] = useState(false);
+  const [undoBusy, setUndoBusy] = useState(false);
+  const [lastOrganize, setLastOrganize] = useState(() =>
+    readLastOrganizeResult(),
+  );
 
   function reportError(
     reason: unknown,
@@ -398,6 +444,10 @@ function App() {
       void handleSelectFolder();
       return;
     }
+    if (action.run === "ranger") {
+      void handleWholeComputer([]);
+      return;
+    }
     if (action.run === "startScan") {
       void handleStartScan();
       return;
@@ -436,7 +486,11 @@ function App() {
       setFiles([]);
       setDuplicates([]);
       setIssues([]);
-      setView("home");
+      setView(
+        ["summary", "files", "duplicates", "errors", "content"].includes(view)
+          ? "summary"
+          : "home",
+      );
     } catch (reason) {
       reportError(reason);
     } finally {
@@ -476,80 +530,299 @@ function App() {
 
   async function handleWholeComputer(kinds: string[]) {
     clearError();
-        setAccessSummary(null);
+    setAccessSummary(null);
+    setOneClickProposals([]);
+    setOneClickFilesAnalyzed(0);
     setWholeComputerBusy(true);
-    setWholeComputerProgress("Préparation…");
+    setWholeComputerProgress(null);
+    markOnboardingCompleted();
+    setShowOnboarding(false);
+    setView("oneclick-access");
     try {
       let activeWorkspace = workspace;
       if (!activeWorkspace) {
-        activeWorkspace = await createWorkspace("Inventaire local");
+        activeWorkspace = await createWorkspace("ZEMO");
         setWorkspace(activeWorkspace);
       }
-      const outcomes: RegisterUserContentRootResult[] = [];
-      let lastRoot: RegisteredRoot | null = null;
-      let lastScan: ScanResult | null = null;
-      let index = 0;
-      for (const kind of kinds) {
-        index += 1;
-        setWholeComputerProgress(
-          `Accès aux dossiers (${index}/${kinds.length})…`,
-        );
-        const outcome = await registerUserContentRoot(activeWorkspace.id, kind);
+      const probes = await probeUserContentAccess();
+      const selected = kinds.length
+        ? probes.filter((probe) => kinds.includes(probe.kind))
+        : probes.filter((probe) => probe.recommended);
+      const working = selected.length > 0 ? selected : probes.filter((probe) => probe.recommended);
+      setAccessProbes(working);
+      setOneClickFolders(working.map(folderStatusFromProbe));
+
+      const accessible = working.filter((probe) => probe.accessState === "accessible");
+      const needsGrant = working.filter((probe) => needsUserGrant(probe.accessState));
+      const allMissing = working.every((probe) =>
+        ["missing", "unsupported"].includes(probe.accessState),
+      );
+
+      if (accessible.length === 0) {
+        if (allMissing && needsGrant.length === 0) {
+          setView("home");
+          setError({
+            title: "ZEMO n’a pas pu analyser ce dossier.",
+            message: "Aucun dossier n’a pu être analysé.",
+            impact: "Rien n’a été modifié.",
+            actionHint: "Choisissez un autre dossier.",
+            severity: "action_required",
+            scope: "permission",
+            technicalDetails: working
+              .map((probe) => probe.technicalDetails)
+              .filter(Boolean)
+              .join("\n\n") || null,
+          });
+        }
+        return;
+      }
+
+      setView("oneclick-scan");
+      setWholeComputerProgress("Analyse de vos fichiers…");
+      await scanAccessibleFolders(activeWorkspace.id, working, accessible);
+      markOnboardingCompleted();
+      setShowOnboarding(false);
+    } catch (reason) {
+      reportError(reason, "organization");
+      setView("home");
+    } finally {
+      setWholeComputerBusy(false);
+      setWholeComputerProgress(null);
+      setBusy(null);
+    }
+  }
+
+  async function scanAccessibleFolders(
+    workspaceId: string,
+    working: FolderAccessProbe[],
+    accessible: FolderAccessProbe[],
+  ) {
+    const outcomes: RegisterUserContentRootResult[] = [];
+    const proposals: OrganizationProposal[] = [];
+    let lastRoot: RegisteredRoot | null = null;
+    let lastScan: ScanResult | null = null;
+    let filesAnalyzed = 0;
+    let scannedAny = false;
+    let index = 0;
+
+    for (const probe of working) {
+      if (probe.accessState !== "accessible") {
+        outcomes.push({
+          root: null,
+          kind: probe.kind,
+          displayLabel: probe.displayLabel,
+          absolutePath: probe.resolvedPath,
+          status: probe.accessState,
+          accessState: probe.accessState,
+          humanStatus: probe.humanStatus,
+          message: probe.humanStatus,
+        });
+        continue;
+      }
+      index += 1;
+      setOneClickFolders((current) =>
+        current.map((folder) =>
+          folder.kind === probe.kind ? { ...folder, phase: "scanning" } : folder,
+        ),
+      );
+      setWholeComputerProgress(
+        `Analyse de ${probe.displayLabel} (${index}/${accessible.length})…`,
+      );
+      try {
+        const outcome = await registerUserContentRoot(workspaceId, probe.kind);
         outcomes.push(outcome);
         if (!outcome.root) {
+          setOneClickFolders((current) =>
+            current.map((folder) =>
+              folder.kind === probe.kind
+                ? {
+                    ...folder,
+                    phase:
+                      outcome.accessState === "authorization_required"
+                        ? "authorization"
+                        : outcome.accessState === "permission_denied" ||
+                            outcome.status === "denied"
+                          ? "denied"
+                          : "missing",
+                    humanStatus: outcome.humanStatus ?? outcome.message ?? undefined,
+                  }
+                : folder,
+            ),
+          );
           continue;
         }
         lastRoot = outcome.root;
         setRoot(outcome.root);
         setOrganizationRootId(outcome.root.id);
-        setWholeComputerProgress(
-          `Analyse de ${outcome.displayLabel} (${index}/${kinds.length})…`,
-        );
         setBusy("scan");
-        const result = await scanWorkspace(activeWorkspace.id);
+        const result = await scanWorkspace(workspaceId);
         lastScan = result;
         setScan(result);
-      }
-      setAccessSummary(outcomes);
-      if (lastRoot) {
-        setRoot(lastRoot);
-        setOrganizationRootId(lastRoot.id);
-      }
-      if (lastScan) {
-        setScan(lastScan);
-      }
-      markOnboardingCompleted();
-      setShowOnboarding(false);
-      setView("home");
-      if (!outcomes.some((item) => item.root)) {
-        setError({
-          title: "Aucun dossier analysé",
-          message:
-            "Aucun dossier n’a pu être analysé. Vérifiez les accès ou choisissez un dossier manuellement.",
-          impact: "Vous pouvez réessayer ou choisir un dossier manuellement.",
-          actionHint: "Choisissez un dossier ou réessayez Organiser mon ordinateur.",
-          severity: "action_required",
-          scope: "permission",
-          technicalDetails: null,
+        filesAnalyzed += result.filesIndexed;
+        setOneClickFilesAnalyzed(filesAnalyzed);
+        setOneClickFolders((current) =>
+          current.map((folder) =>
+            folder.kind === probe.kind
+              ? {
+                  ...folder,
+                  phase: "ready",
+                  filesIndexed: result.filesIndexed,
+                }
+              : folder,
+          ),
+        );
+        const proposal = await generateOrganizationProposal(
+          workspaceId,
+          false,
+          outcome.root.id,
+          true,
+        );
+        proposals.push(proposal);
+        scannedAny = true;
+      } catch (reason) {
+        outcomes.push({
+          root: null,
+          kind: probe.kind,
+          displayLabel: probe.displayLabel,
+          absolutePath: probe.resolvedPath,
+          status: "unexpected_error",
+          accessState: "unexpected_error",
+          humanStatus: `${probe.displayLabel} — Impossible à analyser`,
+          message: reason instanceof Error ? reason.message : String(reason),
         });
-      } else if (outcomes.some((item) => item.status === "denied")) {
-        setError({
-          title: "Accès partiel",
-          message:
-            "Certains dossiers n’ont pas pu être analysés faute d’accès.",
-          impact: "Les dossiers disponibles ont été analysés normalement.",
-          actionHint: "Réessayez plus tard ou continuez avec les dossiers disponibles.",
-          severity: "action_required",
-          scope: "permission",
-          technicalDetails: null,
-        });
+        setOneClickFolders((current) =>
+          current.map((folder) =>
+            folder.kind === probe.kind ? { ...folder, phase: "error" } : folder,
+          ),
+        );
       }
+    }
+
+    setAccessSummary(outcomes);
+    setOneClickProposals(proposals);
+    if (lastRoot) {
+      setRoot(lastRoot);
+      setOrganizationRootId(lastRoot.id);
+    }
+    if (lastScan) {
+      setScan(lastScan);
+    }
+    if (scannedAny) {
+      setView("oneclick-preview");
+      return;
+    }
+    const needsGrant = working.some((probe) => needsUserGrant(probe.accessState))
+      || outcomes.some((item) => needsUserGrant(item.accessState ?? item.status));
+    if (needsGrant) {
+      setView("oneclick-access");
+      return;
+    }
+    setView("home");
+    setError({
+      title: "ZEMO n’a pas pu analyser ce dossier.",
+      message: "Aucun dossier n’a pu être analysé.",
+      impact: "Rien n’a été modifié.",
+      actionHint: "Choisissez un autre dossier.",
+      severity: "action_required",
+      scope: "permission",
+      technicalDetails:
+        outcomes
+          .map((item) => item.message)
+          .filter((item): item is string => Boolean(item))
+          .join("\n") || null,
+    });
+  }
+
+  async function handleAuthorizeFolder(kind?: string) {
+    const target =
+      kind ??
+      accessProbes.find((probe) => needsUserGrant(probe.accessState))?.kind;
+    if (!target) {
+      return;
+    }
+    clearError();
+    setWholeComputerBusy(true);
+    try {
+      const updated = await authorizeUserContentFolder(target);
+      setAccessProbes((current) =>
+        current.map((probe) => (probe.kind === updated.kind ? updated : probe)),
+      );
+      setOneClickFolders((current) =>
+        current.map((folder) =>
+          folder.kind === updated.kind ? folderStatusFromProbe(updated) : folder,
+        ),
+      );
+      await handleWholeComputer(
+        accessProbes.map((probe) => probe.kind).concat(
+          accessProbes.some((probe) => probe.kind === updated.kind) ? [] : [updated.kind],
+        ),
+      );
     } catch (reason) {
-      reportError(reason);
+      reportError(reason, "permission");
     } finally {
       setWholeComputerBusy(false);
-      setWholeComputerProgress(null);
-      setBusy(null);
+    }
+  }
+
+  function handleRetryAccess() {
+    void handleWholeComputer(accessProbes.map((probe) => probe.kind));
+  }
+
+  async function handleApplyOneClick() {
+    if (oneClickProposals.length === 0) {
+      return;
+    }
+    setApplyBusy(true);
+    clearError();
+    try {
+      const executionIds: string[] = [];
+      let filesMoved = 0;
+      for (const proposal of oneClickProposals) {
+        let current = proposal;
+        if (current.status !== "APPROVED_FOR_FUTURE_APPLY") {
+          current = await setOrganizationProposalStatus(
+            current.id,
+            "approved_for_future_apply",
+          );
+        }
+        const prepared = await prepareExecution(current.id, current.revision);
+        const approved = await approveExecution(prepared.session.id);
+        const completed = await startExecution(approved.session.id);
+        executionIds.push(completed.session.id);
+        filesMoved += completed.session.summary?.applied ?? current.summary.proposedMoves;
+      }
+      const result = {
+        filesMoved,
+        executionIds,
+        completedAt: new Date().toISOString(),
+      };
+      writeLastOrganizeResult(result);
+      setLastOrganize(result);
+      setView("oneclick-done");
+    } catch (reason) {
+      reportError(reason, "organization");
+    } finally {
+      setApplyBusy(false);
+    }
+  }
+
+  async function handleUndoOneClick() {
+    if (!lastOrganize?.executionIds.length) {
+      return;
+    }
+    setUndoBusy(true);
+    clearError();
+    try {
+      for (const executionId of [...lastOrganize.executionIds].reverse()) {
+        await rollbackExecution(executionId);
+      }
+      clearLastOrganizeResult();
+      setLastOrganize(null);
+      setView("home");
+    } catch (reason) {
+      reportError(reason, "organization");
+    } finally {
+      setUndoBusy(false);
     }
   }
 
@@ -689,7 +962,7 @@ function App() {
 
   return (
     <main className="scanner-shell">
-      {showOnboarding ? (
+      {showOnboarding && !isOneClickView(view) ? (
         <OnboardingView
           selectedPath={root?.selectedPath ?? null}
           selectBusy={busy === "select"}
@@ -703,17 +976,9 @@ function App() {
         />
       ) : null}
 
-      <header className="scanner-header">
+      <header className="scanner-header scanner-header--simple">
         <div>
-          <span className="eyebrow">
-            ZEMO · Bêta privée macOS · {system?.version ?? "0.1.0"}-beta.5
-          </span>
-          <h1>Organisez et retrouvez vos fichiers.</h1>
-          <p>
-            Analyse locale. Organisation proposée. Recherche simple. Les
-            fichiers ne sont déplacés que si vous appliquez l’organisation,
-            après confirmation.
-          </p>
+          <span className="eyebrow">ZEMO</span>
         </div>
         <div className="scanner-header-aside">
           <button
@@ -722,19 +987,8 @@ function App() {
             onClick={() => setShowOnboarding(true)}
             aria-label="Ouvrir la visite guidée"
           >
-            Aide / Visite
+            Aide
           </button>
-          <div className="safety-state" aria-label="Garanties du scanner">
-            <span>
-              {system?.localFirst ? "Traitement local" : "Vérification…"}
-            </span>
-            <span>
-              {system?.readOnlyScan ? "Rien n’est déplacé au scan" : "Vérification…"}
-            </span>
-            <span>
-              {system?.networkDisabled ? "Aucun upload" : "Vérification…"}
-            </span>
-          </div>
         </div>
       </header>
 
@@ -742,7 +996,6 @@ function App() {
         {(
           [
             ["home", "Accueil"],
-            ["organization", "Organisation"],
             ["search", "Recherche"],
             ["monitoring", "Surveillance"],
           ] as const
@@ -765,6 +1018,18 @@ function App() {
         <details className="app-nav-advanced">
           <summary>Options avancées</summary>
           <div className="app-nav-advanced__items">
+            <button
+              type="button"
+              className={
+                view === "organization"
+                  ? "app-nav__item app-nav__item--active"
+                  : "app-nav__item"
+              }
+              disabled={!workspace}
+              onClick={() => goTo("organization")}
+            >
+              Organisation détaillée
+            </button>
             <button
               type="button"
               className={
@@ -813,8 +1078,8 @@ function App() {
               onClick={() => goTo("history")}
             >
               {system?.recoveryRequired || system?.journalLocked
-                ? "Récupération requise"
-                : "Historique d’exécution"}
+                ? "Récupération"
+                : "Historique"}
             </button>
           </div>
         </details>
@@ -835,25 +1100,65 @@ function App() {
         </div>
       ) : null}
 
-      {wholeComputerProgress ? (
-        <div className="whole-computer-progress" role="status" aria-live="polite">
-          <strong>Analyse en cours</strong>
-          <span>{wholeComputerProgress}</span>
-        </div>
+      {view === "oneclick-access" ? (
+        <OneClickAccessView
+          folders={oneClickFolders}
+          probes={accessProbes}
+          busy={wholeComputerBusy}
+          onAuthorize={() => void handleAuthorizeFolder()}
+          onRetry={handleRetryAccess}
+          onChooseAnother={() => void handleAuthorizeFolder()}
+        />
       ) : null}
 
-      {accessSummary && accessSummary.some((item) => item.status !== "registered") ? (
+      {view === "oneclick-scan" ? (
+        <OneClickScanView
+          folders={oneClickFolders}
+          filesAnalyzed={oneClickFilesAnalyzed}
+          progress={wholeComputerProgress}
+          accessSummary={accessSummary}
+          onAuthorize={() => void handleAuthorizeFolder()}
+        />
+      ) : null}
+
+      {view === "oneclick-preview" ? (
+        <OneClickPreviewView
+          filesToOrganize={summarizeProposals(oneClickProposals).filesToOrganize}
+          counts={summarizeProposals(oneClickProposals).counts}
+          applyBusy={applyBusy}
+          applyEnabled={Boolean(system?.applyEnabled) && !system?.journalLocked}
+          applyGateReason={system?.applyGateReason}
+          authorizationCount={accessProbes.filter((probe) =>
+            needsUserGrant(probe.accessState),
+          ).length}
+          denied={accessProbes.some((probe) => probe.accessState === "permission_denied")}
+          onApply={() => void handleApplyOneClick()}
+          onSeeDetails={() => goTo("organization")}
+          onAuthorize={() => void handleAuthorizeFolder()}
+          onRetry={handleRetryAccess}
+          onChooseAnother={() => void handleAuthorizeFolder()}
+        />
+      ) : null}
+
+      {view === "oneclick-done" ? (
+        <OneClickDoneView
+          filesMoved={lastOrganize?.filesMoved ?? 0}
+          undoBusy={undoBusy}
+          onUndo={() => void handleUndoOneClick()}
+          onFinish={() => setView("home")}
+        />
+      ) : null}
+
+      {!isOneClickView(view) &&
+      accessSummary &&
+      accessSummary.some((item) => item.status !== "registered") ? (
         <div className="access-summary" role="status">
           <strong>Accès aux dossiers</strong>
           <ul>
             {accessSummary.map((item) => (
               <li key={item.kind}>
-                {item.displayLabel}{" "}
-                {item.status === "registered"
-                  ? "✓"
-                  : item.status === "denied"
-                    ? "— accès refusé"
-                    : `— ${item.status}`}
+                {item.humanStatus ??
+                  `${item.displayLabel} ${item.status === "registered" ? "✓" : ""}`}
               </li>
             ))}
           </ul>
@@ -875,7 +1180,7 @@ function App() {
             <span className="notice-banner__hint">{error.actionHint}</span>
             {error.technicalDetails ? (
               <details className="error-details">
-                <summary>Afficher les détails</summary>
+                <summary>Détails techniques</summary>
                 <code>{error.technicalDetails}</code>
               </details>
             ) : null}
@@ -886,7 +1191,7 @@ function App() {
         </div>
       ) : null}
 
-      {view === "home" ? (
+      {view === "home" && !showOnboarding ? (
         <HomeDashboard
           loading={sessionRestoring}
           system={system}
@@ -898,9 +1203,12 @@ function App() {
           contentNeedsReview={semanticAnalysis?.needsReview ?? null}
           contentFailed={analysis?.failed ?? null}
           contentUnsupported={analysis?.unsupported ?? null}
+          organized={Boolean(lastOrganize && lastOrganize.filesMoved > 0)}
+          organizedCount={lastOrganize?.filesMoved ?? null}
           onPrimaryAction={handlePrimaryAction}
           onNavigate={goTo}
           onSearch={handleSearchFromHome}
+          onChooseFolders={handleSelectFolder}
           onRetryDashboard={() => {
             setDashboardRetryToken((value) => value + 1);
           }}
@@ -966,6 +1274,7 @@ function App() {
 
       {visibleProgress &&
       !["monitoring", "rules", "home"].includes(view) &&
+      !isOneClickView(view) &&
       (scanRunning ||
         (progress !== null &&
           !["COMPLETED", "CANCELLED"].includes(progress.phase))) ? (
@@ -1002,7 +1311,9 @@ function App() {
         </section>
       ) : null}
 
-      {analysisProgress && view !== "home" ? (
+      {analysisProgress &&
+      view !== "home" &&
+      !isOneClickView(view) ? (
         <section className="progress-panel content-progress" aria-live="polite">
           <div className="progress-title">
             <div>
@@ -1039,7 +1350,7 @@ function App() {
         </section>
       ) : null}
 
-      {semanticProgress && view !== "home" ? (
+      {semanticProgress && view !== "home" && !isOneClickView(view) ? (
         <section className="progress-panel semantic-progress" aria-live="polite">
           <div className="progress-title">
             <div>
@@ -1187,7 +1498,8 @@ function App() {
         "review",
         "relationships",
         "organization",
-      ].includes(view) ? (
+      ].includes(view) &&
+      !isOneClickView(view) ? (
         <section className="results-panel" aria-labelledby="results-title">
           <div className="results-heading">
             <div>

@@ -34,6 +34,8 @@ vi.mock("./api", () => ({
       recommended: true,
     },
   ]),
+  probeUserContentAccess: vi.fn().mockResolvedValue([]),
+  authorizeUserContentFolder: vi.fn(),
   registerUserContentRoot: vi.fn(),
   scanWorkspace: vi.fn(),
   cancelScan: vi.fn(),
@@ -218,63 +220,58 @@ describe("Milestone 12 first-run onboarding", () => {
 
     expect(
       await screen.findByRole("heading", {
-        name: "Organisez et retrouvez vos fichiers automatiquement.",
+        name: "ZEMO range vos fichiers, pas vos applications.",
       }),
     ).toBeTruthy();
     expect(screen.getByRole("dialog")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
     expect(
       within(screen.getByRole("dialog")).getByRole("button", {
-        name: "Organiser mon ordinateur",
+        name: "Ranger mon ordinateur",
       }),
     ).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Choisir des dossiers" }),
+      screen.getByRole("button", { name: "Choisir les dossiers" }),
     ).toBeTruthy();
   });
 
-  it("explains local analysis and proposal-only organization", async () => {
+  it("explains preview and undo before organizing", async () => {
     render(<App />);
     await screen.findByRole("heading", {
-      name: "Organisez et retrouvez vos fichiers automatiquement.",
+      name: "ZEMO range vos fichiers, pas vos applications.",
     });
-    expect(screen.getByText(/analysés localement/i)).toBeTruthy();
-    expect(screen.getByText(/rien n’est déplacé automatiquement/i)).toBeTruthy();
-    fireEvent.click(
-      within(screen.getByRole("dialog")).getByRole("button", {
-        name: "Organiser mon ordinateur",
-      }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
     expect(
-      await screen.findByText(/accéder uniquement aux emplacements/i),
+      screen.getByRole("heading", {
+        name: "Vous voyez toujours un aperçu avant le rangement.",
+      }),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
+    expect(
+      screen.getByRole("heading", {
+        name: "Vous pouvez annuler après le rangement.",
+      }),
     ).toBeTruthy();
   });
 
-  it("reuses folder selection from Choisir des dossiers", async () => {
+  it("reuses folder selection from Choisir les dossiers", async () => {
     render(<App />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Choisir des dossiers" }),
-    );
+    fireEvent.click(await screen.findByRole("button", { name: "Continuer" }));
     fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
-    fireEvent.click(
-      screen.getByRole("button", { name: "Sélectionner un dossier" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Choisir les dossiers" }));
 
     await waitFor(() => {
       expect(api.createWorkspace).toHaveBeenCalled();
       expect(api.selectAndRegisterRoot).toHaveBeenCalledWith("workspace-1");
     });
-    expect(
-      screen.getAllByText("/Users/local/Documents").length,
-    ).toBeGreaterThan(0);
   });
 
   it("persists completion and skips onboarding after restart", async () => {
     const { unmount } = render(<App />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Choisir des dossiers" }),
-    );
+    fireEvent.click(await screen.findByRole("button", { name: "Continuer" }));
     fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
-    fireEvent.click(screen.getByRole("button", { name: "Passer pour l’instant" }));
+    fireEvent.click(screen.getByRole("button", { name: "Choisir les dossiers" }));
 
     await waitFor(() => {
       expect(isOnboardingCompleted()).toBe(true);
@@ -286,7 +283,7 @@ describe("Milestone 12 first-run onboarding", () => {
 
     expect(
       await screen.findByRole("heading", {
-        name: "Organisez et retrouvez vos fichiers.",
+        name: "Votre ordinateur est en bazar ?",
       }),
     ).toBeTruthy();
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -297,21 +294,24 @@ describe("Milestone 12 first-run onboarding", () => {
     render(<App />);
     expect(
       await screen.findByRole("heading", {
-        name: "Organisez et retrouvez vos fichiers.",
+        name: "Votre ordinateur est en bazar ?",
       }),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Ouvrir la visite guidée" }));
     expect(
-      await within(await screen.findByRole("dialog")).findByRole("button", { name: "Organiser mon ordinateur" }),
+      await screen.findByRole("heading", {
+        name: "ZEMO range vos fichiers, pas vos applications.",
+      }),
     ).toBeTruthy();
     expect(isOnboardingCompleted()).toBe(true);
   });
 
-  it("supports keyboard focus on the primary CTA", async () => {
+  it("supports keyboard focus on the first-step action", async () => {
     render(<App />);
-    const primary = await within(await screen.findByRole("dialog")).findByRole("button", {
-      name: "Organiser mon ordinateur",
-    });
+    const primary = await within(await screen.findByRole("dialog")).findByRole(
+      "button",
+      { name: "Continuer" },
+    );
     expect(document.activeElement).toBe(primary);
   });
 });

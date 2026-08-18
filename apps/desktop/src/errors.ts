@@ -60,10 +60,10 @@ export function classifyUserError(
     normalized.includes("access_denied")
   ) {
     return {
-      title: "Accès indisponible",
-      message: "L’accès à un dossier n’est plus disponible.",
+      title: "ZEMO n’a pas accès à ce dossier.",
+      message: "ZEMO n’a pas accès à ce dossier.",
       impact: "Les autres dossiers déjà analysés restent utilisables.",
-      actionHint: "Réessayez l’accès ou continuez sans ce dossier.",
+      actionHint: "Autoriser l’accès",
       severity: "action_required",
       scope: "permission",
       technicalDetails,
@@ -142,6 +142,61 @@ export function classifyUserError(
   }
 
   if (
+    normalized.includes("changed") ||
+    normalized.includes("changé") ||
+    normalized.includes("source drift") ||
+    normalized.includes("stale")
+  ) {
+    return {
+      title: "Fichier modifié",
+      message: "Ce fichier a changé depuis l’aperçu. ZEMO l’a laissé en place.",
+      impact: "Le reste du rangement peut continuer.",
+      actionHint: "Relancez un aperçu si vous voulez réessayer ce fichier.",
+      severity: "warning",
+      scope: "organization",
+      technicalDetails,
+    };
+  }
+
+  if (
+    normalized.includes("placeholder") ||
+    normalized.includes("cloud") ||
+    normalized.includes("onedrive") ||
+    normalized.includes("icloud") ||
+    normalized.includes("not locally available") ||
+    normalized.includes("pas disponible localement") ||
+    normalized.includes("temporarily_unavailable")
+  ) {
+    return {
+      title: "Fichier distant",
+      message: "Ce fichier n’est pas disponible localement.",
+      impact: "ZEMO l’a laissé en place. Rien n’a été téléchargé.",
+      actionHint: "Rendez le fichier disponible sur cet ordinateur, puis réessayez.",
+      severity: "warning",
+      scope: "organization",
+      technicalDetails,
+    };
+  }
+
+  if (
+    normalized.includes("locked") ||
+    normalized.includes("in use") ||
+    normalized.includes("utilisé") ||
+    normalized.includes("sharing violation")
+  ) {
+    return {
+      title: "Fichier utilisé",
+      message:
+        "Ce fichier est utilisé par une autre application. ZEMO l’a laissé en place.",
+      impact: "Les autres fichiers peuvent être rangés normalement.",
+      actionHint: "Fermez l’application qui utilise le fichier, puis réessayez.",
+      severity: "warning",
+      scope: "organization",
+      technicalDetails,
+    };
+  }
+
+  if (
     preferredScope === "organization" ||
     normalized.includes("proposition") ||
     normalized.includes("organization") ||
@@ -211,10 +266,10 @@ export function classifyUserError(
   }
 
   return {
-    title: "Action impossible",
-    message: "Cette action n’a pas pu être terminée.",
-    impact: "Aucun fichier n’a été modifié.",
-    actionHint: "Réessayez ou choisissez une autre action.",
+    title: "ZEMO n’a pas pu ranger certains fichiers.",
+    message: "ZEMO n’a pas pu ranger certains fichiers.",
+    impact: "Aucun fichier n’a été écrasé.",
+    actionHint: "Voir les fichiers concernés",
     severity: preferredScope === "global" ? "action_required" : "warning",
     scope: preferredScope,
     technicalDetails,

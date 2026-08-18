@@ -29,6 +29,8 @@ vi.mock("./api", () => ({
   selectAndRegisterRoot: vi.fn(),
 
   listUserContentLocations: vi.fn().mockResolvedValue([]),
+  probeUserContentAccess: vi.fn().mockResolvedValue([]),
+  authorizeUserContentFolder: vi.fn(),
   registerUserContentRoot: vi.fn(),
   scanWorkspace: vi.fn(),
   cancelScan: vi.fn(),
@@ -348,29 +350,21 @@ describe("Milestone 12 non-technical user walkthrough", () => {
     render(<App />);
 
     expect(
-      await within(await screen.findByRole("dialog")).findByRole("button", { name: "Organiser mon ordinateur" }),
+      await screen.findByRole("heading", {
+        name: "ZEMO range vos fichiers, pas vos applications.",
+      }),
     ).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Choisir des dossiers" }));
     fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Sélectionner un dossier" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Choisir les dossiers" }));
     await waitFor(() => {
       expect(api.selectAndRegisterRoot).toHaveBeenCalled();
     });
-    fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
 
     expect(
-      await screen.findByRole("heading", { name: "Bonjour" }),
+      await screen.findByRole("heading", { name: "Votre ordinateur est en bazar ?" }),
     ).toBeTruthy();
-    expect(
-      screen.getAllByText(/Traitement local|Analyse locale/i).length,
-    ).toBeGreaterThan(0);
-    expect(
-      screen.getAllByText(
-        /analyse de vos fichiers et vos recherches s.effectuent localement|Aucune modification automatique/i,
-      ).length,
-    ).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Ranger mon ordinateur" })).toBeTruthy();
 
     const nav = screen.getByRole("navigation", {
       name: "Navigation principale",
@@ -385,7 +379,11 @@ describe("Milestone 12 non-technical user walkthrough", () => {
       screen.getByText(/fichiers analysés\. Rien n’a encore été modifié/i),
     ).toBeTruthy();
 
-    fireEvent.click(within(nav).getByRole("button", { name: "Organisation" }));
+    const advanced = screen.getByText("Options avancées").closest("details");
+    if (advanced) {
+      advanced.open = true;
+    }
+    fireEvent.click(within(nav).getByRole("button", { name: "Organisation détaillée" }));
     expect(
       await screen.findByText(
         "Rien n’a encore été modifié sur votre ordinateur.",
@@ -395,7 +393,9 @@ describe("Milestone 12 non-technical user walkthrough", () => {
     expect(screen.getAllByText("À vérifier").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Confiance élevée").length).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getByText("Options avancées"));
+    if (advanced) {
+      advanced.open = true;
+    }
     fireEvent.click(within(nav).getByRole("button", { name: "À revoir" }));
     expect(
       await screen.findByText("Emplacement incertain — à vérifier."),
@@ -428,17 +428,18 @@ describe("Milestone 12 non-technical user walkthrough", () => {
 
   it("keeps the essential keyboard flow reachable", async () => {
     render(<App />);
-    const primary = await within(await screen.findByRole("dialog")).findByRole("button", {
-      name: "Organiser mon ordinateur",
-    });
+    const primary = await within(await screen.findByRole("dialog")).findByRole(
+      "button",
+      { name: "Continuer" },
+    );
     primary.focus();
     expect(document.activeElement).toBe(primary);
-    fireEvent.click(screen.getByRole("button", { name: "Choisir des dossiers" }));
     fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
-    fireEvent.click(screen.getByRole("button", { name: "Passer pour l’instant" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Choisir les dossiers" }));
 
     const cta = await screen.findByRole("button", {
-      name: "Organiser mon ordinateur",
+      name: "Ranger mon ordinateur",
     });
     expect((cta as HTMLButtonElement).disabled).toBe(false);
     expect(cta.getAttribute("type")).toBe("button");

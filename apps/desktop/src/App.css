@@ -3859,3 +3859,112 @@ button.linkish:hover:not(:disabled) {
     grid-template-columns: 1fr;
   }
 }
+
+.scanner-header--simple {
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.home-dashboard--simple {
+  display: grid;
+  justify-items: start;
+  gap: 1rem;
+  padding: 2.25rem 1.75rem;
+}
+
+.home-dashboard--simple h2 {
+  margin: 0;
+  font-size: clamp(2rem, 4vw, 3rem);
+}
+
+.home-secondary-cta {
+  border: none;
+  background: transparent;
+  color: #1c6442;
+  padding: 0.35rem 0;
+  font-size: 0.95rem;
+}
+
+.home-secondary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.one-click-panel {
+  display: grid;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+  padding: 1.75rem 1.6rem;
+  border: 1px solid #b9c2bb;
+  border-radius: 16px;
+  background: rgb(255 255 255 / 62%);
+}
+
+.one-click-panel h2 {
+  margin: 0;
+  font-size: clamp(1.6rem, 3vw, 2.2rem);
+}
+
+.one-click-count,
+.one-click-note {
+  margin: 0;
+  color: #3d4a43;
+}
+
+.one-click-folder-list,
+.one-click-category-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.one-click-folder-list li,
+.one-click-category-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 10px;
+  background: rgb(255 255 255 / 70%);
+}
+
+.one-click-folder-status--scanning {
+  color: #1c6442;
+  font-weight: 700;
+}
+
+.one-click-folder-status--denied,
+.one-click-folder-status--authorization,
+.one-click-folder-status--error {
+  color: #8a322c;
+}
+
+.one-click-folder-status--missing,
+.one-click-folder-status--unavailable,
+.one-click-folder-status--locked {
+  color: #6b5344;
+}
+
+.one-click-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.one-click-local-error {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.one-click-technical {
+  margin-top: 0.75rem;
+}
+
+.one-click-technical pre {
+  white-space: pre-wrap;
+  font-size: 0.78rem;
+  color: #3d4a43;
+}

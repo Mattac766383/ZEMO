@@ -30,6 +30,8 @@ vi.mock("./api", async () => {
     getRulesPreferences: vi.fn(),
     searchLocalFiles: vi.fn(),
     listUserContentLocations: vi.fn(),
+    probeUserContentAccess: vi.fn(),
+    authorizeUserContentFolder: vi.fn(),
     selectAndRegisterRoot: vi.fn(),
     registerUserContentRoot: vi.fn(),
     scanWorkspace: vi.fn(),
@@ -211,21 +213,20 @@ describe("Milestone 12.3 radical simplification + error recovery", () => {
       name: "Navigation principale",
     });
     expect(within(nav).getByRole("button", { name: "Accueil" })).toBeTruthy();
-    expect(within(nav).getByRole("button", { name: "Organisation" })).toBeTruthy();
     expect(within(nav).getByRole("button", { name: "Recherche" })).toBeTruthy();
     expect(within(nav).getByRole("button", { name: "Surveillance" })).toBeTruthy();
+    expect(within(nav).queryByRole("button", { name: "Organisation" })).toBeNull();
     expect(within(nav).queryByRole("button", { name: "Exécution" })).toBeNull();
     expect(screen.getByText("Options avancées")).toBeTruthy();
 
     fireEvent.click(screen.getByText("Options avancées"));
+    expect(screen.getByRole("button", { name: "Organisation détaillée" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "À revoir" })).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "Préférences de rangement" }),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Inventaire" })).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: "Historique d’exécution" }),
-    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Historique" })).toBeTruthy();
   });
 
   it("classifies recoverable engine failures as non-global warnings", () => {
@@ -249,7 +250,7 @@ describe("Milestone 12.3 radical simplification + error recovery", () => {
     expect(shouldShowGlobalBanner(recovery)).toBe(true);
   });
 
-  it("uses Organiser mon ordinateur / Voir l’organisation proposée as primary CTAs", () => {
+  it("uses Ranger mon ordinateur as the primary CTA", () => {
     expect(
       resolvePrimaryAction({
         root: null,
@@ -257,7 +258,7 @@ describe("Milestone 12.3 radical simplification + error recovery", () => {
         dashboard: null,
         contentNeedsReview: null,
       }).label,
-    ).toBe("Organiser mon ordinateur");
+    ).toBe("Ranger mon ordinateur");
 
     expect(
       resolvePrimaryAction({
@@ -282,7 +283,7 @@ describe("Milestone 12.3 radical simplification + error recovery", () => {
         dashboard: null,
         contentNeedsReview: null,
       }).label,
-    ).toBe("Voir l’organisation proposée");
+    ).toBe("Ranger mon ordinateur");
   });
 
   it("shows a user-level Apply path without raw Rust preflight wording", async () => {
@@ -363,15 +364,13 @@ describe("Milestone 12.3 radical simplification + error recovery", () => {
     render(<App />);
     expect(
       await screen.findByRole("heading", {
-        name: "Organisez et retrouvez vos fichiers.",
+        name: "Votre ordinateur est en bazar ?",
       }),
     ).toBeTruthy();
-    expect(screen.getByText(/Bêta privée macOS/i)).toBeTruthy();
+    expect(screen.getByText("ZEMO")).toBeTruthy();
     expect(screen.queryByText(/Working Name/i)).toBeNull();
     expect(screen.queryByText(/Milestone/i)).toBeNull();
     expect(screen.queryByText(/embedding|ANN|ONNX|IPC/i)).toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Organiser mon ordinateur" }),
-    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Ranger mon ordinateur" })).toBeTruthy();
   });
 });

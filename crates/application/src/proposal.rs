@@ -5,10 +5,11 @@ use domain::{
     ProposalOverrideId, RootId, RuleFileMatch, SemanticRuleField, WorkspaceId,
 };
 use organizer::{
-    BehaviorSignal, IncrementalOrganizationBuildRequest, LocalOrganizationProposalEngine,
-    LocalRuleEngine, OrganizationBuildOutcome, OrganizationBuildRequest, OrganizationSourceInput,
-    ProposalBuildProgress, ProposalRebuildMode, ProposalRelationship, ProposalSignal,
-    RuleEvaluationContext, VirtualPathPolicy, compute_invalidation_neighborhood,
+    BehaviorSignal, ConsumerRootKind, IncrementalOrganizationBuildRequest,
+    LocalOrganizationProposalEngine, LocalRuleEngine, OrganizationBuildOutcome,
+    OrganizationBuildRequest, OrganizationSourceInput, ProposalBuildProgress, ProposalRebuildMode,
+    ProposalRelationship, ProposalSignal, RuleEvaluationContext, VirtualPathPolicy,
+    compute_invalidation_neighborhood,
 };
 use persistence::{
     PersistenceError, ProposalRelationshipSourceRecord, ProposalSemanticSignalRecord,
@@ -61,6 +62,39 @@ impl ScannerApplicationService {
             root_id,
             proposal_id,
             trigger_kind,
+            false,
+            is_cancelled,
+            on_progress,
+        )
+    }
+
+    pub fn generate_consumer_organization_proposal_for_root(
+        &self,
+        workspace_id: WorkspaceId,
+        root_id: RootId,
+        recompute_current: bool,
+        is_cancelled: &(dyn Fn() -> bool + Sync),
+        on_progress: &mut dyn FnMut(ProposalBuildProgress),
+    ) -> Result<OrganizationProposal, ApplicationError> {
+        let current_id = self
+            .database
+            .current_organization_proposal_id_for_root(workspace_id, root_id)?;
+        let proposal_id = if recompute_current {
+            current_id.unwrap_or_default()
+        } else {
+            ProposalId::new()
+        };
+        let trigger_kind = if recompute_current && current_id.is_some() {
+            "manual_recompute"
+        } else {
+            "initial"
+        };
+        self.build_organization_proposal(
+            workspace_id,
+            root_id,
+            proposal_id,
+            trigger_kind,
+            true,
             is_cancelled,
             on_progress,
         )
@@ -86,6 +120,7 @@ impl ScannerApplicationService {
                 root_id,
                 ProposalId::new(),
                 "initial",
+                false,
                 is_cancelled,
                 on_progress,
             )?;
@@ -210,6 +245,7 @@ impl ScannerApplicationService {
             current.root_id,
             proposal_id,
             "user_override",
+            false,
             is_cancelled,
             on_progress,
         )
@@ -242,6 +278,7 @@ impl ScannerApplicationService {
         root_id: RootId,
         proposal_id: ProposalId,
         trigger_kind: &str,
+        consumer_mode: bool,
         is_cancelled: &(dyn Fn() -> bool + Sync),
         on_progress: &mut dyn FnMut(ProposalBuildProgress),
     ) -> Result<OrganizationProposal, ApplicationError> {
@@ -251,6 +288,7 @@ impl ScannerApplicationService {
             proposal_id,
             trigger_kind,
             None,
+            consumer_mode,
             is_cancelled,
             on_progress,
         )?;
@@ -265,13 +303,20 @@ impl ScannerApplicationService {
         proposal_id: ProposalId,
         trigger_kind: &str,
         rebuild_reason: Option<&str>,
+        consumer_mode: bool,
         is_cancelled: &(dyn Fn() -> bool + Sync),
         on_progress: &mut dyn FnMut(ProposalBuildProgress),
     ) -> Result<OrganizationBuildOutcome, ApplicationError> {
         let source = self
             .database
             .organization_source_for_root(workspace_id, root_id)?;
-        let preferences = self.database.organization_preferences(workspace_id)?;
+        let mut preferences = self.database.organization_preferences(workspace_id)?;
+        if consumer_mode {
+            preferences.maximum_depth = 3;
+            preferences.include_year_folders = false;
+            preferences.naming_language = "fr".to_owned();
+        }
+        let consumer_root_kind = consumer_root_kind(self, workspace_id, root_id);
         let rules = self.database.rules(workspace_id)?;
         let revision = self
             .database
@@ -328,6 +373,8 @@ impl ScannerApplicationService {
                 previous_operations: previous
                     .map(|proposal| proposal.operations)
                     .unwrap_or_default(),
+                consumer_mode,
+                consumer_root_kind,
             },
             is_cancelled,
             on_progress,
@@ -376,6 +423,7 @@ impl ScannerApplicationService {
                 proposal_id,
                 "manual_recompute",
                 Some("neighborhood_or_dirty_limit"),
+                false,
                 is_cancelled,
                 on_progress,
             );
@@ -449,6 +497,8 @@ impl ScannerApplicationService {
                     inputs: Vec::new(),
                     overrides,
                     previous_operations: previous.operations,
+                    consumer_mode: false,
+                    consumer_root_kind: consumer_root_kind(self, workspace_id, root_id),
                 },
                 dirty_file_ids: dirty_file_ids.to_vec(),
                 neighborhood_inputs: dirty_inputs,
@@ -467,6 +517,7 @@ impl ScannerApplicationService {
                 proposal_id,
                 "manual_recompute",
                 outcome.rebuild_reason.as_deref(),
+                false,
                 is_cancelled,
                 on_progress,
             );
@@ -715,6 +766,20 @@ fn relationship(source: ProposalRelationshipSourceRecord) -> ProposalRelationshi
         user_confirmed: source.user_confirmed,
         project_customer_name: source.project_customer_name,
     }
+}
+
+fn consumer_root_kind(
+    service: &ScannerApplicationService,
+    workspace_id: WorkspaceId,
+    root_id: RootId,
+) -> ConsumerRootKind {
+    service
+        .database
+        .list_roots(workspace_id)
+        .ok()
+        .and_then(|roots| roots.into_iter().find(|root| root.id == root_id))
+        .map(|root| ConsumerRootKind::from_path_and_label(&root.absolute_path, &root.display_label))
+        .unwrap_or_default()
 }
 
 fn now_iso() -> String {

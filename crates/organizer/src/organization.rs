@@ -1,5 +1,5 @@
 use crate::{
-    RuleEvaluation,
+    ConsumerRootKind, RuleEvaluation, decide_consumer_organization,
     path_safety::{VirtualPathPolicy, collision_key, collision_name, validate_component},
 };
 use domain::{
@@ -101,6 +101,8 @@ pub struct OrganizationBuildRequest {
     pub inputs: Vec<OrganizationSourceInput>,
     pub overrides: Vec<OrganizationProposalOverride>,
     pub previous_operations: Vec<OrganizationProposalOperation>,
+    pub consumer_mode: bool,
+    pub consumer_root_kind: ConsumerRootKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -301,6 +303,8 @@ impl LocalOrganizationProposalEngine {
                 &request.base.preferences,
                 policy,
                 user_override,
+                request.base.consumer_mode,
+                request.base.consumer_root_kind,
             ));
         }
 
@@ -537,7 +541,14 @@ impl LocalOrganizationProposalEngine {
                 break;
             }
             let user_override = overrides.get(&input.file_id).copied();
-            let draft = compile_operation(input, &request.preferences, policy, user_override);
+            let draft = compile_operation(
+                input,
+                &request.preferences,
+                policy,
+                user_override,
+                request.consumer_mode,
+                request.consumer_root_kind,
+            );
             progress.files_evaluated = progress.files_evaluated.saturating_add(1);
             if matches!(
                 draft.operation.confidence_level,
@@ -787,6 +798,8 @@ fn compile_operation(
     preferences: &OrganizationPreferences,
     policy: VirtualPathPolicy,
     user_override: Option<&OrganizationProposalOverride>,
+    consumer_mode: bool,
+    consumer_root_kind: ConsumerRootKind,
 ) -> DraftOperation {
     let context = normalized_signal(input.context.as_ref(), "unknown");
     let document_type = normalized_signal(input.document_type.as_ref(), "unknown");
@@ -833,6 +846,23 @@ fn compile_operation(
     );
 
     let duplicate_no_action = input.duplicate_group_id.is_some() && !input.duplicate_canonical;
+    if consumer_mode {
+        return compile_consumer_operation(
+            input,
+            preferences,
+            policy,
+            user_override,
+            consumer_root_kind,
+            winning_location_kind,
+            duplicate_no_action,
+            reasons,
+            context,
+            document_type,
+            effective_customer,
+            supplier_name,
+            project_name,
+        );
+    }
     let (confidence_score, confidence_level) =
         proposal_confidence(input, customer, supplier, project);
     if context == "unknown" || context == "mixed" {
@@ -1090,6 +1120,219 @@ fn compile_operation(
         ProposalOperationKind::RenameProposal
     } else {
         ProposalOperationKind::MoveProposal
+    };
+    let proposed_path_length = policy.path_length_utf16(&proposed_destination, &proposed_name);
+
+    DraftOperation {
+        optional_tail,
+        operation: OrganizationProposalOperation {
+            id: ProposalItemId::new(),
+            file_id: input.file_id,
+            file_version_id: input.file_version_id,
+            source: ProposalSourceSnapshot {
+                relative_path: input.source_relative_path.clone(),
+                content_hash: input.content_hash.clone(),
+                byte_size: input.byte_size,
+                modified_at: input.modified_at.clone(),
+            },
+            source_name: input.source_name.clone(),
+            machine_destination,
+            machine_name,
+            proposed_destination: proposed_destination.clone(),
+            proposed_name,
+            operation_kind,
+            confidence_score,
+            confidence_level,
+            reasons,
+            conflict_state,
+            needs_review,
+            stale: false,
+            user_override: override_applied,
+            disruption_score,
+            proposed_path_length,
+            proposed_depth: proposed_destination.len(),
+            semantic_context: context,
+            document_type,
+            customer_name: effective_customer,
+            supplier_name,
+            project_name,
+            duplicate_group_id: input.duplicate_group_id.clone(),
+            duplicate_canonical: input.duplicate_canonical,
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_consumer_operation(
+    input: &OrganizationSourceInput,
+    _preferences: &OrganizationPreferences,
+    policy: VirtualPathPolicy,
+    user_override: Option<&OrganizationProposalOverride>,
+    consumer_root_kind: ConsumerRootKind,
+    winning_location_kind: Option<&str>,
+    duplicate_no_action: bool,
+    mut reasons: Vec<OrganizationReason>,
+    context: String,
+    document_type: String,
+    effective_customer: Option<String>,
+    supplier_name: Option<String>,
+    project_name: Option<String>,
+) -> DraftOperation {
+    let decision = decide_consumer_organization(
+        &input.source_relative_path,
+        &input.source_name,
+        consumer_root_kind,
+        if document_type == "unknown" {
+            None
+        } else {
+            Some(document_type.as_str())
+        },
+    );
+    reasons.push(reason(
+        decision.reason_code,
+        decision.explanation,
+        Some(consumer_root_kind.as_str().to_owned()),
+    ));
+
+    let source_parent = source_parent_components(&input.source_relative_path, &input.source_name);
+    let mut needs_review = decision.needs_review;
+    let mut machine_destination = if decision.leave_in_place {
+        source_parent.clone()
+    } else {
+        decision.destination.clone()
+    };
+    let mut optional_tail = vec![false; machine_destination.len()];
+
+    if winning_location_kind == Some("destination")
+        && let Some((destination, matched)) = &input.rule_evaluation.destination
+    {
+        if policy.validate_user_destination(destination).is_ok() {
+            machine_destination.clone_from(destination);
+            optional_tail = vec![false; machine_destination.len()];
+        } else {
+            machine_destination = vec!["À vérifier".to_owned()];
+            optional_tail = vec![false];
+            needs_review = true;
+            reasons.push(reason(
+                "invalid_user_rule",
+                "The matched rule contains an unsafe destination and was not applied.",
+                Some(matched.id.to_string()),
+            ));
+        }
+    } else if winning_location_kind == Some("preserve") {
+        machine_destination = source_parent.clone();
+        optional_tail = vec![false; machine_destination.len()];
+    }
+
+    let machine_name = input.source_name.clone();
+    let (machine_destination, machine_name, path_adjusted, path_valid) =
+        policy.fit_machine_path(&machine_destination, &machine_name);
+    if path_adjusted {
+        reasons.push(reason(
+            "windows_path_safety",
+            "Unsafe or excessive path components were sanitized or shortened for Windows.",
+            None,
+        ));
+    }
+    let mut conflict_state = if path_valid {
+        ProposalConflictState::None
+    } else {
+        needs_review = true;
+        ProposalConflictState::PathTooLong
+    };
+
+    let mut proposed_destination = machine_destination.clone();
+    let mut proposed_name = machine_name.clone();
+    let mut override_applied = false;
+    let mut override_kind = None;
+    if let Some(user_override) = user_override {
+        override_applied = true;
+        override_kind = Some(user_override.action);
+        match user_override.action {
+            ProposalOverrideAction::Destination => {
+                if let Some(destination) = &user_override.destination {
+                    proposed_destination.clone_from(destination);
+                }
+            }
+            ProposalOverrideAction::Rename => {
+                if let Some(name) = &user_override.proposed_name {
+                    proposed_name.clone_from(name);
+                }
+            }
+            ProposalOverrideAction::DestinationAndRename => {
+                if let Some(destination) = &user_override.destination {
+                    proposed_destination.clone_from(destination);
+                }
+                if let Some(name) = &user_override.proposed_name {
+                    proposed_name.clone_from(name);
+                }
+            }
+            ProposalOverrideAction::KeepInPlace | ProposalOverrideAction::Reject => {
+                proposed_destination = source_parent.clone();
+                proposed_name.clone_from(&input.source_name);
+                needs_review = false;
+            }
+            ProposalOverrideAction::ToReview => {
+                proposed_destination = vec!["À vérifier".to_owned()];
+                needs_review = true;
+            }
+        }
+        optional_tail = vec![false; proposed_destination.len()];
+        reasons.push(reason(
+            "user_override",
+            "A stored user decision is authoritative over this machine-generated suggestion.",
+            user_override.reason.clone(),
+        ));
+        let destination_valid = policy
+            .validate_user_destination(&proposed_destination)
+            .is_ok();
+        let filename_valid = policy.validate_user_filename(&proposed_name).is_ok();
+        if !destination_valid || !filename_valid {
+            conflict_state = ProposalConflictState::InvalidPath;
+            needs_review = true;
+        } else if policy.path_length_utf16(&proposed_destination, &proposed_name)
+            > policy.maximum_path_utf16
+        {
+            conflict_state = ProposalConflictState::PathTooLong;
+            needs_review = true;
+        }
+    }
+
+    let disruption_score = disruption_score(
+        &source_parent,
+        &proposed_destination,
+        &input.source_name,
+        &proposed_name,
+    );
+    let same_destination = paths_equal(&source_parent, &proposed_destination);
+    let same_name = input.source_name.eq_ignore_ascii_case(&proposed_name);
+    let operation_kind = if duplicate_no_action {
+        ProposalOperationKind::NoAction
+    } else if matches!(
+        override_kind,
+        Some(ProposalOverrideAction::Reject | ProposalOverrideAction::KeepInPlace)
+    ) || decision.leave_in_place
+    {
+        ProposalOperationKind::KeepInPlace
+    } else if same_destination && same_name {
+        ProposalOperationKind::KeepInPlace
+    } else if same_destination {
+        ProposalOperationKind::RenameProposal
+    } else {
+        ProposalOperationKind::MoveProposal
+    };
+    let confidence_level = if decision.leave_in_place {
+        ProposalConfidenceLevel::VeryHigh
+    } else if decision.needs_review {
+        ProposalConfidenceLevel::Low
+    } else {
+        ProposalConfidenceLevel::High
+    };
+    let confidence_score = match confidence_level {
+        ProposalConfidenceLevel::VeryHigh => 0.98,
+        ProposalConfidenceLevel::High => 0.9,
+        ProposalConfidenceLevel::Medium => 0.75,
+        ProposalConfidenceLevel::Low => 0.4,
     };
     let proposed_path_length = policy.path_length_utf16(&proposed_destination, &proposed_name);
 
@@ -2247,6 +2490,7 @@ fn title(value: &str) -> String {
 mod tests {
     use super::*;
     use domain::{ProposalOverrideAction, ProposalOverrideId, RuleAction, RuleId};
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn signal(value: &str, confidence: f32) -> ProposalSignal {
@@ -2316,7 +2560,83 @@ mod tests {
             inputs,
             overrides: Vec::new(),
             previous_operations: Vec::new(),
+            consumer_mode: false,
+            consumer_root_kind: ConsumerRootKind::Unknown,
         }
+    }
+
+    #[test]
+    fn consumer_mode_cleans_desktop_without_touching_programs() {
+        let files = [
+            "invoice.pdf",
+            "screenshot.png",
+            "holiday.jpg",
+            "school.docx",
+            "notes.txt",
+            "video.mp4",
+            "archive.zip",
+            "setup.exe",
+            "App.lnk",
+            "unknown.xyz",
+            "chrome.exe",
+            "library.dll",
+        ];
+        let inputs = files
+            .into_iter()
+            .map(|name| {
+                let mut input = source(name);
+                input.source_relative_path = name.to_owned();
+                input.source_name = name.to_owned();
+                input.context = None;
+                input.document_type = None;
+                input
+            })
+            .collect::<Vec<_>>();
+        let mut request = request(inputs);
+        request.consumer_mode = true;
+        request.consumer_root_kind = ConsumerRootKind::Desktop;
+        request.preferences.maximum_depth = 3;
+        let proposal =
+            LocalOrganizationProposalEngine.build(request, &|| false, &mut |_| {});
+        let by_name = proposal
+            .operations
+            .iter()
+            .map(|operation| (operation.source_name.as_str(), operation))
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            by_name["invoice.pdf"].proposed_destination,
+            ["Documents", "Administratif"]
+        );
+        assert_eq!(
+            by_name["invoice.pdf"].operation_kind,
+            ProposalOperationKind::MoveProposal
+        );
+        assert_eq!(
+            by_name["setup.exe"].proposed_destination,
+            ["Installateurs"]
+        );
+        assert_eq!(
+            by_name["App.lnk"].operation_kind,
+            ProposalOperationKind::KeepInPlace
+        );
+        assert_eq!(
+            by_name["chrome.exe"].operation_kind,
+            ProposalOperationKind::KeepInPlace
+        );
+        assert_eq!(
+            by_name["library.dll"].operation_kind,
+            ProposalOperationKind::KeepInPlace
+        );
+        assert_eq!(
+            by_name["unknown.xyz"].proposed_destination,
+            ["À vérifier"]
+        );
+        assert!(
+            proposal
+                .summary
+                .maximum_depth
+                <= 3
+        );
     }
 
     #[test]
