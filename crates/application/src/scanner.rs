@@ -25,10 +25,12 @@ use std::{
 
 /// Consumer one-click should organize loose files in the standard personal
 /// folders, not recursively crawl already-organized subtrees, source trees,
-/// node_modules, archives, etc. A bounded top-level scan keeps the product
-/// responsive and prevents a one-click action from proposing changes deep
-/// inside an existing folder structure.
+/// node_modules, archives, etc.
 const CONSUMER_TOP_LEVEL_MAX_ENTRIES: usize = 20_000;
+/// Exact-duplicate hashing is optional for the one-click organizer. Never let
+/// very large files monopolize a consumer scan; organization itself only needs
+/// metadata/type classification.
+const CONSUMER_MAX_HASH_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Scanner-only application boundary. It deliberately owns no filesystem
 /// mutation capability, parser, model gateway, or network client.
@@ -67,8 +69,6 @@ impl ScannerApplicationService {
         Self::new_with_model_root(database, read_only_platform, None)
     }
 
-    /// Production constructor. Uses a real ONNX local embedding provider when
-    /// `model_root` is set; otherwise embeddings stay unavailable (lexical fallback).
     #[must_use]
     pub fn new_with_model_root(
         database: Arc<Database>,
@@ -206,8 +206,7 @@ impl ScannerApplicationService {
             .create_workspace(name)
             .map_err(ApplicationError::Persistence)?;
         self.database.set_current_workspace(workspace.id)?;
-        self.database
-            .ensure_workspace_monitoring_state(workspace.id)?;
+        self.database.ensure_workspace_monitoring_state(workspace.id)?;
         Ok(workspace)
     }
 
@@ -220,10 +219,6 @@ impl ScannerApplicationService {
         self.database.workspace(workspace_id)?;
         let volume = self.read_only_platform.inspect_volume(absolute_path)?;
 
-        // One-click repeatedly visits the same five personal folders. Reuse an
-        // existing root instead of inserting a fresh row on every retry/run.
-        // This makes registration idempotent and prevents stale/duplicate
-        // monitoring state from being misreported as a permission problem.
         if let Some(existing) = self
             .database
             .list_roots(workspace_id)?
@@ -232,9 +227,6 @@ impl ScannerApplicationService {
         {
             self.database.set_current_workspace(workspace_id)?;
             self.database.set_current_root(workspace_id, existing.id)?;
-            // Monitoring is secondary to the explicit one-click scan. Refresh
-            // it best-effort; watcher startup failure must not block organizing.
-            let _ = self.register_root_for_monitoring(&existing);
             return Ok(existing);
         }
 
@@ -256,9 +248,10 @@ impl ScannerApplicationService {
             )
             .map_err(ApplicationError::Persistence)?;
 
-        // A watcher is a convenience feature. The explicit read-only scan must
-        // remain usable even when watcher setup is unavailable for this folder.
-        let _ = self.register_root_for_monitoring(&root);
+        // IMPORTANT: root registration is intentionally independent from
+        // monitoring. Starting an OS watcher can block or fail for reasons
+        // unrelated to a manual scan. Monitoring configures/starts watchers
+        // from its own explicit code path.
         self.database.set_current_workspace(workspace_id)?;
         self.database.set_current_root(workspace_id, root.id)?;
         Ok(root)
@@ -279,7 +272,7 @@ impl ScannerApplicationService {
         let policy = if consumer_top_level {
             ScanPolicy {
                 max_entries: CONSUMER_TOP_LEVEL_MAX_ENTRIES,
-                max_hash_bytes: u64::MAX,
+                max_hash_bytes: CONSUMER_MAX_HASH_BYTES,
                 include_hidden: false,
             }
         } else {
@@ -476,9 +469,6 @@ fn top_level_regular_paths(
             Ok(value) => value,
             Err(_) => continue,
         };
-        // Do not descend into directories and do not follow symlinks/reparse
-        // points. `inspect_regular_file` performs the authoritative anchored
-        // safety validation for every accepted leaf afterwards.
         if file_type.is_file() && !file_type.is_symlink() {
             paths.push(PathBuf::from(name));
         }
