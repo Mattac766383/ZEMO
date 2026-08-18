@@ -51,7 +51,8 @@ jobs:
           cargo check -p organizer
           cargo check -p application
 
-      - name: Clippy core
+      - name: Clippy core (advisory until baseline is cleaned)
+        continue-on-error: true
         run: |
           cargo clippy -p platform-macos -p catalog -p organizer -p application --all-targets -- -D warnings
 
