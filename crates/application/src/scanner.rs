@@ -10,9 +10,9 @@ use domain::{
 use extraction::{ContentExtractionEngine, LocalExtractionEngine};
 use knowledge::{DeterministicSemanticProvider, SemanticProvider};
 use persistence::{
-    Database, DuplicateGroupInput, DuplicateGroupRecord, InventorySort, RootRecord,
-    ScanCompletionInput, ScanFileInput, ScanFileRecord, ScanIssueInput, ScanIssueRecord, ScanRecord,
-    WorkspaceRecord,
+    Database, DuplicateGroupInput, DuplicateGroupRecord, InventorySort, MonitoringRootStatus,
+    RootMonitoringConfiguration, RootRecord, ScanCompletionInput, ScanFileInput, ScanFileRecord,
+    ScanIssueInput, ScanIssueRecord, ScanRecord, WorkspaceRecord,
 };
 use platform::{PlatformError, ReadOnlyEntry, ReadOnlyPlatform};
 use search::{
@@ -34,6 +34,8 @@ const CONSUMER_TOP_LEVEL_MAX_ENTRIES: usize = 20_000;
 /// bound is checked between native metadata inspections; it never weakens the
 /// Apply-time identity/source-drift checks.
 const CONSUMER_FOLDER_TIME_BUDGET: Duration = Duration::from_secs(30);
+const DEFAULT_MONITORING_SIZE_THRESHOLD_BYTES: u64 = 512 * 1_024 * 1_024;
+const DEFAULT_MONITORING_STARTUP_ENTRY_LIMIT: u32 = 100_000;
 
 /// Scanner-only application boundary. It deliberately owns no filesystem
 /// mutation capability, parser, model gateway, or network client.
@@ -230,6 +232,7 @@ impl ScannerApplicationService {
         {
             self.database.set_current_workspace(workspace_id)?;
             self.database.set_current_root(workspace_id, existing.id)?;
+            self.ensure_root_monitoring_metadata(workspace_id, existing.id)?;
             return Ok(existing);
         }
 
@@ -251,11 +254,47 @@ impl ScannerApplicationService {
             )
             .map_err(ApplicationError::Persistence)?;
 
-        // Registration is deliberately independent from monitoring. Starting
-        // an OS watcher must never block an explicit manual organization run.
+        // Persist monitoring metadata, but deliberately do not start an OS
+        // watcher here. Manual One-Click organization must never wait on a
+        // watcher. The watcher is started only by explicit monitoring flows.
         self.database.set_current_workspace(workspace_id)?;
         self.database.set_current_root(workspace_id, root.id)?;
+        self.ensure_root_monitoring_metadata(workspace_id, root.id)?;
         Ok(root)
+    }
+
+    fn ensure_root_monitoring_metadata(
+        &self,
+        workspace_id: WorkspaceId,
+        root_id: domain::RootId,
+    ) -> Result<(), ApplicationError> {
+        let state = self
+            .database
+            .ensure_workspace_monitoring_state(workspace_id)?;
+        let already_configured = self
+            .database
+            .list_monitored_roots(workspace_id)?
+            .into_iter()
+            .any(|root| root.root_id == root_id);
+        if already_configured {
+            return Ok(());
+        }
+        self.database.configure_root_monitoring(
+            root_id,
+            RootMonitoringConfiguration {
+                enabled: true,
+                status: if state.paused {
+                    MonitoringRootStatus::Paused
+                } else {
+                    MonitoringRootStatus::Starting
+                },
+                size_threshold_bytes: DEFAULT_MONITORING_SIZE_THRESHOLD_BYTES,
+                startup_entry_limit: DEFAULT_MONITORING_STARTUP_ENTRY_LIMIT,
+            },
+        )?;
+        self.database
+            .mark_startup_reconciliation_pending(workspace_id)?;
+        Ok(())
     }
 
     #[inline(never)]
