@@ -29,11 +29,11 @@ use std::{
 
 /// One-click intentionally organizes only loose files at the top level of the
 /// standard personal folders. Existing user folder trees are left alone.
-const CONSUMER_TOP_LEVEL_MAX_ENTRIES: usize = 20_000;
+const CONSUMER_TOP_LEVEL_MAX_ENTRIES: usize = 5_000;
 /// A normal personal folder should never monopolize the app indefinitely. The
 /// bound is checked between native metadata inspections; it never weakens the
 /// Apply-time identity/source-drift checks.
-const CONSUMER_FOLDER_TIME_BUDGET: Duration = Duration::from_secs(30);
+const CONSUMER_FOLDER_TIME_BUDGET: Duration = Duration::from_secs(3);
 const DEFAULT_MONITORING_SIZE_THRESHOLD_BYTES: u64 = 512 * 1_024 * 1_024;
 const DEFAULT_MONITORING_STARTUP_ENTRY_LIMIT: u32 = 100_000;
 
