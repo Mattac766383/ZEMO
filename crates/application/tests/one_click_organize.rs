@@ -99,6 +99,12 @@ fn one_click_consumer_proposal_moves_personal_files_and_undo_restores() {
         .scan_workspace_consumer(workspace.id, &|| false, &mut |_| {})
         .unwrap_or_else(|error| panic!("metadata-only consumer scan should succeed: {error}"));
     assert_eq!(scan.indexed_count, 12, "all top-level fixture files should be indexed");
+    assert_eq!(scan.hashed_count, 0, "one-click discovery must never hash content");
+    assert_eq!(
+        sandbox.snapshot(),
+        before,
+        "scan and preview preparation must not mutate source files",
+    );
 
     let proposal = scanner
         .generate_consumer_organization_proposal_for_root(
@@ -109,6 +115,11 @@ fn one_click_consumer_proposal_moves_personal_files_and_undo_restores() {
             &mut |_| {},
         )
         .unwrap_or_else(|error| panic!("consumer proposal should build: {error}"));
+    assert_eq!(
+        sandbox.snapshot(),
+        before,
+        "proposal generation must remain read-only",
+    );
 
     let by_name = proposal
         .operations
