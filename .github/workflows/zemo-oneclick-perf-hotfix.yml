@@ -1,0 +1,37 @@
+name: ZEMO One-Click Performance Hotfix
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-hotfix:
+    if: contains(github.event.head_commit.message, '[perf-fix-trigger]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Bound consumer one-click latency
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('crates/application/src/scanner.rs')
+          text = path.read_text()
+          old_entries = 'const CONSUMER_TOP_LEVEL_MAX_ENTRIES: usize = 20_000;'
+          old_budget = 'const CONSUMER_FOLDER_TIME_BUDGET: Duration = Duration::from_secs(30);'
+          assert old_entries in text, 'entry limit marker missing'
+          assert old_budget in text, 'time budget marker missing'
+          text = text.replace(old_entries, 'const CONSUMER_TOP_LEVEL_MAX_ENTRIES: usize = 5_000;', 1)
+          text = text.replace(old_budget, 'const CONSUMER_FOLDER_TIME_BUDGET: Duration = Duration::from_secs(3);', 1)
+          path.write_text(text)
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/application/src/scanner.rs
+          git commit -m "fix: bound one-click metadata scan latency"
+          git push
