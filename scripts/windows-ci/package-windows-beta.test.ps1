@@ -118,9 +118,6 @@ function Invoke-PackageScript {
         $scriptArgs += @("-RepoRoot", $RepoRoot)
     }
 
-    # Some cases below intentionally make the child packaging process fail.
-    # Keep the parent test fail-closed, but do not let stderr from that child
-    # become a terminating ErrorRecord before we can assert its exit code/text.
     $previousErrorActionPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
@@ -136,12 +133,33 @@ function Invoke-PackageScript {
     }
 }
 
+function Test-OutputContainsWordsInOrder {
+    param(
+        [string]$Output,
+        [string[]]$Words
+    )
+
+    # PowerShell 7 can render a child pwsh error across multiple physical lines
+    # (for example "missing`nCargo.toml"). Normalize whitespace before checking
+    # diagnostics so the test verifies meaning rather than console wrapping.
+    $normalized = [regex]::Replace($Output, '\s+', ' ').Trim()
+    $position = 0
+    foreach ($word in $Words) {
+        $index = $normalized.IndexOf($word, $position, [System.StringComparison]::OrdinalIgnoreCase)
+        if ($index -lt 0) {
+            return $false
+        }
+        $position = $index + $word.Length
+    }
+    return $true
+}
+
 $missingRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("zemo-package-missing-" + [guid]::NewGuid().ToString("N"))
 $missing = Invoke-PackageScript -RepoRoot $missingRoot
 if ($missing.ExitCode -eq 0) {
     throw "Empty/missing RepoRoot must fail. Output:`n$($missing.Output)"
 }
-if ($missing.Output -notmatch "does not exist") {
+if (-not (Test-OutputContainsWordsInOrder -Output $missing.Output -Words @("does not exist"))) {
     throw "Missing RepoRoot must report that the path does not exist. Output:`n$($missing.Output)"
 }
 
@@ -152,7 +170,7 @@ try {
     if ($markerFailure.ExitCode -eq 0) {
         throw "RepoRoot without markers must fail."
     }
-    if ($markerFailure.Output -notmatch "missing Cargo.toml") {
+    if (-not (Test-OutputContainsWordsInOrder -Output $markerFailure.Output -Words @("missing", "Cargo.toml"))) {
         throw "Missing markers must fail clearly. Output:`n$($markerFailure.Output)"
     }
 } finally {
@@ -166,7 +184,7 @@ try {
     if ($installerFailure.ExitCode -eq 0) {
         throw "RepoRoot without an NSIS installer must fail."
     }
-    if ($installerFailure.Output -notmatch "No NSIS installer") {
+    if (-not (Test-OutputContainsWordsInOrder -Output $installerFailure.Output -Words @("No NSIS installer"))) {
         throw "Missing installer safety check was weakened. Output:`n$($installerFailure.Output)"
     }
 } finally {
