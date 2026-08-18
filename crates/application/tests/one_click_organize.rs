@@ -95,9 +95,11 @@ fn one_click_consumer_proposal_moves_personal_files_and_undo_restores() {
     let root = scanner
         .register_root(workspace.id, sandbox.path())
         .unwrap_or_else(|error| panic!("root should register: {error}"));
-    scanner
-        .scan_workspace(workspace.id, &|| false, &mut |_| {})
-        .unwrap_or_else(|error| panic!("scan should succeed: {error}"));
+    let scan = scanner
+        .scan_workspace_consumer(workspace.id, &|| false, &mut |_| {})
+        .unwrap_or_else(|error| panic!("metadata-only consumer scan should succeed: {error}"));
+    assert_eq!(scan.indexed_count, 12, "all top-level fixture files should be indexed");
+
     let proposal = scanner
         .generate_consumer_organization_proposal_for_root(
             workspace.id,
