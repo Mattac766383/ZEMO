@@ -24,8 +24,10 @@ unicode-normalization = "0.1.25"
 ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
 url = "2.5.8"
 # Local persistent HNSW ANN (Apache-2.0) for scalable semantic retrieval.
-# Linked via cxx into the application binary — no separate daemon.
-usearch = "2.26.0"
+# NumKong is an optional acceleration backend. It is disabled here because its
+# static Windows library defines DllMain, which conflicts with bundled SQLCipher.
+# USearch provides its built-in non-NumKong path when the feature is disabled.
+usearch = { version = "2.26.0", default-features = false }
 
 [dev-dependencies]
 tempfile = "3.27.0"
