@@ -82,28 +82,50 @@ export function OneClickAccessView({
   onRetry,
   onChooseAnother,
 }: OneClickAccessViewProps) {
-  const needsGrant = folders.some(
-    (folder) =>
-      folder.phase === "authorization" ||
-      folder.phase === "denied" ||
-      folder.phase === "error",
-  );
-  const denied = folders.some((folder) => folder.phase === "denied");
-  const authCount = folders.filter(
-    (folder) =>
-      folder.phase === "authorization" ||
-      folder.phase === "denied" ||
-      folder.phase === "error",
-  ).length;
+  // FolderAccessProbe is the authoritative result of the latest native probe.
+  // `folders` is UI/progress state and can briefly lag after an NSOpenPanel grant.
+  // Using the stale progress state here caused the exact contradictory UI where
+  // every row displayed "✓" while the heading still claimed 5 grants were needed.
+  const probeStates = (probes ?? []).map((probe) => probe.accessState);
+  const hasProbeState = probeStates.length > 0;
+  const needsGrant = hasProbeState
+    ? probeStates.some((state) => needsUserGrant(state))
+    : folders.some(
+        (folder) =>
+          folder.phase === "authorization" ||
+          folder.phase === "denied" ||
+          folder.phase === "error",
+      );
+  const denied = hasProbeState
+    ? probeStates.some((state) => state === "permission_denied")
+    : folders.some((folder) => folder.phase === "denied");
+  const authCount = hasProbeState
+    ? probeStates.filter((state) => needsUserGrant(state)).length
+    : folders.filter(
+        (folder) =>
+          folder.phase === "authorization" ||
+          folder.phase === "denied" ||
+          folder.phase === "error",
+      ).length;
+  const accessibleCount = hasProbeState
+    ? probeStates.filter((state) => state === "accessible").length
+    : 0;
+  const accessResolved = hasProbeState && authCount === 0 && accessibleCount > 0;
 
   return (
     <section className="one-click-panel" aria-labelledby="one-click-access-title">
       <h2 id="one-click-access-title">
-        {denied
-          ? "ZEMO n’a pas accès à ce dossier."
-          : "ZEMO a besoin de votre autorisation pour accéder à ce dossier."}
+        {accessResolved
+          ? "Accès autorisé."
+          : denied
+            ? "ZEMO n’a pas accès à ce dossier."
+            : "ZEMO a besoin de votre autorisation pour accéder à ce dossier."}
       </h2>
-      {authCount > 0 ? (
+      {accessResolved ? (
+        <p className="one-click-note" role="status">
+          ZEMO peut maintenant analyser vos dossiers personnels.
+        </p>
+      ) : authCount > 0 ? (
         <p className="one-click-note" role="status">
           {authCount === 1
             ? "1 dossier nécessite votre autorisation."
@@ -128,6 +150,10 @@ export function OneClickAccessView({
           <button className="primary" type="button" disabled={busy} onClick={onAuthorize}>
             {busy ? "Autorisation…" : "Autoriser l’accès"}
           </button>
+        ) : accessResolved ? (
+          <button className="primary" type="button" disabled={busy} onClick={onRetry}>
+            {busy ? "Préparation…" : "Continuer"}
+          </button>
         ) : null}
         {denied ? (
           <>
@@ -138,11 +164,11 @@ export function OneClickAccessView({
               Réessayer
             </button>
           </>
-        ) : (
+        ) : !accessResolved ? (
           <button type="button" disabled={busy} onClick={onRetry}>
             Réessayer
           </button>
-        )}
+        ) : null}
       </div>
       {probes && probes.length > 0 ? (
         <details className="one-click-technical">
