@@ -304,7 +304,10 @@ impl ScannerApplicationService {
         is_cancelled: &dyn Fn() -> bool,
         on_progress: &mut dyn FnMut(ScanProgress),
     ) -> Result<ScanRecord, ApplicationError> {
-        let root = self.database.active_root(workspace_id)?;
+        let root = self
+            .database
+            .restore_current_root(workspace_id)?
+            .ok_or(ApplicationError::NotFound)?;
         if is_standard_personal_root(&root.absolute_path_native) {
             return self.scan_workspace_consumer(workspace_id, is_cancelled, on_progress);
         }
@@ -343,7 +346,10 @@ impl ScannerApplicationService {
         is_cancelled: &dyn Fn() -> bool,
         on_progress: &mut dyn FnMut(ScanProgress),
     ) -> Result<ScanRecord, ApplicationError> {
-        let root = self.database.active_root(workspace_id)?;
+        let root = self
+            .database
+            .restore_current_root(workspace_id)?
+            .ok_or(ApplicationError::NotFound)?;
         let scan_id = ScanId::new();
         self.database.begin_scan(workspace_id, root.id, scan_id)?;
         let volume = self
