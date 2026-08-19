@@ -378,7 +378,7 @@ function folderStatusLabel(folder: OneClickFolderStatus): string {
     case "unavailable":
       return "Pas disponible localement";
     case "error":
-      return "Impossible à analyser";
+      return folder.humanStatus ?? "Impossible à analyser";
     default:
       return "En attente";
   }
