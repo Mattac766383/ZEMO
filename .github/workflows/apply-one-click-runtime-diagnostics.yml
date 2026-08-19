@@ -1,0 +1,76 @@
+name: Apply One-Click Runtime Diagnostics
+
+on:
+  push:
+    branches:
+      - diag/one-click-runtime-stage
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: diag/one-click-runtime-stage
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Patch one-click runtime diagnostics
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('apps/desktop/src/App.tsx')
+          s = p.read_text()
+
+          old = '''      try {\n        const outcome = await registerUserContentRoot(workspaceId, probe.kind);'''
+          new = '''      let oneClickStage = "register";\n      try {\n        const outcome = await registerUserContentRoot(workspaceId, probe.kind);'''
+          if s.count(old) != 1:
+              raise SystemExit(f'register anchor count={s.count(old)}')
+          s = s.replace(old, new)
+
+          old = '''        setBusy("scan");\n        const result = await scanWorkspace(workspaceId);'''
+          new = '''        oneClickStage = "scan";\n        setBusy("scan");\n        const result = await scanWorkspace(workspaceId);'''
+          if s.count(old) != 1:
+              raise SystemExit(f'scan anchor count={s.count(old)}')
+          s = s.replace(old, new)
+
+          old = '''        const proposal = await generateOrganizationProposal(\n          workspaceId,'''
+          new = '''        oneClickStage = "proposal";\n        const proposal = await generateOrganizationProposal(\n          workspaceId,'''
+          if s.count(old) != 1:
+              raise SystemExit(f'proposal anchor count={s.count(old)}')
+          s = s.replace(old, new)
+
+          old = '''      } catch (reason) {\n        outcomes.push({'''
+          new = '''      } catch (reason) {\n        const runtimeError = reason instanceof Error ? reason.message : String(reason);\n        outcomes.push({'''
+          if s.count(old) != 1:
+              raise SystemExit(f'catch anchor count={s.count(old)}')
+          s = s.replace(old, new)
+
+          old = '''          humanStatus: `${probe.displayLabel} — Impossible à analyser`,\n          message: reason instanceof Error ? reason.message : String(reason),'''
+          new = '''          humanStatus: `${probe.displayLabel} — ${oneClickStage.toUpperCase()} — ${runtimeError}`,\n          message: runtimeError,'''
+          if s.count(old) != 1:
+              raise SystemExit(f'error display anchor count={s.count(old)}')
+          s = s.replace(old, new)
+
+          p.write_text(s)
+          PY
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Frontend tests
+        working-directory: apps/desktop
+        run: npm test
+      - name: Commit diagnostics
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add apps/desktop/src/App.tsx
+          git commit -m "diag: expose one-click failing stage and native error"
+          git push origin HEAD:diag/one-click-runtime-stage
