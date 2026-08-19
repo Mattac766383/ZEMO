@@ -628,6 +628,7 @@ function App() {
       setWholeComputerProgress(
         `Analyse de ${probe.displayLabel} (${index}/${accessible.length})…`,
       );
+      let oneClickStage = "register";
       try {
         const outcome = await registerUserContentRoot(workspaceId, probe.kind);
         outcomes.push(outcome);
@@ -654,6 +655,7 @@ function App() {
         lastRoot = outcome.root;
         setRoot(outcome.root);
         setOrganizationRootId(outcome.root.id);
+        oneClickStage = "scan";
         setBusy("scan");
         const result = await scanWorkspace(workspaceId);
         lastScan = result;
@@ -671,6 +673,7 @@ function App() {
               : folder,
           ),
         );
+        oneClickStage = "proposal";
         const proposal = await generateOrganizationProposal(
           workspaceId,
           false,
@@ -680,6 +683,7 @@ function App() {
         proposals.push(proposal);
         scannedAny = true;
       } catch (reason) {
+        const runtimeError = reason instanceof Error ? reason.message : String(reason);
         outcomes.push({
           root: null,
           kind: probe.kind,
@@ -687,8 +691,8 @@ function App() {
           absolutePath: probe.resolvedPath,
           status: "unexpected_error",
           accessState: "unexpected_error",
-          humanStatus: `${probe.displayLabel} — Impossible à analyser`,
-          message: reason instanceof Error ? reason.message : String(reason),
+          humanStatus: `${probe.displayLabel} — ${oneClickStage.toUpperCase()} — ${runtimeError}`,
+          message: runtimeError,
         });
         setOneClickFolders((current) =>
           current.map((folder) =>
