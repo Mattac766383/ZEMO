@@ -1,0 +1,41 @@
+name: Temporary Wire One-Click v2
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  wire:
+    if: contains(github.event.head_commit.message, '[wire-v2]')
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/one-click-v2-core
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Apply v2 wiring
+        run: python3 scripts/apply-one-click-v2-wiring.py
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Frontend tests
+        working-directory: apps/desktop
+        run: npm test
+      - name: Rust v2 contract
+        run: cargo test -p desktop --test one_click_v2_core
+      - name: Rust desktop check
+        run: cargo check -p desktop
+      - name: Commit wiring to feature branch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add apps/desktop/src-tauri/src/lib.rs apps/desktop/src/App.tsx apps/desktop/src/api.ts apps/desktop/src/types.ts apps/desktop/src/OneClickOrganize.tsx apps/desktop/src/oneClickSummary.ts Cargo.lock
+          git commit -m "feat: wire one-click v2 into packaged desktop CTA"
+          git push origin HEAD:fix/one-click-v2-core
