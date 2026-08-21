@@ -15,6 +15,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  wire-one-click-v2:
+    name: wire-one-click-v2
+    if: github.event_name == 'pull_request' && github.head_ref == 'fix/one-click-v2-core'
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout v2 branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/one-click-v2-core
+          fetch-depth: 0
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Setup Rust
+        run: rustup default stable
+      - name: Apply deterministic v2 wiring
+        run: python3 scripts/apply-one-click-v2-wiring.py
+      - name: Install npm dependencies
+        run: npm ci
+      - name: Frontend tests
+        run: npm test
+      - name: Rust v2 contract
+        run: cargo test -p desktop --test one_click_v2_core
+      - name: Rust desktop check
+        run: cargo check -p desktop
+      - name: Commit v2 wiring
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add apps/desktop/src-tauri/src/lib.rs apps/desktop/src/App.tsx apps/desktop/src/api.ts apps/desktop/src/types.ts apps/desktop/src/OneClickOrganize.tsx apps/desktop/src/oneClickSummary.ts Cargo.lock
+          if git diff --cached --quiet; then
+            echo "v2 wiring already applied"
+            exit 0
+          fi
+          git commit -m "feat: wire one-click v2 into packaged desktop CTA"
+          git push origin HEAD:fix/one-click-v2-core
+
   macos-core:
     name: macos-core
     runs-on: macos-latest
