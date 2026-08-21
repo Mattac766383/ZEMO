@@ -1,64 +1,72 @@
-name: Repair One-Click v2 Wiring
+name: Repair One-Click Secure Multi-Root
 
 on:
   push:
     branches: [fix/one-click-v2-core]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: one-click-secure-repair-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  repair-wire-and-verify:
+  repair-and-verify:
     if: github.actor != 'github-actions[bot]'
     runs-on: macos-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout branch
+        uses: actions/checkout@v4
         with:
           ref: fix/one-click-v2-core
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
       - name: Setup Rust
         run: rustup default stable
-      - name: Apply One-Click v2 product wiring
-        shell: bash
-        run: |
-          python3 scripts/apply-one-click-v2-wiring.py
-          python3 scripts/fix-one-click-v2-wiring-types.py
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('apps/desktop/src/MilestoneOneClick.test.tsx')
-          s = p.read_text()
-          old = '    expect(api.registerUserContentRoot).toHaveBeenCalledWith("workspace-1", "desktop");\n'
-          if old in s:
-              s = s.replace(old, '    expect(api.buildOneClickV2Plan).toHaveBeenCalledTimes(1);\n', 1)
-          # In v2 the native planner handles partial roots directly. The legacy registration
-          # function must never be used by the primary CTA, including the denied root.
-          old_multiline = '''    expect(api.registerUserContentRoot).not.toHaveBeenCalledWith(\n      "workspace-1",\n      "pictures",\n    );'''
-          if old_multiline in s:
-              s = s.replace(old_multiline, '    expect(api.registerUserContentRoot).not.toHaveBeenCalled();', 1)
-          p.write_text(s)
-          PY
+
+      - name: Apply secure multi-root patch
+        run: python3 scripts/fix-one-click-secure-multiroot.py
+
       - name: Install frontend dependencies
-        working-directory: apps/desktop
         run: npm ci
+
       - name: Frontend typecheck and tests
-        working-directory: apps/desktop
         run: npm test
-      - name: One-Click v2 150-file Apply Undo contract
+
+      - name: Consumer organizer contract
         run: cargo test -p organizer --test one_click_v2 -- --nocapture
-      - name: Desktop Rust check
-        run: cargo check -p desktop
-      - name: Commit verified One-Click v2 wiring
+
+      - name: Metadata-only scanner contract
+        run: cargo test -p application --test one_click_metadata_only -- --nocapture
+
+      - name: Approved Apply Undo contract
+        run: cargo test -p application --test one_click_organize -- --nocapture
+
+      - name: Compile secure core
+        run: |
+          cargo check -p persistence
+          cargo check -p organizer
+          cargo check -p application
+
+      - name: Commit verified repair
         shell: bash
         run: |
           if git diff --quiet && git diff --cached --quiet; then
-            echo 'No wiring changes to commit.'
+            echo 'No repair changes to commit.'
             exit 0
           fi
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add apps/desktop/src-tauri/src/lib.rs apps/desktop/src-tauri/src/one_click_v2.rs apps/desktop/src/App.tsx apps/desktop/src/api.ts apps/desktop/src/types.ts apps/desktop/src/oneClickSummary.ts apps/desktop/src/OneClickOrganize.tsx apps/desktop/src/MilestoneOneClick.test.tsx apps/desktop/src/Milestone12_2Ux.test.tsx
-          git commit -m 'feat: wire deterministic one-click v2 into desktop CTA'
+          git add crates/persistence/src/lib.rs crates/application/src/execution.rs
+          git commit -m 'fix: bind one-click execution to each proposal root'
           git push origin HEAD:fix/one-click-v2-core
