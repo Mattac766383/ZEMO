@@ -49,8 +49,8 @@ jobs:
       - name: Frontend tests
         run: npm test
 
-      - name: Deterministic consumer contract
-        run: cargo test -p organizer --test one_click_v2 -- --nocapture
+      - name: Deterministic consumer policy tests
+        run: cargo test -p organizer --lib -- --nocapture
 
       - name: Metadata-only scanner contract
         run: cargo test -p application --test one_click_metadata_only -- --nocapture
