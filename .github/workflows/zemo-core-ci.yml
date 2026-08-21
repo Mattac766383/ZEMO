@@ -34,7 +34,9 @@ jobs:
       - name: Setup Rust
         run: rustup default stable
       - name: Apply deterministic v2 wiring
-        run: python3 scripts/apply-one-click-v2-wiring.py
+        run: |
+          python3 scripts/apply-one-click-v2-wiring.py
+          python3 scripts/fix-one-click-v2-wiring-types.py
       - name: Install npm dependencies
         run: npm ci
       - name: Frontend tests
