@@ -1,25 +1,50 @@
+#[path = "../src/folder_access.rs"]
+mod folder_access;
 #[path = "../src/one_click_v2.rs"]
 mod one_click_v2;
 
 use one_click_v2::{apply_plan, build_plan, undo};
-use std::{fs, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    fs,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 fn fixture() -> PathBuf {
-    let id = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let root = std::env::temp_dir().join(format!("zemo-one-click-v2-contract-{id}"));
     fs::create_dir_all(&root).unwrap();
     let names = [
-        "facture.pdf", "photo.jpg", "video.mp4", "archive.zip", "notes.txt",
-        "client-projet.docx", "capture.png", "film.mov", "data.csv", "mystere.xyz",
+        "facture.pdf",
+        "photo.jpg",
+        "video.mp4",
+        "archive.zip",
+        "notes.txt",
+        "client-projet.docx",
+        "capture.png",
+        "film.mov",
+        "data.csv",
+        "mystere.xyz",
     ];
     for i in 0..150_u32 {
-        fs::write(root.join(format!("{i:03}-{}", names[i as usize % names.len()])), b"zemo").unwrap();
+        fs::write(
+            root.join(format!("{i:03}-{}", names[i as usize % names.len()])),
+            b"zemo",
+        )
+        .unwrap();
     }
     root
 }
 
 fn loose_files(root: &PathBuf) -> usize {
-    fs::read_dir(root).unwrap().filter_map(Result::ok).filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file())).count()
+    fs::read_dir(root)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .count()
 }
 
 #[test]
