@@ -17,6 +17,8 @@ app.write_text(s)
 # that the legacy register->scan->proposal pipeline was called; v2 intentionally
 # removes those calls, so migrate those contracts before running Vitest.
 subprocess.run(["python3", "scripts/update-one-click-v2-tests.py"], check=True)
+subprocess.run(["python3", "scripts/fix-one-click-v2-partial-access-test.py"], check=True)
+
 # The repair job stages product files explicitly. Stage migrated tests here so
 # the successful bot commit contains the verified contracts too.
 subprocess.run(
