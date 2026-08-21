@@ -1,7 +1,7 @@
 from pathlib import Path
 
 # Version marker: changing this intentionally retriggers the PR repair workflow.
-REPAIR_VERSION = 2
+REPAIR_VERSION = 3
 
 
 def replace_once(path: str, old: str, new: str) -> None:
