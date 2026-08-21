@@ -364,6 +364,47 @@ impl Database {
         })
     }
 
+    pub fn root_by_id(
+        &self,
+        workspace_id: WorkspaceId,
+        root_id: RootId,
+    ) -> Result<RootRecord, PersistenceError> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT display_name, absolute_path, absolute_path_native
+                 FROM roots
+                 WHERE id = ?1 AND workspace_id = ?2 AND state = 'active'",
+                params![root_id.to_string(), workspace_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+            .map(
+                |(display_label, absolute_path, absolute_path_native)| -> Result<
+                    RootRecord,
+                    PersistenceError,
+                > {
+                    Ok(RootRecord {
+                        id: root_id,
+                        workspace_id,
+                        display_label,
+                        absolute_path,
+                        absolute_path_native: monitoring::decode_native_path(
+                            &absolute_path_native,
+                        )?,
+                    })
+                },
+            )
+            .transpose()?
+            .ok_or(PersistenceError::NotFound)
+    }
+
     pub fn active_root(&self, workspace_id: WorkspaceId) -> Result<RootRecord, PersistenceError> {
         let connection = self.lock()?;
         connection
