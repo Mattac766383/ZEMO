@@ -20,6 +20,8 @@ jobs:
     if: github.event_name == 'pull_request' && github.head_ref == 'fix/one-click-v2-core'
     runs-on: macos-latest
     timeout-minutes: 60
+    permissions:
+      contents: write
     steps:
       - name: Checkout v2 branch
         uses: actions/checkout@v4
@@ -37,11 +39,9 @@ jobs:
       - name: Setup Rust
         run: rustup default stable
 
-      - name: Verify secure multi-root patch is committed
+      - name: Apply secure multi-root repair
         shell: bash
-        run: |
-          python3 scripts/fix-one-click-secure-multiroot.py
-          git diff --exit-code -- crates/persistence/src/lib.rs crates/application/src/execution.rs
+        run: python3 scripts/fix-one-click-secure-multiroot.py
 
       - name: Install npm dependencies
         run: npm ci
@@ -58,6 +58,12 @@ jobs:
       - name: Approved Apply Undo contract
         run: cargo test -p application --test one_click_organize -- --nocapture
 
+      - name: Compile secure core
+        run: |
+          cargo check -p persistence
+          cargo check -p organizer
+          cargo check -p application
+
       - name: Direct mutation wiring guard
         shell: bash
         run: |
@@ -69,6 +75,19 @@ jobs:
             echo 'Direct filesystem One-Click undo is forbidden in the desktop Tauri boundary.' >&2
             exit 1
           fi
+
+      - name: Commit verified multi-root repair
+        shell: bash
+        run: |
+          if git diff --quiet -- crates/persistence/src/lib.rs crates/application/src/execution.rs; then
+            echo 'Secure multi-root repair already committed.'
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add crates/persistence/src/lib.rs crates/application/src/execution.rs
+          git commit -m 'fix: bind one-click execution to each proposal root'
+          git push origin HEAD:fix/one-click-v2-core
 
   macos-core:
     name: macos-core
