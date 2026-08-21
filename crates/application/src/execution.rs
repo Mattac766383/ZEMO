@@ -315,10 +315,9 @@ impl ExecutionApplicationService {
         {
             return Err(ApplicationError::ExecutionApprovalRequired);
         }
-        let root = self.database.active_root(proposal.workspace_id)?;
-        if root.id != proposal.root_id {
-            return Err(ApplicationError::ExecutionApprovalRequired);
-        }
+        let root = self
+            .database
+            .root_by_id(proposal.workspace_id, proposal.root_id)?;
         let canonical_root = self.policy.validate_root(&root.absolute_path_native)?;
         let volume = self.reader.inspect_volume(&canonical_root)?;
         if !volume.local || volume.removable {
@@ -2251,7 +2250,10 @@ impl ExecutionApplicationService {
             self.invalidate_unstarted_consent(detail.session.id, "safety_policy_changed")?;
             return Err(ApplicationError::ExecutionApprovalRequired);
         }
-        let root_record = match self.database.active_root(detail.session.workspace_id) {
+        let root_record = match self
+            .database
+            .root_by_id(detail.session.workspace_id, detail.session.root_id)
+        {
             Ok(root) => root,
             Err(error) => {
                 self.invalidate_unstarted_consent(
