@@ -1,4 +1,4 @@
-name: Temporary Wire One-Click v2
+name: Temporary Secure Multi-Root Repair
 
 on:
   push:
@@ -8,39 +8,44 @@ permissions:
   contents: write
 
 jobs:
-  wire:
-    if: contains(github.event.head_commit.message, '[wire-v2]')
+  repair:
+    if: contains(github.event.head_commit.message, '[secure-multiroot]')
     runs-on: macos-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: fix/one-click-v2-core
+          ref: fix/one-click-secure-multiroot-clean
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Apply v2 wiring and test migration
-        run: |
-          python3 scripts/apply-one-click-v2-wiring.py
-          python3 scripts/fix-one-click-v2-wiring-types.py
-          python3 scripts/update-one-click-v2-tests.py
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Setup Rust
+        run: rustup default stable
+      - name: Apply secure multi-root patch
+        run: python3 scripts/fix-one-click-secure-multiroot.py
       - name: Install dependencies
         run: npm ci
-      - name: Frontend tests
-        run: npm test
-      - name: Rust v2 contract
-        run: cargo test -p desktop --test one_click_v2_core
-      - name: Rust desktop check
-        run: cargo check -p desktop
-      - name: Commit wiring to feature branch
+      - name: Verify secure source binding
+        run: |
+          cargo check -p persistence
+          cargo check -p application
+          cargo test -p application --test one_click_metadata_only -- --nocapture
+          cargo test -p application --test one_click_organize -- --nocapture
+      - name: Guard against direct desktop mutation wiring
+        run: |
+          ! grep -q 'apply_current_plan()' apps/desktop/src-tauri/src/lib.rs
+          ! grep -q 'undo_last()' apps/desktop/src-tauri/src/lib.rs
+      - name: Commit repaired source files
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add apps/desktop/src-tauri/src/lib.rs apps/desktop/src/App.tsx apps/desktop/src/api.ts apps/desktop/src/types.ts apps/desktop/src/OneClickOrganize.tsx apps/desktop/src/oneClickSummary.ts apps/desktop/src/MilestoneOneClick.test.tsx apps/desktop/src/Milestone12_2Ux.test.tsx Cargo.lock
+          git add crates/persistence/src/lib.rs crates/application/src/execution.rs
           if git diff --cached --quiet; then
-            echo "v2 wiring already applied"
+            echo 'Secure multi-root source already repaired.'
             exit 0
           fi
-          git commit -m "feat: wire and verify one-click v2 desktop flow"
-          git push origin HEAD:fix/one-click-v2-core
+          git commit -m 'fix: bind one-click execution to proposal root'
+          git push origin HEAD:fix/one-click-secure-multiroot-clean
