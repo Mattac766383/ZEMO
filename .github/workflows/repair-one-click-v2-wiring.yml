@@ -1,0 +1,64 @@
+name: Repair One-Click v2 Wiring
+
+on:
+  push:
+    branches: [fix/one-click-v2-core]
+
+permissions:
+  contents: write
+
+jobs:
+  repair-wire-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/one-click-v2-core
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Setup Rust
+        run: rustup default stable
+      - name: Apply One-Click v2 product wiring
+        shell: bash
+        run: |
+          python3 scripts/apply-one-click-v2-wiring.py
+          python3 scripts/fix-one-click-v2-wiring-types.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('apps/desktop/src/MilestoneOneClick.test.tsx')
+          s = p.read_text()
+          old = '    expect(api.registerUserContentRoot).toHaveBeenCalledWith("workspace-1", "desktop");\n'
+          if old in s:
+              s = s.replace(old, '    expect(api.buildOneClickV2Plan).toHaveBeenCalledTimes(1);\n', 1)
+          # In v2 the native planner handles partial roots directly. The legacy registration
+          # function must never be used by the primary CTA, including the denied root.
+          old_multiline = '''    expect(api.registerUserContentRoot).not.toHaveBeenCalledWith(\n      "workspace-1",\n      "pictures",\n    );'''
+          if old_multiline in s:
+              s = s.replace(old_multiline, '    expect(api.registerUserContentRoot).not.toHaveBeenCalled();', 1)
+          p.write_text(s)
+          PY
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Frontend typecheck and tests
+        working-directory: apps/desktop
+        run: npm test
+      - name: One-Click v2 150-file Apply Undo contract
+        run: cargo test -p organizer --test one_click_v2 -- --nocapture
+      - name: Desktop Rust check
+        run: cargo check -p desktop
+      - name: Commit verified One-Click v2 wiring
+        shell: bash
+        run: |
+          if git diff --quiet && git diff --cached --quiet; then
+            echo 'No wiring changes to commit.'
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add apps/desktop/src-tauri/src/lib.rs apps/desktop/src-tauri/src/one_click_v2.rs apps/desktop/src/App.tsx apps/desktop/src/api.ts apps/desktop/src/types.ts apps/desktop/src/oneClickSummary.ts apps/desktop/src/OneClickOrganize.tsx apps/desktop/src/MilestoneOneClick.test.tsx apps/desktop/src/Milestone12_2Ux.test.tsx
+          git commit -m 'feat: wire deterministic one-click v2 into desktop CTA'
+          git push origin HEAD:fix/one-click-v2-core
