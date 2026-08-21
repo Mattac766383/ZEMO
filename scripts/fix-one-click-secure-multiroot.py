@@ -1,5 +1,8 @@
 from pathlib import Path
 
+# Version marker: changing this intentionally retriggers the PR repair workflow.
+REPAIR_VERSION = 2
+
 
 def replace_once(path: str, old: str, new: str) -> None:
     p = Path(path)
@@ -57,4 +60,4 @@ for required_symbol in (
     if required_symbol not in app_text:
         raise SystemExit(f"secure One-Click execution path missing: {required_symbol}")
 
-print("secure multi-root One-Click patch applied")
+print(f"secure multi-root One-Click patch applied (repair v{REPAIR_VERSION})")
