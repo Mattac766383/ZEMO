@@ -17,20 +17,17 @@ import type {
 } from "./types";
 import { ExecutionPanel } from "./ExecutionPanel";
 
-type ProposalFilter =
-  | "all"
-  | "review"
-  | "conflicts"
-  | "high"
-  | "unchanged"
-  | "renames";
-
 interface OrganizationPreviewViewProps {
   workspaceId: string;
   rootId?: string;
 }
 
-const MAX_VISIBLE_OPERATIONS = 250;
+type NodeMap = Map<string | null, VirtualProposalNode[]>;
+
+const MAX_CHILDREN_PER_BRANCH = 60;
+const MIN_ZOOM = 0.65;
+const MAX_ZOOM = 1.55;
+const ZOOM_STEP = 0.1;
 
 export function OrganizationPreviewView({
   workspaceId,
@@ -38,19 +35,17 @@ export function OrganizationPreviewView({
 }: OrganizationPreviewViewProps) {
   const [proposal, setProposal] = useState<OrganizationProposal | null>(null);
   const [progress, setProgress] = useState<OrganizationProposalProgress | null>(null);
-  const [selectedOperationId, setSelectedOperationId] = useState<string | null>(null);
-  const [selectedFolder, setSelectedFolder] = useState("");
-  const [filter, setFilter] = useState<ProposalFilter>("all");
-  const [query, setQuery] = useState("");
-  const [busy, setBusy] = useState<
-    "build" | "cancel" | "edit" | "status" | "drift" | null
-  >(null);
+  const [busy, setBusy] = useState<"build" | "cancel" | "drift" | "status" | "edit" | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Feature-local errors only — never escalate to a global catastrophic banner.
+  const [query, setQuery] = useState("");
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [zoom, setZoom] = useState(1);
 
   useEffect(() => {
     let active = true;
     let unsubscribe: (() => void) | undefined;
+
     void subscribeOrganizationProposalProgress((next) => {
       if (active) {
         setProgress(next);
@@ -62,105 +57,97 @@ export function OrganizationPreviewView({
         stop();
       }
     });
+
     void getLatestOrganizationProposal(workspaceId, rootId, {
       uiBound: true,
       operationLimit: 500,
     })
       .then((next) => {
-        if (active) {
-          setProposal(next);
+        if (!active) {
+          return;
         }
+        installProposal(next, setProposal, setExpanded, setSelectedNodeId);
       })
       .catch(() => {
-        // A workspace without a proposal is the normal initial state.
+        // No proposal yet is a normal first-run state.
       });
+
     return () => {
       active = false;
       unsubscribe?.();
     };
   }, [rootId, workspaceId]);
 
-  const selectedOperation = useMemo(
-    () =>
-      proposal?.operations.find((operation) => operation.id === selectedOperationId) ??
-      null,
-    [proposal, selectedOperationId],
+  const childrenByParent = useMemo(
+    () => buildChildrenMap(proposal?.nodes ?? []),
+    [proposal],
   );
 
-  const filteredOperations = useMemo(() => {
+  const nodeById = useMemo(
+    () => new Map((proposal?.nodes ?? []).map((node) => [node.id, node])),
+    [proposal],
+  );
+
+  const operationById = useMemo(
+    () => new Map((proposal?.operations ?? []).map((operation) => [operation.id, operation])),
+    [proposal],
+  );
+
+  const operationByFileId = useMemo(
+    () => new Map((proposal?.operations ?? []).map((operation) => [operation.fileId, operation])),
+    [proposal],
+  );
+
+  const selectedNode = selectedNodeId ? nodeById.get(selectedNodeId) ?? null : null;
+  const selectedOperation = selectedNode
+    ? operationForNode(selectedNode, operationById, operationByFileId)
+    : null;
+
+  const matchingNodeIds = useMemo(() => {
+    if (!proposal || !query.trim()) {
+      return null;
+    }
+    const normalized = query.trim().toLocaleLowerCase();
+    const directMatches = new Set<string>();
+    for (const node of proposal.nodes) {
+      const operation = operationForNode(node, operationById, operationByFileId);
+      const searchable = [
+        node.name,
+        node.virtualPath,
+        operation?.sourceRelativePath,
+        operation?.proposedRelativePath,
+        operation?.documentType,
+        operation?.customerName,
+        operation?.supplierName,
+        operation?.projectName,
+      ]
+        .filter((value): value is string => Boolean(value))
+        .join(" ")
+        .toLocaleLowerCase();
+      if (searchable.includes(normalized)) {
+        directMatches.add(node.id);
+      }
+    }
+    return includeAncestors(directMatches, nodeById);
+  }, [nodeById, operationByFileId, operationById, proposal, query]);
+
+  const roots = useMemo(() => {
     if (!proposal) {
       return [];
     }
-    const normalizedQuery = query.trim().toLocaleLowerCase();
-    return proposal.operations.filter((operation) => {
-      if (
-        selectedFolder &&
-        !operation.proposedDestination
-          .join("\\")
-          .toLocaleLowerCase()
-          .startsWith(selectedFolder.toLocaleLowerCase())
-      ) {
-        return false;
-      }
-      if (filter === "review" && !operation.needsReview) {
-        return false;
-      }
-      if (filter === "conflicts" && operation.conflictState === "NONE") {
-        return false;
-      }
-      if (
-        filter === "high" &&
-        !["VERY_HIGH", "HIGH"].includes(operation.confidenceLevel)
-      ) {
-        return false;
-      }
-      if (
-        filter === "unchanged" &&
-        !["KEEP_IN_PLACE", "NO_ACTION"].includes(operation.operationKind)
-      ) {
-        return false;
-      }
-      if (
-        filter === "renames" &&
-        operation.sourceName.toLocaleLowerCase() ===
-          operation.proposedName.toLocaleLowerCase()
-      ) {
-        return false;
-      }
-      if (!normalizedQuery) {
-        return true;
-      }
-      return [
-        operation.sourceRelativePath,
-        operation.proposedRelativePath,
-        operation.customerName,
-        operation.supplierName,
-        operation.projectName,
-        operation.documentType,
-      ]
-        .filter(Boolean)
-        .some((value) => value!.toLocaleLowerCase().includes(normalizedQuery));
-    });
-  }, [filter, proposal, query, selectedFolder]);
-
-  const folders = useMemo(
-    () => proposal?.nodes?.filter((node) => node.kind !== "FILE") ?? [],
-    [proposal],
-  );
+    const explicitRoots = proposal.nodes.filter(
+      (node) => node.kind === "ROOT" || !node.parentId || !nodeById.has(node.parentId),
+    );
+    return explicitRoots.length > 0 ? explicitRoots : proposal.nodes.slice(0, 1);
+  }, [nodeById, proposal]);
 
   async function build(recompute: boolean) {
     setBusy("build");
     setError(null);
     setProgress(null);
     try {
-      // Backend returns a UI-bounded projection (folder nodes + capped operations).
-      const next = await generateOrganizationProposal(
-        workspaceId,
-        recompute,
-        rootId,
-      );
-      setProposal(next);
-      setSelectedOperationId(next.operations[0]?.id ?? null);
+      const next = await generateOrganizationProposal(workspaceId, recompute, rootId);
+      installProposal(next, setProposal, setExpanded, setSelectedNodeId);
     } catch (reason) {
       setError(classifyUserError(reason, "organization").message);
     } finally {
@@ -170,6 +157,7 @@ export function OrganizationPreviewView({
 
   async function cancel() {
     setBusy("cancel");
+    setError(null);
     try {
       await cancelOrganizationProposal(workspaceId);
     } catch (reason) {
@@ -179,24 +167,7 @@ export function OrganizationPreviewView({
     }
   }
 
-  async function updateStatus(
-    status: "reviewed" | "approved_for_future_apply",
-  ) {
-    if (!proposal) {
-      return;
-    }
-    setBusy("status");
-    setError(null);
-    try {
-      setProposal(await setOrganizationProposalStatus(proposal.id, status));
-    } catch (reason) {
-      setError(classifyUserError(reason, "organization").message);
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function checkDrift() {
+  async function refreshDrift() {
     if (!proposal) {
       return;
     }
@@ -211,29 +182,14 @@ export function OrganizationPreviewView({
     }
   }
 
-  async function saveOverride(
-    operation: OrganizationOperation,
-    destination: string[],
-    proposedName: string,
-  ) {
+  async function updateStatus(status: "reviewed" | "approved_for_future_apply") {
     if (!proposal) {
       return;
     }
-    setBusy("edit");
+    setBusy("status");
     setError(null);
     try {
-      const next = await setOrganizationProposalOverride(
-        proposal.id,
-        operation.fileId,
-        "destination_and_rename",
-        destination,
-        proposedName,
-        "Virtual edit from organization preview",
-      );
-      setProposal(next);
-      setSelectedOperationId(
-        next.operations.find((item) => item.fileId === operation.fileId)?.id ?? null,
-      );
+      setProposal(await setOrganizationProposalStatus(proposal.id, status));
     } catch (reason) {
       setError(classifyUserError(reason, "organization").message);
     } finally {
@@ -241,9 +197,11 @@ export function OrganizationPreviewView({
     }
   }
 
-  async function decideOverride(
+  async function applyOverride(
     operation: OrganizationOperation,
-    action: "keep_in_place" | "to_review" | "reject",
+    action: "destination_and_rename" | "keep_in_place" | "to_review" | "reject",
+    destination?: string[],
+    proposedName?: string,
   ) {
     if (!proposal) {
       return;
@@ -255,14 +213,11 @@ export function OrganizationPreviewView({
         proposal.id,
         operation.fileId,
         action,
-        undefined,
-        undefined,
-        "User decision from organization preview",
+        destination,
+        proposedName,
+        "Decision from ZEMO mind map",
       );
       setProposal(next);
-      setSelectedOperationId(
-        next.operations.find((item) => item.fileId === operation.fileId)?.id ?? null,
-      );
     } catch (reason) {
       setError(classifyUserError(reason, "organization").message);
     } finally {
@@ -270,580 +225,713 @@ export function OrganizationPreviewView({
     }
   }
 
+  function toggleNode(nodeId: string) {
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(nodeId)) {
+        next.delete(nodeId);
+      } else {
+        next.add(nodeId);
+      }
+      return next;
+    });
+  }
+
+  function expandSearchMatches() {
+    if (!matchingNodeIds) {
+      return;
+    }
+    setExpanded((current) => {
+      const next = new Set(current);
+      matchingNodeIds.forEach((id) => next.add(id));
+      return next;
+    });
+  }
+
   if (!proposal) {
     return (
-      <section className="proposal-empty" aria-labelledby="organization-preview-title">
-        <span className="eyebrow">Aperçu · Avant toute modification</span>
-        <h2 id="organization-preview-title">Organisation proposée</h2>
+      <section className="proposal-empty zemo-map-empty" aria-labelledby="organization-preview-title">
+        <style>{mindMapCss}</style>
+        <span className="eyebrow">ZEMO · Carte mentale</span>
+        <h2 id="organization-preview-title">Comprendre votre ordinateur</h2>
         <p>
-          Construisez une organisation virtuelle à partir du catalogue local,
-          de la compréhension et des relations confirmées.
+          ZEMO construit une carte locale de vos dossiers, fichiers, projets et
+          catégories. Rien n’est déplacé pendant cette étape.
         </p>
         <div className="proposal-safety-banner" role="status">
           <strong>APERÇU UNIQUEMENT</strong>
-          <span>Rien n’a encore été modifié sur votre ordinateur.</span>
+          <span>0 fichier modifié tant que vous n’avez rien validé.</span>
         </div>
         {progress ? <BuildProgress progress={progress} /> : null}
         {error ? <p className="error-banner">{error}</p> : null}
-        <button
-          type="button"
-          className="primary-action"
-          disabled={busy !== null}
-          onClick={() => void build(false)}
-        >
-          {busy === "build" ? "Préparation…" : "Préparer l’organisation"}
-        </button>
-          {busy === "build" ? (
-          <button type="button" onClick={() => void cancel()}>
-            Annuler en toute sécurité
+        <div className="zemo-empty-actions">
+          <button
+            type="button"
+            className="primary-action"
+            disabled={busy !== null}
+            onClick={() => void build(false)}
+          >
+            {busy === "build" ? "Construction de la carte…" : "Construire la carte mentale"}
           </button>
-        ) : null}
+          {busy === "build" ? (
+            <button type="button" onClick={() => void cancel()}>
+              Annuler
+            </button>
+          ) : null}
+        </div>
       </section>
     );
   }
 
   return (
-    <section className="proposal-preview" aria-labelledby="organization-preview-title">
-      <header className="proposal-preview-header">
+    <section className="proposal-preview zemo-map-page" aria-labelledby="organization-preview-title">
+      <style>{mindMapCss}</style>
+
+      <header className="zemo-map-header">
         <div>
-          <span className="eyebrow">Organisation proposée</span>
-          <h2 id="organization-preview-title">Organisation proposée</h2>
+          <span className="eyebrow">ZEMO · Vue mentale</span>
+          <h2 id="organization-preview-title">Carte mentale de vos fichiers</h2>
           <p>
-            Comparez l’emplacement actuel et la destination proposée. Rien n’a
-            encore été modifié sur votre ordinateur.
+            Explorez progressivement la structure comprise par ZEMO. Les branches
+            restent repliées pour garder la carte lisible même avec beaucoup de fichiers.
           </p>
         </div>
-        <div className="proposal-actions">
-          <button
-            type="button"
-            disabled={busy !== null}
-            onClick={() => void checkDrift()}
-          >
-            Vérifier les changements sources
+        <div className="zemo-map-header-actions">
+          <button type="button" disabled={busy !== null} onClick={() => void refreshDrift()}>
+            Vérifier les changements
           </button>
-          <button
-            type="button"
-            disabled={busy !== null}
-            onClick={() => void build(true)}
-          >
-            Recalculer sans risque
+          <button type="button" disabled={busy !== null} onClick={() => void build(true)}>
+            Recalculer la carte
           </button>
         </div>
       </header>
 
       <div className="proposal-safety-banner" role="status">
-        <strong>PROPOSÉ — PAS ENCORE APPLIQUÉ</strong>
-        <span>Rien n’a encore été modifié sur votre ordinateur.</span>
-      </div>
-
-      <div className="proposal-attention" aria-label="Priorité d’examen">
-        <span className="attention-chip attention-chip--ready">
-          Confiance élevée :{" "}
-          {(
-            proposal.summary.proposedMoves +
-            proposal.summary.proposedRenames
-          ).toLocaleString()}
-        </span>
-        <span className="attention-chip attention-chip--review">
-          À vérifier : {proposal.summary.needsReview.toLocaleString()}
-        </span>
-        <span className="attention-chip attention-chip--blocked">
-          Incertain : {proposal.summary.conflicts.toLocaleString()}
-        </span>
+        <strong>PROPOSÉ — PAS APPLIQUÉ</strong>
+        <span>La carte est une représentation locale. Vos fichiers restent à leur place.</span>
       </div>
 
       {progress && busy === "build" ? <BuildProgress progress={progress} /> : null}
       {error ? <p className="error-banner">{error}</p> : null}
 
-      <div className="proposal-summary" aria-label="Résumé de la proposition">
-        <SummaryMetric label="Analysés" value={proposal.summary.filesAnalyzed} />
-        <SummaryMetric label="Déplacements" value={proposal.summary.proposedMoves} />
-        <SummaryMetric label="Renommages" value={proposal.summary.proposedRenames} />
-        <SummaryMetric label="Inchangés" value={proposal.summary.unchanged} />
-        <SummaryMetric label="À revoir" value={proposal.summary.needsReview} tone="review" />
-        <SummaryMetric label="Conflits" value={proposal.summary.conflicts} tone="danger" />
+      <div className="zemo-map-metrics" aria-label="Résumé de l’organisation">
+        <Metric label="Fichiers compris" value={proposal.summary.filesAnalyzed} />
+        <Metric label="À ranger" value={proposal.summary.proposedMoves} />
+        <Metric label="Renommages" value={proposal.summary.proposedRenames} />
+        <Metric label="À vérifier" value={proposal.summary.needsReview} tone="review" />
+        <Metric label="Conflits" value={proposal.summary.conflicts} tone="danger" />
+        <Metric label="Confiance élevée" value={proposal.summary.highConfidence} tone="good" />
       </div>
 
-      <div className="proposal-toolbar" role="search">
-        <label>
-          Rechercher
+      <div className="zemo-map-toolbar">
+        <label className="zemo-map-search">
+          <span>Rechercher dans la carte</span>
           <input
             type="search"
             value={query}
+            placeholder="Client, projet, facture, dossier, fichier…"
             onChange={(event) => setQuery(event.currentTarget.value)}
-            placeholder="Fichier, fournisseur, projet…"
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                expandSearchMatches();
+              }
+            }}
           />
         </label>
-        <label>
-          Afficher
-          <select
-            value={filter}
-            onChange={(event) => setFilter(event.currentTarget.value as ProposalFilter)}
-          >
-            <option value="all">Tous les éléments</option>
-            <option value="review">À vérifier</option>
-            <option value="conflicts">Incertain / conflit</option>
-            <option value="high">Confiance élevée</option>
-            <option value="unchanged">Inchangés</option>
-            <option value="renames">Renommages proposés</option>
-          </select>
-        </label>
-        {selectedFolder ? (
-          <button type="button" onClick={() => setSelectedFolder("")}>
-            Effacer le filtre de dossier
-          </button>
-        ) : null}
-      </div>
-
-      <div className="proposal-workspace">
-        <aside className="virtual-tree" aria-label="Arborescence proposée">
-          <div className="panel-heading">
-            <strong>Proposition</strong>
-            <span>{folders.length - 1} dossiers</span>
-          </div>
-          <FolderTree
-            nodes={folders}
-            selectedPath={selectedFolder}
-            onSelect={setSelectedFolder}
-          />
-        </aside>
-
-        <div className="proposal-file-list" aria-label="Éléments proposés">
-          <div className="panel-heading">
-            <strong>{selectedFolder || "Tous les emplacements"}</strong>
-            <span>{filteredOperations.length} éléments</span>
-          </div>
-          {filteredOperations.length === 0 ? (
-            <p className="empty-state">
-              Aucun élément ne correspond à ces filtres.
-            </p>
-          ) : (
-            <ul>
-              {filteredOperations.slice(0, MAX_VISIBLE_OPERATIONS).map((operation) => (
-                <li key={operation.id}>
-                  <button
-                    type="button"
-                    className={
-                      operation.id === selectedOperationId
-                        ? "proposal-file selected"
-                        : "proposal-file"
-                    }
-                    onClick={() => setSelectedOperationId(operation.id)}
-                  >
-                    <span>
-                      <strong>{operation.proposedName}</strong>
-                      <small>
-                        {operation.proposedDestination.join(" / ") || "Emplacement actuel"}
-                      </small>
-                    </span>
-                    <ConfidenceBadge operation={operation} />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          {filteredOperations.length > MAX_VISIBLE_OPERATIONS ? (
-            <p className="result-limit">
-              Affichage des {MAX_VISIBLE_OPERATIONS} premiers éléments. Affinez le
-              dossier ou la recherche pour en voir davantage.
-            </p>
-          ) : null}
-        </div>
-
-        <aside className="proposal-detail" aria-label="Actuel et proposition">
-          {selectedOperation ? (
-            <OperationDetail
-              key={selectedOperation.id}
-              operation={selectedOperation}
-              disabled={busy !== null}
-              onSave={saveOverride}
-              onDecision={decideOverride}
-            />
-          ) : (
-            <p className="empty-state">
-              Sélectionnez un fichier pour comparer l’emplacement actuel et la
-              proposition.
-            </p>
-          )}
-        </aside>
-      </div>
-
-      <footer className="proposal-review-footer">
-        <div>
-          <strong>Organisation prête</strong>
-          <span>
-            {(
-              proposal.summary.proposedMoves + proposal.summary.proposedRenames
-            ).toLocaleString()}{" "}
-            fichiers seront déplacés · 0 supprimé · 0 écrasé
-            {proposal.summary.needsReview > 0
-              ? ` · ${proposal.summary.needsReview.toLocaleString()} nécessitent encore votre avis`
-              : ""}
-          </span>
-          <span className="apply-gate-note">
-            Vous pourrez annuler les changements depuis l’historique.
-          </span>
-        </div>
-        {proposal.summary.needsReview > 0 ? (
+        <div className="zemo-map-zoom" aria-label="Zoom de la carte">
           <button
             type="button"
-            disabled={busy !== null}
-            onClick={() => setFilter("review")}
+            aria-label="Dézoomer"
+            onClick={() => setZoom((value) => clampZoom(value - ZOOM_STEP))}
           >
-            Examiner
+            −
           </button>
-        ) : null}
+          <button type="button" onClick={() => setZoom(1)}>
+            {Math.round(zoom * 100)} %
+          </button>
+          <button
+            type="button"
+            aria-label="Zoomer"
+            onClick={() => setZoom((value) => clampZoom(value + ZOOM_STEP))}
+          >
+            +
+          </button>
+        </div>
         <button
           type="button"
-          disabled={busy !== null}
-          onClick={() => void updateStatus("reviewed")}
+          onClick={() => {
+            setExpanded(new Set(initialExpanded(proposal.nodes)));
+            setZoom(1);
+            setQuery("");
+          }}
         >
-          Marquer l’examen comme terminé
+          Recentrer
         </button>
         <button
           type="button"
-          disabled={busy !== null || proposal.status === "APPROVED_FOR_FUTURE_APPLY"}
+          onClick={() => setExpanded(new Set(proposal.nodes.map((node) => node.id)))}
+        >
+          Tout développer
+        </button>
+        <button type="button" onClick={() => setExpanded(new Set(initialExpanded(proposal.nodes)))}>
+          Replier
+        </button>
+      </div>
+
+      <div className="zemo-map-layout">
+        <div className="zemo-map-viewport" aria-label="Carte mentale interactive">
+          <div
+            className="zemo-map-canvas"
+            style={{
+              transform: `scale(${zoom})`,
+              transformOrigin: "top left",
+              width: `${100 / zoom}%`,
+            }}
+          >
+            {roots.length === 0 ? (
+              <p className="empty-state">Aucune branche à afficher.</p>
+            ) : (
+              <div className="zemo-map-roots">
+                {roots.map((node) => (
+                  <MindBranch
+                    key={node.id}
+                    node={node}
+                    childrenByParent={childrenByParent}
+                    expanded={expanded}
+                    selectedNodeId={selectedNodeId}
+                    matchingNodeIds={matchingNodeIds}
+                    level={0}
+                    onSelect={setSelectedNodeId}
+                    onToggle={toggleNode}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <aside className="zemo-map-inspector" aria-label="Informations de la branche sélectionnée">
+          {selectedNode ? (
+            <NodeInspector
+              node={selectedNode}
+              operation={selectedOperation}
+              disabled={busy !== null}
+              onOverride={applyOverride}
+            />
+          ) : (
+            <div className="zemo-inspector-empty">
+              <span className="eyebrow">Détails</span>
+              <h3>Sélectionnez une branche</h3>
+              <p>
+                Cliquez sur un dossier, un projet ou un fichier pour afficher toutes
+                les informations disponibles ici.
+              </p>
+            </div>
+          )}
+        </aside>
+      </div>
+
+      <section className="zemo-map-validation" aria-label="Validation de la proposition">
+        <div>
+          <strong>Carte prête à être examinée</strong>
+          <span>
+            {proposal.summary.proposedMoves.toLocaleString()} déplacements proposés · {" "}
+            {proposal.summary.needsReview.toLocaleString()} à vérifier · 0 suppression implicite
+          </span>
+        </div>
+        <button type="button" disabled={busy !== null} onClick={() => void updateStatus("reviewed")}>
+          Marquer comme examinée
+        </button>
+        <button
+          type="button"
+          className="primary-action"
+          disabled={busy !== null || proposal.summary.needsReview > 0 || proposal.summary.conflicts > 0}
           onClick={() => void updateStatus("approved_for_future_apply")}
         >
-          Valider la proposition
+          Valider pour application
         </button>
-      </footer>
+      </section>
+
       <ExecutionPanel
         workspaceId={workspaceId}
         proposal={proposal}
-        onReview={() => setFilter("review")}
-        onViewFiles={() => setSelectedFolder("")}
+        onReview={() => {
+          const firstReview = proposal.nodes.find((node) => node.needsReviewCount > 0);
+          if (firstReview) {
+            setSelectedNodeId(firstReview.id);
+            setExpanded((current) => new Set([...current, firstReview.id]));
+          }
+        }}
+        onViewFiles={() => {
+          const firstFile = proposal.nodes.find((node) => node.kind === "FILE");
+          if (firstFile) {
+            setSelectedNodeId(firstFile.id);
+          }
+        }}
         onProposalUpdated={setProposal}
       />
     </section>
   );
 }
 
-function BuildProgress({ progress }: { progress: OrganizationProposalProgress }) {
-  const percentage =
-    progress.filesTotal === 0
-      ? 0
-      : Math.round((progress.filesEvaluated / progress.filesTotal) * 100);
-  return (
-    <div className="proposal-progress" aria-live="polite">
-      <div>
-        <strong>{humanize(progress.phase)}</strong>
-        <span>
-          {progress.filesEvaluated.toLocaleString()} /{" "}
-          {progress.filesTotal.toLocaleString()} fichiers
-        </span>
-      </div>
-      <progress max={100} value={percentage}>
-        {percentage}%
-      </progress>
-      <div className="progress-facts">
-        <span>Confiance élevée : {progress.highConfidence.toLocaleString()}</span>
-        <span>À vérifier : {progress.needsReview.toLocaleString()}</span>
-        <span>Incertains : {progress.conflicts.toLocaleString()}</span>
-      </div>
-    </div>
-  );
-}
-
-function FolderTree({
-  nodes,
-  selectedPath,
+function MindBranch({
+  node,
+  childrenByParent,
+  expanded,
+  selectedNodeId,
+  matchingNodeIds,
+  level,
   onSelect,
+  onToggle,
 }: {
-  nodes: VirtualProposalNode[];
-  selectedPath: string;
-  onSelect: (path: string) => void;
+  node: VirtualProposalNode;
+  childrenByParent: NodeMap;
+  expanded: Set<string>;
+  selectedNodeId: string | null;
+  matchingNodeIds: Set<string> | null;
+  level: number;
+  onSelect: (id: string) => void;
+  onToggle: (id: string) => void;
 }) {
-  const root = nodes.find((node) => node.kind === "ROOT");
-  if (!root) {
-    return <p className="empty-state">Aucune proposition pour le moment.</p>;
+  if (matchingNodeIds && !matchingNodeIds.has(node.id)) {
+    return null;
   }
-  const byParent = new Map<string, VirtualProposalNode[]>();
-  for (const node of nodes) {
-    if (node.kind !== "FOLDER" || !node.parentId) {
-      continue;
-    }
-    const siblings = byParent.get(node.parentId) ?? [];
-    siblings.push(node);
-    byParent.set(node.parentId, siblings);
-  }
-  for (const siblings of byParent.values()) {
-    siblings.sort((left, right) => left.name.localeCompare(right.name));
-  }
-  return (
-    <div className="tree-root">
-      <button
-        type="button"
-        className={selectedPath === "" ? "tree-node selected" : "tree-node"}
-        onClick={() => onSelect("")}
-      >
-        <span>▾</span>
-        <strong>Racine proposée</strong>
-        <small>{root.childCount}</small>
-      </button>
-      <TreeChildren
-        parentId={root.id}
-        byParent={byParent}
-        selectedPath={selectedPath}
-        onSelect={onSelect}
-        depth={0}
-      />
-    </div>
-  );
-}
 
-function TreeChildren({
-  parentId,
-  byParent,
-  selectedPath,
-  onSelect,
-  depth,
-}: {
-  parentId: string;
-  byParent: Map<string, VirtualProposalNode[]>;
-  selectedPath: string;
-  onSelect: (path: string) => void;
-  depth: number;
-}) {
-  const children = byParent.get(parentId) ?? [];
+  const children = childrenByParent.get(node.id) ?? [];
+  const isExpanded = expanded.has(node.id);
+  const selected = selectedNodeId === node.id;
+  const visibleChildren = children
+    .filter((child) => !matchingNodeIds || matchingNodeIds.has(child.id))
+    .slice(0, MAX_CHILDREN_PER_BRANCH);
+  const hiddenChildren = Math.max(0, children.length - visibleChildren.length);
+  const hasChildren = children.length > 0;
+
   return (
-    <>
-      {children.map((node) => (
-        <div key={node.id}>
-          <button
-            type="button"
-            className={
-              selectedPath === node.virtualPath ? "tree-node selected" : "tree-node"
+    <div className={`zemo-branch zemo-branch--level-${Math.min(level, 4)}`}>
+      <div className="zemo-branch-row">
+        {level > 0 ? <span className="zemo-connector" aria-hidden="true" /> : null}
+        <button
+          type="button"
+          className={[
+            "zemo-node",
+            `zemo-node--${node.kind.toLocaleLowerCase()}`,
+            selected ? "zemo-node--selected" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          onClick={() => {
+            onSelect(node.id);
+            if (hasChildren && !isExpanded) {
+              onToggle(node.id);
             }
-            style={{ paddingInlineStart: `${16 + depth * 16}px` }}
-            onClick={() => onSelect(node.virtualPath)}
-            aria-label={`${node.name}, ${node.childCount} children, ${node.needsReviewCount} need review`}
-          >
-            <span>▸</span>
-            <span>{node.name}</span>
-            {node.conflictCount > 0 ? (
-              <small className="tree-conflict">{node.conflictCount}</small>
-            ) : (
-              <small>{node.childCount}</small>
-            )}
-          </button>
-          <TreeChildren
-            parentId={node.id}
-            byParent={byParent}
-            selectedPath={selectedPath}
-            onSelect={onSelect}
-            depth={depth + 1}
-          />
+          }}
+          onDoubleClick={() => {
+            if (hasChildren) {
+              onToggle(node.id);
+            }
+          }}
+          aria-expanded={hasChildren ? isExpanded : undefined}
+        >
+          <span className="zemo-node-icon" aria-hidden="true">
+            {nodeIcon(node.kind)}
+          </span>
+          <span className="zemo-node-copy">
+            <strong>{node.name}</strong>
+            <small>
+              {node.kind === "FILE"
+                ? "Fichier"
+                : `${node.childCount.toLocaleString()} élément${node.childCount > 1 ? "s" : ""}`}
+            </small>
+          </span>
+          {node.needsReviewCount > 0 ? (
+            <span className="zemo-node-badge zemo-node-badge--review">
+              {node.needsReviewCount}
+            </span>
+          ) : null}
+          {node.conflictCount > 0 ? (
+            <span className="zemo-node-badge zemo-node-badge--danger">
+              {node.conflictCount}
+            </span>
+          ) : null}
+          {hasChildren ? <span className="zemo-node-chevron">{isExpanded ? "−" : "+"}</span> : null}
+        </button>
+      </div>
+
+      {hasChildren && isExpanded ? (
+        <div className="zemo-branch-children">
+          {visibleChildren.map((child) => (
+            <MindBranch
+              key={child.id}
+              node={child}
+              childrenByParent={childrenByParent}
+              expanded={expanded}
+              selectedNodeId={selectedNodeId}
+              matchingNodeIds={matchingNodeIds}
+              level={level + 1}
+              onSelect={onSelect}
+              onToggle={onToggle}
+            />
+          ))}
+          {hiddenChildren > 0 ? (
+            <div className="zemo-more-node">+ {hiddenChildren.toLocaleString()} éléments masqués</div>
+          ) : null}
         </div>
-      ))}
-    </>
+      ) : null}
+    </div>
   );
 }
 
-function OperationDetail({
+function NodeInspector({
+  node,
   operation,
   disabled,
-  onSave,
-  onDecision,
+  onOverride,
 }: {
-  operation: OrganizationOperation;
+  node: VirtualProposalNode;
+  operation: OrganizationOperation | null;
   disabled: boolean;
-  onSave: (
+  onOverride: (
     operation: OrganizationOperation,
-    destination: string[],
-    proposedName: string,
-  ) => Promise<void>;
-  onDecision: (
-    operation: OrganizationOperation,
-    action: "keep_in_place" | "to_review" | "reject",
+    action: "destination_and_rename" | "keep_in_place" | "to_review" | "reject",
+    destination?: string[],
+    proposedName?: string,
   ) => Promise<void>;
 }) {
-  const [destination, setDestination] = useState(
-    operation.proposedDestination.join("\\"),
-  );
-  const [name, setName] = useState(operation.proposedName);
-  const destinationSegments = destination
-    .split(/[\\/]/)
-    .map((segment) => segment.trim())
-    .filter(Boolean);
-  const editValid =
-    destinationSegments.length > 0 &&
-    destinationSegments.length <= 8 &&
-    name.trim().length > 0;
+  const [destination, setDestination] = useState(operation?.proposedDestination.join(" / ") ?? "");
+  const [name, setName] = useState(operation?.proposedName ?? "");
+
+  useEffect(() => {
+    setDestination(operation?.proposedDestination.join(" / ") ?? "");
+    setName(operation?.proposedName ?? "");
+  }, [operation?.id, operation?.proposedDestination, operation?.proposedName]);
+
   return (
-    <div>
-      <div className="panel-heading">
-        <strong>Pourquoi ici ?</strong>
-        <ConfidenceBadge operation={operation} />
+    <div className="zemo-inspector-content">
+      <div className="zemo-inspector-title">
+        <span className="zemo-node-icon" aria-hidden="true">{nodeIcon(node.kind)}</span>
+        <div>
+          <span className="eyebrow">{friendlyKind(node.kind)}</span>
+          <h3>{node.name}</h3>
+        </div>
       </div>
-      <dl className="path-comparison path-comparison--emphasis">
-        <div className="path-comparison__current">
-          <dt>Actuellement</dt>
-          <dd>
-            <code>{operation.sourceRelativePath}</code>
-          </dd>
-        </div>
-        <div className="path-comparison__proposed">
-          <dt>Proposition</dt>
-          <dd>
-            <code>{operation.proposedRelativePath}</code>
-          </dd>
-        </div>
+
+      <dl className="zemo-info-grid">
+        <Info label="Chemin mental" value={node.virtualPath || "Racine"} mono />
+        <Info label="Éléments enfants" value={node.childCount.toLocaleString()} />
+        <Info label="À vérifier" value={node.needsReviewCount.toLocaleString()} />
+        <Info label="Conflits" value={node.conflictCount.toLocaleString()} />
       </dl>
-      <div className="operation-signals">
-        <span>{humanize(operation.semanticContext)}</span>
-        <span>{humanize(operation.documentType)}</span>
-        {operation.customerName ? <span>Client : {operation.customerName}</span> : null}
-        {operation.projectName ? <span>Projet : {operation.projectName}</span> : null}
-        {operation.supplierName ? (
-          <span>Fournisseur : {operation.supplierName}</span>
-        ) : null}
-      </div>
-      {operation.conflictState !== "NONE" ? (
-        <p className="conflict-message">
-          Conflit : {humanize(operation.conflictState)}
-        </p>
-      ) : null}
-      <ul className="proposal-reasons">
-        {operation.reasons.map((reason, index) => (
-          <li key={`${reason.code}-${index}`}>
-            <span aria-hidden="true">✓</span>
-            <span>
-              {reason.explanation}
-              {reason.evidenceReferences.length > 0 ? (
-                <small>{reason.evidenceReferences.join(" · ")}</small>
-              ) : null}
-            </span>
-          </li>
-        ))}
-      </ul>
-      <div className="virtual-decisions proposal-primary-actions">
-        <button
-          type="button"
-          className="primary"
-          disabled={disabled || !editValid}
-          onClick={() => void onSave(operation, destinationSegments, name.trim())}
-        >
-          Accepter
-        </button>
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => void onDecision(operation, "to_review")}
-        >
-          À vérifier
-        </button>
-      </div>
-      <p className="apply-gate-note">
-        Accepter enregistre la proposition uniquement. Les fichiers ne sont
-        déplacés que lorsque vous appliquez l’organisation.
-      </p>
-      <details className="virtual-edit">
-        <summary>Modifier</summary>
-        <fieldset>
-          <legend>Modifier la proposition</legend>
-          <label>
-            Dossier proposé
-            <input
-              value={destination}
-              onChange={(event) => setDestination(event.currentTarget.value)}
-              aria-describedby="virtual-path-help"
-            />
-          </label>
-          <small id="virtual-path-help">
-            Séparez les dossiers par \. Les chemins absolus sont refusés.
-          </small>
-          <label>
-            Nom proposé
-            <input
-              value={name}
-              onChange={(event) => setName(event.currentTarget.value)}
-            />
-          </label>
-          <button
-            type="button"
-            disabled={disabled || !editValid}
-            onClick={() => void onSave(operation, destinationSegments, name.trim())}
-          >
-            Enregistrer la modification
-          </button>
-          <div className="virtual-decisions">
+
+      {operation ? (
+        <>
+          <div className="zemo-inspector-section">
+            <h4>Informations fichier</h4>
+            <dl className="zemo-info-grid">
+              <Info label="Nom actuel" value={operation.sourceName} />
+              <Info label="Emplacement actuel" value={operation.sourceRelativePath} mono />
+              <Info label="Taille" value={formatBytes(operation.sourceByteSize)} />
+              <Info label="Modifié" value={formatTimestamp(operation.sourceModifiedAt)} />
+              <Info label="Type compris" value={friendlyValue(operation.documentType)} />
+              <Info label="Contexte" value={friendlyValue(operation.semanticContext)} />
+              <Info label="Client" value={friendlyValue(operation.customerName)} />
+              <Info label="Fournisseur" value={friendlyValue(operation.supplierName)} />
+              <Info label="Projet" value={friendlyValue(operation.projectName)} />
+              <Info
+                label="Confiance"
+                value={`${Math.round(operation.confidenceScore * 100)} % · ${friendlyValue(operation.confidenceLevel)}`}
+              />
+              <Info label="Action" value={friendlyValue(operation.operationKind)} />
+              <Info label="Conflit" value={friendlyValue(operation.conflictState)} />
+            </dl>
+          </div>
+
+          <div className="zemo-inspector-section">
+            <h4>Organisation proposée</h4>
+            <label className="zemo-editor-field">
+              <span>Dossier</span>
+              <input
+                value={destination}
+                disabled={disabled}
+                onChange={(event) => setDestination(event.currentTarget.value)}
+              />
+            </label>
+            <label className="zemo-editor-field">
+              <span>Nom du fichier</span>
+              <input value={name} disabled={disabled} onChange={(event) => setName(event.currentTarget.value)} />
+            </label>
             <button
               type="button"
-              disabled={disabled}
-              onClick={() => void onDecision(operation, "keep_in_place")}
+              disabled={disabled || !name.trim()}
+              onClick={() =>
+                void onOverride(
+                  operation,
+                  "destination_and_rename",
+                  splitDestination(destination),
+                  name.trim(),
+                )
+              }
             >
-              Garder l’emplacement actuel
-            </button>
-            <button
-              type="button"
-              disabled={disabled}
-              onClick={() => void onDecision(operation, "reject")}
-            >
-              Refuser
+              Enregistrer la proposition
             </button>
           </div>
-        </fieldset>
-      </details>
+
+          {operation.reasons.length > 0 ? (
+            <details className="zemo-why">
+              <summary>Pourquoi ZEMO propose ça ?</summary>
+              <ul>
+                {operation.reasons.map((reason, index) => (
+                  <li key={`${reason.code}-${index}`}>
+                    <strong>{friendlyValue(reason.code)}</strong>
+                    <span>{reason.explanation}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
+
+          <div className="zemo-decision-actions">
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => void onOverride(operation, "keep_in_place")}
+            >
+              Garder à sa place
+            </button>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => void onOverride(operation, "to_review")}
+            >
+              À vérifier
+            </button>
+            <button
+              type="button"
+              className="danger-outline"
+              disabled={disabled}
+              onClick={() => void onOverride(operation, "reject")}
+            >
+              Rejeter cette proposition
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="zemo-inspector-section">
+          <h4>Résumé</h4>
+          <p>
+            Cette branche regroupe les éléments que ZEMO considère comme liés dans
+            l’organisation virtuelle. Développez-la pour voir les sous-dossiers et fichiers.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
 
-function attentionState(operation: OrganizationOperation): {
-  label: string;
-  kind: "ready" | "review" | "blocked";
-} {
-  const conflict = operation.conflictState.toLocaleUpperCase();
-  if (
-    conflict !== "NONE" &&
-    conflict !== "AUTO_RESOLVED" &&
-    conflict !== ""
-  ) {
-    return { label: "Incertain", kind: "blocked" };
-  }
-  if (operation.needsReview || operation.operationKind === "TO_REVIEW") {
-    return { label: "À vérifier", kind: "review" };
-  }
-  if (["VERY_HIGH", "HIGH"].includes(operation.confidenceLevel)) {
-    return { label: "Confiance élevée", kind: "ready" };
-  }
-  return { label: "À vérifier", kind: "review" };
-}
-
-function ConfidenceBadge({ operation }: { operation: OrganizationOperation }) {
-  const attention = attentionState(operation);
+function BuildProgress({ progress }: { progress: OrganizationProposalProgress }) {
+  const percent = progress.filesTotal > 0
+    ? Math.min(100, Math.round((progress.filesEvaluated / progress.filesTotal) * 100))
+    : 0;
   return (
-    <span
-      className={`confidence-badge confidence-${attention.kind}`}
-      aria-label={attention.label}
-      title="Niveau de confiance indicatif — ce n’est pas une probabilité calibrée."
-    >
-      {attention.label}
-    </span>
+    <div className="zemo-build-progress" aria-live="polite">
+      <div>
+        <strong>{friendlyValue(progress.phase)}</strong>
+        <span>{progress.filesEvaluated.toLocaleString()} / {progress.filesTotal.toLocaleString()}</span>
+      </div>
+      <div className="zemo-progress-track" aria-hidden="true">
+        <span style={{ width: `${percent}%` }} />
+      </div>
+    </div>
   );
 }
 
-function SummaryMetric({
+function Metric({
   label,
   value,
-  tone,
+  tone = "default",
 }: {
   label: string;
   value: number;
-  tone?: "review" | "danger";
+  tone?: "default" | "review" | "danger" | "good";
 }) {
   return (
-    <div className={tone ? `summary-metric ${tone}` : "summary-metric"}>
+    <div className={`zemo-map-metric zemo-map-metric--${tone}`}>
       <span>{label}</span>
       <strong>{value.toLocaleString()}</strong>
     </div>
   );
 }
 
-function humanize(value: string): string {
-  return value
-    .toLocaleLowerCase()
-    .split("_")
-    .map((part) => part.charAt(0).toLocaleUpperCase() + part.slice(1))
-    .join(" ");
+function Info({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd className={mono ? "zemo-mono" : undefined}>{value}</dd>
+    </div>
+  );
 }
+
+function buildChildrenMap(nodes: VirtualProposalNode[]): NodeMap {
+  const result: NodeMap = new Map();
+  for (const node of nodes) {
+    const key = node.parentId ?? null;
+    const bucket = result.get(key) ?? [];
+    bucket.push(node);
+    result.set(key, bucket);
+  }
+  for (const bucket of result.values()) {
+    bucket.sort((left, right) => {
+      const rank = kindRank(left.kind) - kindRank(right.kind);
+      return rank !== 0 ? rank : left.name.localeCompare(right.name, "fr", { sensitivity: "base" });
+    });
+  }
+  return result;
+}
+
+function operationForNode(
+  node: VirtualProposalNode,
+  operationById: Map<string, OrganizationOperation>,
+  operationByFileId: Map<string, OrganizationOperation>,
+): OrganizationOperation | null {
+  if (node.operationId) {
+    const byOperation = operationById.get(node.operationId);
+    if (byOperation) {
+      return byOperation;
+    }
+  }
+  return operationByFileId.get(node.id) ?? null;
+}
+
+function includeAncestors(matches: Set<string>, nodeById: Map<string, VirtualProposalNode>): Set<string> {
+  const included = new Set(matches);
+  for (const id of matches) {
+    let node = nodeById.get(id);
+    const visited = new Set<string>();
+    while (node?.parentId && !visited.has(node.parentId)) {
+      visited.add(node.parentId);
+      included.add(node.parentId);
+      node = nodeById.get(node.parentId);
+    }
+  }
+  return included;
+}
+
+function initialExpanded(nodes: VirtualProposalNode[]): string[] {
+  const roots = nodes.filter((node) => node.kind === "ROOT" || !node.parentId);
+  const rootIds = new Set(roots.map((node) => node.id));
+  return [
+    ...rootIds,
+    ...nodes.filter((node) => node.parentId && rootIds.has(node.parentId)).map((node) => node.id),
+  ];
+}
+
+function installProposal(
+  proposal: OrganizationProposal,
+  setProposal: (proposal: OrganizationProposal) => void,
+  setExpanded: (value: Set<string>) => void,
+  setSelectedNodeId: (value: string | null) => void,
+) {
+  setProposal(proposal);
+  setExpanded(new Set(initialExpanded(proposal.nodes)));
+  setSelectedNodeId(
+    proposal.nodes.find((node) => node.kind === "ROOT")?.id ?? proposal.nodes[0]?.id ?? null,
+  );
+}
+
+function splitDestination(value: string): string[] {
+  return value
+    .split(/[\\/]+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
+function clampZoom(value: number): number {
+  return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(value * 100) / 100));
+}
+
+function kindRank(kind: VirtualProposalNode["kind"]): number {
+  switch (kind) {
+    case "ROOT":
+      return 0;
+    case "FOLDER":
+      return 1;
+    case "FILE":
+      return 2;
+    default:
+      return 3;
+  }
+}
+
+function nodeIcon(kind: VirtualProposalNode["kind"]): string {
+  switch (kind) {
+    case "ROOT":
+      return "◎";
+    case "FOLDER":
+      return "◇";
+    case "FILE":
+      return "▤";
+    default:
+      return "•";
+  }
+}
+
+function friendlyKind(kind: string): string {
+  switch (kind.toLocaleUpperCase()) {
+    case "ROOT":
+      return "Racine";
+    case "FOLDER":
+      return "Dossier / groupe";
+    case "FILE":
+      return "Fichier";
+    default:
+      return friendlyValue(kind);
+  }
+}
+
+function friendlyValue(value?: string | null): string {
+  if (!value || value.trim() === "") {
+    return "Non disponible";
+  }
+  return value
+    .replace(/_/g, " ")
+    .toLocaleLowerCase()
+    .replace(/(^|\s)\S/g, (character) => character.toLocaleUpperCase());
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  return `${(value / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function formatTimestamp(value?: string | null): string {
+  if (!value) {
+    return "Non disponible";
+  }
+  try {
+    const milliseconds = Number(BigInt(value) / 1_000_000n);
+    const date = new Date(milliseconds);
+    if (!Number.isNaN(date.getTime())) {
+      return date.toLocaleString();
+    }
+  } catch {
+    const date = new Date(value);
+    if (!Number.isNaN(date.getTime())) {
+      return date.toLocaleString();
+    }
+  }
+  return "Non disponible";
+}
+
+const mindMapCss = `
+.zemo-map-page,.zemo-map-empty{--zemo-border:rgba(148,163,184,.18);--zemo-panel:rgba(15,23,42,.56);--zemo-panel-strong:rgba(15,23,42,.82);--zemo-muted:#94a3b8;--zemo-text:#e5edf8;--zemo-accent:#7dd3fc;--zemo-accent-strong:#38bdf8;--zemo-good:#86efac;--zemo-review:#fde68a;--zemo-danger:#fca5a5;color:var(--zemo-text)}
+.zemo-map-header{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:18px}.zemo-map-header h2{font-size:clamp(24px,3vw,38px);margin:4px 0 8px}.zemo-map-header p{max-width:780px;color:var(--zemo-muted);margin:0;line-height:1.55}.zemo-map-header-actions,.zemo-empty-actions{display:flex;gap:10px;flex-wrap:wrap}.zemo-map-metrics{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin:16px 0}.zemo-map-metric{padding:14px;border:1px solid var(--zemo-border);border-radius:16px;background:var(--zemo-panel)}.zemo-map-metric span{display:block;color:var(--zemo-muted);font-size:12px;margin-bottom:6px}.zemo-map-metric strong{font-size:22px}.zemo-map-metric--review strong{color:var(--zemo-review)}.zemo-map-metric--danger strong{color:var(--zemo-danger)}.zemo-map-metric--good strong{color:var(--zemo-good)}
+.zemo-map-toolbar{display:flex;gap:10px;align-items:end;flex-wrap:wrap;padding:12px;border:1px solid var(--zemo-border);border-radius:18px;background:var(--zemo-panel);margin-bottom:12px}.zemo-map-search{flex:1;min-width:260px}.zemo-map-search span,.zemo-editor-field span{display:block;color:var(--zemo-muted);font-size:12px;margin:0 0 6px}.zemo-map-search input,.zemo-editor-field input{width:100%;box-sizing:border-box}.zemo-map-zoom{display:flex;gap:6px}.zemo-map-zoom button{min-width:42px}
+.zemo-map-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,390px);gap:12px;min-height:620px}.zemo-map-viewport{overflow:auto;border:1px solid var(--zemo-border);border-radius:22px;background:radial-gradient(circle at 20% 15%,rgba(56,189,248,.07),transparent 28%),linear-gradient(rgba(148,163,184,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(148,163,184,.035) 1px,transparent 1px),rgba(2,6,23,.48);background-size:auto,24px 24px,24px 24px,auto;padding:30px;min-height:620px}.zemo-map-canvas{min-width:760px;transition:transform .16s ease}.zemo-map-roots{display:flex;flex-direction:column;gap:18px}.zemo-branch{position:relative}.zemo-branch-row{display:flex;align-items:center;position:relative}.zemo-connector{width:30px;height:2px;background:linear-gradient(90deg,rgba(125,211,252,.2),rgba(125,211,252,.72));margin-right:6px;flex:0 0 30px}.zemo-branch-children{position:relative;margin-left:34px;padding-left:24px;border-left:1px solid rgba(125,211,252,.25);display:flex;flex-direction:column;gap:9px;margin-top:9px}.zemo-node{display:flex;align-items:center;gap:10px;text-align:left;min-width:210px;max-width:420px;padding:10px 12px;border-radius:15px;border:1px solid var(--zemo-border);background:rgba(15,23,42,.88);box-shadow:0 12px 28px rgba(0,0,0,.16);transition:transform .12s ease,border-color .12s ease,background .12s ease}.zemo-node:hover{transform:translateY(-1px);border-color:rgba(125,211,252,.48)}.zemo-node--root{padding:14px 16px;border-color:rgba(56,189,248,.45);background:linear-gradient(135deg,rgba(14,116,144,.32),rgba(15,23,42,.92))}.zemo-node--selected{outline:2px solid rgba(56,189,248,.72);outline-offset:2px}.zemo-node-icon{display:grid;place-items:center;width:30px;height:30px;flex:0 0 30px;border-radius:10px;background:rgba(56,189,248,.1);color:var(--zemo-accent);font-size:18px}.zemo-node-copy{min-width:0;flex:1}.zemo-node-copy strong{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.zemo-node-copy small{display:block;color:var(--zemo-muted);font-size:11px;margin-top:2px}.zemo-node-badge{font-size:10px;padding:3px 6px;border-radius:999px}.zemo-node-badge--review{background:rgba(250,204,21,.12);color:var(--zemo-review)}.zemo-node-badge--danger{background:rgba(248,113,113,.12);color:var(--zemo-danger)}.zemo-node-chevron{color:var(--zemo-muted);font-size:18px}.zemo-more-node{color:var(--zemo-muted);font-size:12px;padding:8px 12px}
+.zemo-map-inspector{border:1px solid var(--zemo-border);border-radius:22px;background:var(--zemo-panel-strong);padding:18px;overflow:auto;max-height:760px;position:sticky;top:12px}.zemo-inspector-title{display:flex;align-items:center;gap:12px;padding-bottom:14px;border-bottom:1px solid var(--zemo-border)}.zemo-inspector-title h3{margin:3px 0 0;font-size:20px;overflow-wrap:anywhere}.zemo-info-grid{display:grid;grid-template-columns:1fr;gap:0;margin:12px 0}.zemo-info-grid>div{display:grid;grid-template-columns:120px minmax(0,1fr);gap:10px;padding:9px 0;border-bottom:1px solid rgba(148,163,184,.09)}.zemo-info-grid dt{color:var(--zemo-muted);font-size:12px}.zemo-info-grid dd{margin:0;overflow-wrap:anywhere}.zemo-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}.zemo-inspector-section{margin-top:18px;padding-top:14px;border-top:1px solid var(--zemo-border)}.zemo-inspector-section h4{margin:0 0 10px}.zemo-editor-field{display:block;margin-bottom:10px}.zemo-why{margin:16px 0}.zemo-why ul{padding-left:18px}.zemo-why li{margin:8px 0}.zemo-why li span{display:block;color:var(--zemo-muted);font-size:12px;margin-top:2px}.zemo-decision-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}.zemo-inspector-empty{padding:24px 8px}.zemo-inspector-empty p{color:var(--zemo-muted);line-height:1.55}
+.zemo-map-validation{display:flex;align-items:center;gap:10px;margin-top:14px;padding:14px 16px;border:1px solid var(--zemo-border);border-radius:18px;background:var(--zemo-panel)}.zemo-map-validation>div{display:flex;flex-direction:column;gap:3px;margin-right:auto}.zemo-map-validation span{font-size:12px;color:var(--zemo-muted)}.zemo-build-progress{padding:12px 14px;border:1px solid var(--zemo-border);border-radius:15px;background:var(--zemo-panel);margin:12px 0}.zemo-build-progress>div:first-child{display:flex;justify-content:space-between;gap:12px;margin-bottom:8px}.zemo-build-progress span{color:var(--zemo-muted)}.zemo-progress-track{height:6px;border-radius:999px;background:rgba(148,163,184,.12);overflow:hidden}.zemo-progress-track span{display:block;height:100%;background:linear-gradient(90deg,#0ea5e9,#7dd3fc);border-radius:inherit;transition:width .2s ease}
+@media (max-width:1100px){.zemo-map-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}.zemo-map-layout{grid-template-columns:1fr}.zemo-map-inspector{position:static;max-height:none}.zemo-map-header{flex-direction:column}.zemo-map-validation{align-items:stretch;flex-direction:column}.zemo-map-validation>div{margin-right:0}}
+@media (max-width:700px){.zemo-map-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.zemo-map-viewport{padding:18px}.zemo-map-canvas{min-width:620px}}
+`;
