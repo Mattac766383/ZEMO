@@ -50,7 +50,7 @@ describe("betaMetrics privacy contract", () => {
 
     const entries = readBetaMetrics();
     expect(entries).toHaveLength(200);
-    expect(entries.at(-1)?.count).toBe(249);
+    expect(entries[entries.length - 1]?.count).toBe(249);
   });
 
   it("sanitizes invalid numeric values", () => {
