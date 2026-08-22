@@ -319,6 +319,26 @@ impl Database {
         Ok(state)
     }
 
+    pub fn set_workspace_monitoring_mode(
+        &self,
+        workspace_id: WorkspaceId,
+        mode: MonitoringMode,
+    ) -> Result<WorkspaceMonitoringStateRecord, PersistenceError> {
+        let connection = self.lock()?;
+        let transaction = connection.unchecked_transaction()?;
+        ensure_workspace_state(&transaction, workspace_id)?;
+        transaction.execute(
+            "UPDATE workspace_monitoring_state
+             SET operational_mode = ?2,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE workspace_id = ?1",
+            params![workspace_id.to_string(), mode.database_name()],
+        )?;
+        let state = workspace_monitoring_state_from_connection(&transaction, workspace_id)?;
+        transaction.commit()?;
+        Ok(state)
+    }
+
     pub fn configure_root_monitoring(
         &self,
         root_id: RootId,

@@ -722,6 +722,13 @@ export function restoreWorkspaceSession(): Promise<RestoredWorkspaceSession | nu
   return invoke<RestoredWorkspaceSession | null>("restore_workspace_session");
 }
 
+export function setMonitoringMode(
+  workspaceId: string,
+  mode: "PRUDENT" | "AUTOMATIC",
+): Promise<MonitoringDashboard> {
+  return invoke<MonitoringDashboard>("set_monitoring_mode", { workspaceId, mode });
+}
+
 export function pauseMonitoring(workspaceId: string): Promise<void> {
   return invoke<void>("pause_monitoring", { workspaceId });
 }
