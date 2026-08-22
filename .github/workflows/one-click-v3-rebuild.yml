@@ -26,7 +26,9 @@ jobs:
           rustup default stable
           rustup component add rustfmt
       - name: Apply deterministic v3 refactor
-        run: python3 scripts/apply-one-click-v3.py
+        run: |
+          python3 scripts/apply-one-click-v3.py
+          python3 scripts/fix-one-click-v3-tests.py
       - name: Format Rust
         run: cargo fmt --all
       - name: Install dependencies
@@ -52,7 +54,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add crates/persistence/src/lib.rs crates/persistence/src/consumer_scan.rs crates/application/src/scanner.rs crates/organizer/src/consumer.rs crates/application/tests/one_click_organize.rs apps/desktop/src/App.tsx apps/desktop/src/OneClickOrganize.tsx scripts/macos-apply-qualification/run.mjs
+          git add crates/persistence/src/lib.rs crates/persistence/src/consumer_scan.rs crates/application/src/scanner.rs crates/organizer/src/consumer.rs crates/organizer/src/organization.rs crates/application/tests/one_click_organize.rs apps/desktop/src/App.tsx apps/desktop/src/OneClickOrganize.tsx scripts/macos-apply-qualification/run.mjs
           if git diff --cached --quiet; then
             echo "No product changes to commit"
             exit 0
