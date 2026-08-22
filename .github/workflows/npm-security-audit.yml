@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: read
+  actions: write
+  issues: write
 
 jobs:
   npm-audit:
@@ -23,3 +25,52 @@ jobs:
         run: npm ci
       - name: Reject high or critical npm vulnerabilities
         run: npm audit --audit-level=high --json
+
+      - name: Dispatch macOS private beta from main
+        if: startsWith(github.head_ref, 'release/private-beta-dispatch-via-audit')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run zemo-macos-private-beta.yml --repo "$GITHUB_REPOSITORY" --ref main -f dist_tag=0.1.0-beta.7
+
+      - name: Dispatch Windows private beta from main
+        if: startsWith(github.head_ref, 'release/private-beta-dispatch-via-audit')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run zemo-windows-private-beta.yml --repo "$GITHUB_REPOSITORY" --ref main
+
+      - name: Record dispatched beta runs
+        if: startsWith(github.head_ref, 'release/private-beta-dispatch-via-audit')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAC='[]'
+          WIN='[]'
+          for attempt in {1..20}; do
+            MAC="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow zemo-macos-private-beta.yml --event workflow_dispatch --branch main --limit 1 --json databaseId,status,conclusion,headSha,createdAt,url)"
+            WIN="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow zemo-windows-private-beta.yml --event workflow_dispatch --branch main --limit 1 --json databaseId,status,conclusion,headSha,createdAt,url)"
+            if [ "$MAC" != "[]" ] && [ "$WIN" != "[]" ]; then
+              break
+            fi
+            sleep 3
+          done
+          BODY="$(cat <<EOF
+Private-beta workflows dispatched from the trusted PR-triggered NPM audit workflow.
+
+Source ref for both builds: \`main\`.
+
+macOS tag: \`0.1.0-beta.7\`
+
+\`\`\`json
+$MAC
+\`\`\`
+
+Windows tag: \`0.1.0-beta.6\` (current Windows workflow default)
+
+\`\`\`json
+$WIN
+\`\`\`
+EOF
+)"
+          gh issue edit 18 --repo "$GITHUB_REPOSITORY" --body "$BODY"
