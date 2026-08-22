@@ -5,60 +5,21 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   npm-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout PR branch
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref || github.ref_name }}
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - name: Rebuild a minimal security-only lockfile diff
-        shell: bash
-        run: |
-          git fetch origin main --depth=1
-          git show origin/main:package-lock.json > package-lock.json
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path("package-lock.json")
-          text = path.read_text()
-          replacements = [
-              ('"version": "3.3.15"', '"version": "3.3.18"'),
-              ('https://registry.npmjs.org/nanoid/-/nanoid-3.3.15.tgz', 'https://registry.npmjs.org/nanoid/-/nanoid-3.3.18.tgz'),
-              ('sha512-y7Wygv/7mEOvxTuEQDB8StXdMRBWf1kR/tlhAzBRUFkB2jfcLOAxO/SHmOO2zgz1pVgK29/kyupn059/bCHdjA==', 'sha512-DTg4MJbGMWkfi6VZFdNt2/caMbQy4Ou+Op/hJQvGEWcnVfoA1QA+xzRKAzw9jD6+GVOOeYr/mIcuDSdug6F6+w=='),
-              ('"version": "8.5.15"', '"version": "8.5.26"'),
-              ('https://registry.npmjs.org/postcss/-/postcss-8.5.15.tgz', 'https://registry.npmjs.org/postcss/-/postcss-8.5.26.tgz'),
-              ('sha512-FfR8sjd4em2T6fb3I2MwAJU7HWVMr9zba+enmQeeWFfCbm+UOC/0X4DS8XtpUTMwWMGbjKYP7xjfNekzyGmB3A==', 'sha512-u82N74LFzG8ca+dD8puPnplTXoGH4fTPpVGuIbt36G3qvNlkvfD0lEAZSxaly3KX8TS/L1A1gsCEmvKmBcVbkQ=='),
-              ('"nanoid": "^3.3.12"', '"nanoid": "^3.3.17"'),
-          ]
-          for old, new in replacements:
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"expected exactly one occurrence of {old!r}, found {count}")
-              text = text.replace(old, new, 1)
-          path.write_text(text)
-          PY
-          git diff -- package-lock.json
       - name: Install locked dependencies
         run: npm ci
-      - name: Verify zero npm vulnerabilities
+      - name: Reject high or critical npm vulnerabilities
         run: npm audit --audit-level=high --json
-      - name: Commit minimal lockfile cleanup
-        shell: bash
-        run: |
-          if ! git diff --quiet -- package-lock.json; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add package-lock.json
-            git commit -m "fix(deps): keep security lockfile diff minimal"
-            git push origin HEAD:${{ github.head_ref }}
-          fi
