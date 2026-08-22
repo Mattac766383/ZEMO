@@ -28,17 +28,15 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// The consumer scan remains metadata-only, but now walks the complete user
-/// tree iteratively. Iterative traversal is intentional: a very deep folder
-/// hierarchy must not be able to overflow the process stack.
 const CONSUMER_PROGRESS_EMIT_EVERY: u64 = 128;
 const CONSUMER_SCAN_BATCH_SIZE: usize = 256;
 const DEFAULT_MONITORING_SIZE_THRESHOLD_BYTES: u64 = 512 * 1_024 * 1_024;
 const DEFAULT_MONITORING_STARTUP_ENTRY_LIMIT: u32 = 100_000;
 
-/// Directories that contain generated dependency/build trees rather than user
-/// documents. Hidden directories are already skipped separately.
-const CONSUMER_EXCLUDED_DIRECTORY_NAMES: &[&str] = &[
+/// Generated dependency/cache folders are not useful user documents and can
+/// explode an otherwise small personal-folder scan. Hidden folders are already
+/// skipped separately.
+const DEEP_INDEX_EXCLUDED_DIRECTORY_NAMES: &[&str] = &[
     "node_modules",
     "__pycache__",
     ".git",
@@ -304,6 +302,11 @@ impl ScannerApplicationService {
         Ok(())
     }
 
+    /// Standard personal folders use a metadata-only *deep* index. That gives
+    /// search / relationships / the mental map visibility into existing
+    /// subfolders without opening file contents during discovery. The separate
+    /// `scan_workspace_consumer` method below deliberately remains top-level
+    /// only for the destructive One-Click organization contract.
     #[inline(never)]
     pub fn scan_workspace(
         &self,
@@ -316,7 +319,7 @@ impl ScannerApplicationService {
             .restore_current_root(workspace_id)?
             .ok_or(ApplicationError::NotFound)?;
         if is_standard_personal_root(&root.absolute_path_native) {
-            return self.scan_workspace_consumer(workspace_id, is_cancelled, on_progress);
+            return self.scan_workspace_deep_consumer(workspace_id, is_cancelled, on_progress);
         }
 
         let scan_id = ScanId::new();
@@ -340,10 +343,10 @@ impl ScannerApplicationService {
         self.persist_catalog_output(workspace_id, &root, scan_id, output, on_progress)
     }
 
-    /// Metadata-only deep scan used by the consumer "Ranger mon ordinateur"
-    /// experience. It walks subfolders without opening file content, hashing,
-    /// invoking extractors/models, hydrating cloud placeholders, or starting a
-    /// watcher. Symlinks/reparse points are never followed.
+    /// One-Click organization discovery contract: metadata-only and top-level
+    /// only. Existing user folder trees are intentionally left out of this
+    /// specific scan so One-Click never decides to reorganize an already
+    /// arranged subtree.
     #[inline(never)]
     pub fn scan_workspace_consumer(
         &self,
@@ -361,18 +364,180 @@ impl ScannerApplicationService {
             .read_only_platform
             .inspect_volume(&root.absolute_path_native)?;
 
-        let mut progress = ScanProgress {
+        let mut progress = initial_consumer_progress(scan_id);
+        on_progress(progress);
+
+        let mut files = Vec::with_capacity(CONSUMER_SCAN_BATCH_SIZE);
+        let mut issues = Vec::with_capacity(CONSUMER_SCAN_BATCH_SIZE);
+        let mut persisted_files = 0_u64;
+        let mut issue_count = 0_u64;
+        let mut cancelled = false;
+
+        progress.phase = ScanPhase::Inspecting;
+        on_progress(progress);
+
+        let entries = fs::read_dir(&root.absolute_path_native).map_err(ApplicationError::Io)?;
+        for entry_result in entries {
+            if is_cancelled() {
+                cancelled = true;
+                break;
+            }
+
+            let entry = match entry_result {
+                Ok(entry) => entry,
+                Err(error) => {
+                    progress.errors = progress.errors.saturating_add(1);
+                    progress.skipped_items = progress.skipped_items.saturating_add(1);
+                    issues.push(ScanIssueInput {
+                        relative_path: ".".to_owned(),
+                        code: "directory_entry_unreadable".to_owned(),
+                        message: error.to_string(),
+                        is_directory: false,
+                        is_error: true,
+                        skipped: true,
+                    });
+                    flush_if_needed(
+                        self.database.as_ref(),
+                        workspace_id,
+                        scan_id,
+                        &mut files,
+                        &mut issues,
+                        &mut persisted_files,
+                        &mut issue_count,
+                    )?;
+                    continue;
+                }
+            };
+
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with('.') {
+                progress.skipped_items = progress.skipped_items.saturating_add(1);
+                continue;
+            }
+
+            let file_type = match entry.file_type() {
+                Ok(value) => value,
+                Err(error) => {
+                    progress.errors = progress.errors.saturating_add(1);
+                    progress.skipped_items = progress.skipped_items.saturating_add(1);
+                    issues.push(ScanIssueInput {
+                        relative_path: name.to_string_lossy().into_owned(),
+                        code: "metadata_unavailable".to_owned(),
+                        message: error.to_string(),
+                        is_directory: false,
+                        is_error: true,
+                        skipped: true,
+                    });
+                    flush_if_needed(
+                        self.database.as_ref(),
+                        workspace_id,
+                        scan_id,
+                        &mut files,
+                        &mut issues,
+                        &mut persisted_files,
+                        &mut issue_count,
+                    )?;
+                    continue;
+                }
+            };
+
+            if file_type.is_dir() {
+                progress.directories_discovered = progress.directories_discovered.saturating_add(1);
+                continue;
+            }
+            if file_type.is_symlink() {
+                progress.skipped_items = progress.skipped_items.saturating_add(1);
+                issues.push(ScanIssueInput {
+                    relative_path: name.to_string_lossy().into_owned(),
+                    code: "reparse_point".to_owned(),
+                    message: "symbolic links and aliases are intentionally left in place"
+                        .to_owned(),
+                    is_directory: false,
+                    is_error: false,
+                    skipped: true,
+                });
+                flush_if_needed(
+                    self.database.as_ref(),
+                    workspace_id,
+                    scan_id,
+                    &mut files,
+                    &mut issues,
+                    &mut persisted_files,
+                    &mut issue_count,
+                )?;
+                continue;
+            }
+            if !file_type.is_file() {
+                progress.skipped_items = progress.skipped_items.saturating_add(1);
+                continue;
+            }
+
+            let relative_path = PathBuf::from(name);
+            inspect_and_queue_consumer_file(
+                self.read_only_platform.as_ref(),
+                workspace_id,
+                root.id,
+                scan_id,
+                &root.absolute_path_native,
+                &relative_path,
+                &volume,
+                &mut files,
+                &mut issues,
+                &mut progress,
+            )?;
+
+            flush_if_needed(
+                self.database.as_ref(),
+                workspace_id,
+                scan_id,
+                &mut files,
+                &mut issues,
+                &mut persisted_files,
+                &mut issue_count,
+            )?;
+            progress.files_indexed = persisted_files
+                .saturating_add(u64::try_from(files.len()).unwrap_or(u64::MAX));
+            if progress.files_discovered % CONSUMER_PROGRESS_EMIT_EVERY == 0 {
+                on_progress(progress);
+            }
+        }
+
+        finalize_consumer_scan(
+            self.database.as_ref(),
+            workspace_id,
             scan_id,
-            phase: ScanPhase::Discovering,
-            files_discovered: 0,
-            files_indexed: 0,
-            directories_discovered: 1,
-            bytes_discovered: 0,
-            files_hashed: 0,
-            errors: 0,
-            skipped_items: 0,
-            duplicate_groups: 0,
-        };
+            &mut files,
+            &mut issues,
+            persisted_files,
+            issue_count,
+            progress,
+            cancelled,
+            on_progress,
+        )
+    }
+
+    /// Deep metadata-only index for standard personal folders. It is iterative
+    /// rather than recursively calling itself so an adversarial/deep directory
+    /// tree cannot overflow the process stack. Symlinks/junctions are never
+    /// followed, unreadable nested folders become issues, and scanning continues.
+    #[inline(never)]
+    pub fn scan_workspace_deep_consumer(
+        &self,
+        workspace_id: WorkspaceId,
+        is_cancelled: &dyn Fn() -> bool,
+        on_progress: &mut dyn FnMut(ScanProgress),
+    ) -> Result<ScanRecord, ApplicationError> {
+        let root = self
+            .database
+            .restore_current_root(workspace_id)?
+            .ok_or(ApplicationError::NotFound)?;
+        let scan_id = ScanId::new();
+        self.database.begin_scan(workspace_id, root.id, scan_id)?;
+        let volume = self
+            .read_only_platform
+            .inspect_volume(&root.absolute_path_native)?;
+
+        let mut progress = initial_consumer_progress(scan_id);
         on_progress(progress);
 
         let mut files = Vec::with_capacity(CONSUMER_SCAN_BATCH_SIZE);
@@ -381,9 +546,6 @@ impl ScannerApplicationService {
         let mut issue_count = 0_u64;
         let mut cancelled = false;
         let mut entries_seen = 0_u64;
-
-        // Empty relative path means the registered root itself. A Vec is used
-        // as an explicit work stack so deep trees cannot overflow Rust's stack.
         let mut pending_directories = vec![PathBuf::new()];
 
         progress.phase = ScanPhase::Inspecting;
@@ -467,8 +629,6 @@ impl ScannerApplicationService {
                 let name = entry.file_name();
                 let relative_path = relative_directory.join(&name);
 
-                // Dot-prefixed nodes are intentionally invisible in consumer
-                // mode. They normally contain OS/app state rather than user data.
                 if name.to_string_lossy().starts_with('.') {
                     progress.skipped_items = progress.skipped_items.saturating_add(1);
                     continue;
@@ -500,8 +660,6 @@ impl ScannerApplicationService {
                     }
                 };
 
-                // Never follow aliases/junctions/symlinks. This both prevents
-                // cycles and keeps the scan inside the user-selected root.
                 if file_type.is_symlink() {
                     progress.skipped_items = progress.skipped_items.saturating_add(1);
                     issues.push(ScanIssueInput {
@@ -513,27 +671,15 @@ impl ScannerApplicationService {
                         is_error: false,
                         skipped: true,
                     });
-                    flush_if_needed(
-                        self.database.as_ref(),
-                        workspace_id,
-                        scan_id,
-                        &mut files,
-                        &mut issues,
-                        &mut persisted_files,
-                        &mut issue_count,
-                    )?;
-                    continue;
-                }
-
-                if file_type.is_dir() {
+                } else if file_type.is_dir() {
                     progress.directories_discovered =
                         progress.directories_discovered.saturating_add(1);
-                    if should_skip_consumer_directory(&name) {
+                    if should_skip_deep_index_directory(&name) {
                         progress.skipped_items = progress.skipped_items.saturating_add(1);
                         issues.push(ScanIssueInput {
                             relative_path: display_relative_path(&relative_path),
                             code: "generated_directory_excluded".to_owned(),
-                            message: "generated dependency/cache directory excluded from consumer indexing"
+                            message: "generated dependency/cache directory excluded from deep indexing"
                                 .to_owned(),
                             is_directory: true,
                             is_error: false,
@@ -543,51 +689,18 @@ impl ScannerApplicationService {
                         pending_directories.push(relative_path);
                     }
                 } else if file_type.is_file() {
-                    match inspect_consumer_metadata(
+                    inspect_and_queue_consumer_file(
                         self.read_only_platform.as_ref(),
+                        workspace_id,
+                        root.id,
+                        scan_id,
                         &root.absolute_path_native,
                         &relative_path,
                         &volume,
-                    ) {
-                        Ok(entry) => {
-                            if entry.hidden {
-                                progress.skipped_items = progress.skipped_items.saturating_add(1);
-                            } else {
-                                progress.files_discovered =
-                                    progress.files_discovered.saturating_add(1);
-                                progress.bytes_discovered =
-                                    progress.bytes_discovered.saturating_add(entry.byte_size);
-                                if entry.cloud_placeholder {
-                                    issues.push(ScanIssueInput {
-                                        relative_path: display_relative_path(&relative_path),
-                                        code: "cloud_placeholder".to_owned(),
-                                        message: "cloud placeholder left in place; content was not hydrated"
-                                            .to_owned(),
-                                        is_directory: false,
-                                        is_error: false,
-                                        skipped: true,
-                                    });
-                                    progress.skipped_items =
-                                        progress.skipped_items.saturating_add(1);
-                                } else {
-                                    files.push(metadata_scan_file_input(
-                                        workspace_id,
-                                        root.id,
-                                        scan_id,
-                                        entry,
-                                    )?);
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            let issue = scan_issue_for_platform_error(&relative_path, &error);
-                            if issue.is_error {
-                                progress.errors = progress.errors.saturating_add(1);
-                            }
-                            progress.skipped_items = progress.skipped_items.saturating_add(1);
-                            issues.push(issue);
-                        }
-                    }
+                        &mut files,
+                        &mut issues,
+                        &mut progress,
+                    )?;
                 } else {
                     progress.skipped_items = progress.skipped_items.saturating_add(1);
                 }
@@ -613,52 +726,18 @@ impl ScannerApplicationService {
             }
         }
 
-        let (file_count, issues_written) = flush_consumer_batch(
+        finalize_consumer_scan(
             self.database.as_ref(),
             workspace_id,
             scan_id,
             &mut files,
             &mut issues,
-        )?;
-        persisted_files = persisted_files.saturating_add(file_count);
-        issue_count = issue_count.saturating_add(issues_written);
-        progress.files_indexed = persisted_files;
-        on_progress(progress);
-
-        progress.phase = if cancelled {
-            ScanPhase::Cancelled
-        } else {
-            ScanPhase::Persisting
-        };
-        on_progress(progress);
-
-        let scan = self
-            .database
-            .finalize_consumer_scan(&ConsumerScanFinalization {
-                scan_id,
-                status: if cancelled {
-                    "cancelled".to_owned()
-                } else {
-                    "completed".to_owned()
-                },
-                files_discovered: progress.files_discovered,
-                files_indexed: persisted_files,
-                directories_discovered: progress.directories_discovered,
-                bytes_discovered: progress.bytes_discovered,
-                errors: progress.errors,
-                skipped_items: progress.skipped_items,
-                issue_count,
-                truncated: false,
-            })
-            .map_err(ApplicationError::Persistence)?;
-        progress.files_indexed = scan.indexed_count;
-        progress.phase = if cancelled {
-            ScanPhase::Cancelled
-        } else {
-            ScanPhase::Completed
-        };
-        on_progress(progress);
-        Ok(scan)
+            persisted_files,
+            issue_count,
+            progress,
+            cancelled,
+            on_progress,
+        )
     }
 
     fn persist_catalog_output(
@@ -770,6 +849,130 @@ impl ScannerApplicationService {
     }
 }
 
+const fn initial_consumer_progress(scan_id: ScanId) -> ScanProgress {
+    ScanProgress {
+        scan_id,
+        phase: ScanPhase::Discovering,
+        files_discovered: 0,
+        files_indexed: 0,
+        directories_discovered: 1,
+        bytes_discovered: 0,
+        files_hashed: 0,
+        errors: 0,
+        skipped_items: 0,
+        duplicate_groups: 0,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn inspect_and_queue_consumer_file(
+    platform: &dyn ReadOnlyPlatform,
+    workspace_id: WorkspaceId,
+    root_id: domain::RootId,
+    scan_id: ScanId,
+    root: &Path,
+    relative_path: &Path,
+    volume: &VolumeIdentity,
+    files: &mut Vec<ScanFileInput>,
+    issues: &mut Vec<ScanIssueInput>,
+    progress: &mut ScanProgress,
+) -> Result<(), ApplicationError> {
+    match inspect_consumer_metadata(platform, root, relative_path, volume) {
+        Ok(entry) => {
+            if entry.hidden {
+                progress.skipped_items = progress.skipped_items.saturating_add(1);
+                return Ok(());
+            }
+            progress.files_discovered = progress.files_discovered.saturating_add(1);
+            progress.bytes_discovered = progress.bytes_discovered.saturating_add(entry.byte_size);
+            if entry.cloud_placeholder {
+                issues.push(ScanIssueInput {
+                    relative_path: display_relative_path(relative_path),
+                    code: "cloud_placeholder".to_owned(),
+                    message: "cloud placeholder left in place; content was not hydrated".to_owned(),
+                    is_directory: false,
+                    is_error: false,
+                    skipped: true,
+                });
+                progress.skipped_items = progress.skipped_items.saturating_add(1);
+            } else {
+                files.push(metadata_scan_file_input(
+                    workspace_id,
+                    root_id,
+                    scan_id,
+                    entry,
+                )?);
+            }
+        }
+        Err(error) => {
+            let issue = scan_issue_for_platform_error(relative_path, &error);
+            if issue.is_error {
+                progress.errors = progress.errors.saturating_add(1);
+            }
+            progress.skipped_items = progress.skipped_items.saturating_add(1);
+            issues.push(issue);
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finalize_consumer_scan(
+    database: &Database,
+    workspace_id: WorkspaceId,
+    scan_id: ScanId,
+    files: &mut Vec<ScanFileInput>,
+    issues: &mut Vec<ScanIssueInput>,
+    mut persisted_files: u64,
+    mut issue_count: u64,
+    mut progress: ScanProgress,
+    cancelled: bool,
+    on_progress: &mut dyn FnMut(ScanProgress),
+) -> Result<ScanRecord, ApplicationError> {
+    let (file_count, issues_written) =
+        flush_consumer_batch(database, workspace_id, scan_id, files, issues)?;
+    persisted_files = persisted_files.saturating_add(file_count);
+    issue_count = issue_count.saturating_add(issues_written);
+    progress.files_indexed = persisted_files;
+    on_progress(progress);
+
+    progress.phase = if cancelled {
+        ScanPhase::Cancelled
+    } else {
+        ScanPhase::Persisting
+    };
+    on_progress(progress);
+
+    let scan = database
+        .finalize_consumer_scan(&ConsumerScanFinalization {
+            scan_id,
+            status: if cancelled {
+                "cancelled".to_owned()
+            } else {
+                "completed".to_owned()
+            },
+            files_discovered: progress.files_discovered,
+            files_indexed: persisted_files,
+            directories_discovered: progress.directories_discovered,
+            bytes_discovered: progress.bytes_discovered,
+            errors: progress.errors,
+            skipped_items: progress.skipped_items,
+            issue_count,
+            truncated: false,
+        })
+        .map_err(ApplicationError::Persistence)?;
+
+    progress.files_indexed = scan.indexed_count;
+    progress.phase = if cancelled {
+        ScanPhase::Cancelled
+    } else {
+        ScanPhase::Completed
+    };
+    on_progress(progress);
+    Ok(scan)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn flush_if_needed(
     database: &Database,
     workspace_id: WorkspaceId,
@@ -784,8 +987,8 @@ fn flush_if_needed(
     }
     let (file_count, issues_written) =
         flush_consumer_batch(database, workspace_id, scan_id, files, issues)?;
-    *persisted_files = persisted_files.saturating_add(file_count);
-    *issue_count = issue_count.saturating_add(issues_written);
+    *persisted_files = (*persisted_files).saturating_add(file_count);
+    *issue_count = (*issue_count).saturating_add(issues_written);
     Ok(())
 }
 
@@ -969,9 +1172,9 @@ fn display_relative_path(path: &Path) -> String {
     }
 }
 
-fn should_skip_consumer_directory(name: &OsStr) -> bool {
+fn should_skip_deep_index_directory(name: &OsStr) -> bool {
     let normalized = name.to_string_lossy().to_ascii_lowercase();
-    CONSUMER_EXCLUDED_DIRECTORY_NAMES
+    DEEP_INDEX_EXCLUDED_DIRECTORY_NAMES
         .iter()
         .any(|excluded| normalized == *excluded)
 }
@@ -1161,15 +1364,15 @@ mod tests {
 
     #[test]
     fn excludes_generated_dependency_directories_case_insensitively() {
-        assert!(should_skip_consumer_directory(OsStr::new("node_modules")));
-        assert!(should_skip_consumer_directory(OsStr::new("NODE_MODULES")));
-        assert!(should_skip_consumer_directory(OsStr::new("__pycache__")));
-        assert!(!should_skip_consumer_directory(OsStr::new("Clients")));
+        assert!(should_skip_deep_index_directory(OsStr::new("node_modules")));
+        assert!(should_skip_deep_index_directory(OsStr::new("NODE_MODULES")));
+        assert!(should_skip_deep_index_directory(OsStr::new("__pycache__")));
+        assert!(!should_skip_deep_index_directory(OsStr::new("Clients")));
     }
 
     #[test]
     fn music_is_a_standard_personal_root() {
-        assert!(is_standard_personal_root(Path::new("/Users/test/Music")));
-        assert!(is_standard_personal_root(Path::new("C:\\Users\\test\\Musique")));
+        assert!(is_standard_personal_root(Path::new("Music")));
+        assert!(is_standard_personal_root(Path::new("Musique")));
     }
 }
