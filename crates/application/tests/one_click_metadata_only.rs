@@ -117,22 +117,18 @@ fn consumer_scan_is_top_level_metadata_only_and_idempotent() {
     )
     .expect("nested fixture");
 
-    let database =
-        Arc::new(Database::open_in_memory(&DatabaseKey::from_bytes([61; 32])).expect("database"));
+    let database = Arc::new(
+        Database::open_in_memory(&DatabaseKey::from_bytes([61; 32])).expect("database"),
+    );
     let service = ScannerApplicationService::new(database, Arc::new(MetadataOnlyPlatform));
-    let workspace = service
-        .create_workspace("metadata-only")
-        .expect("workspace");
+    let workspace = service.create_workspace("metadata-only").expect("workspace");
     let first_root = service
         .register_root(workspace.id, temp.path())
         .expect("first registration");
     let second_root = service
         .register_root(workspace.id, temp.path())
         .expect("idempotent registration");
-    assert_eq!(
-        first_root.id, second_root.id,
-        "same path must reuse the root"
-    );
+    assert_eq!(first_root.id, second_root.id, "same path must reuse the root");
 
     let mut progress_events = 0_u64;
     let scan = service
@@ -142,28 +138,14 @@ fn consumer_scan_is_top_level_metadata_only_and_idempotent() {
         .expect("consumer metadata scan");
 
     assert_eq!(scan.indexed_count, 2, "nested file must not be scanned");
-    assert_eq!(
-        scan.hashed_count, 0,
-        "one-click must not hash during discovery"
-    );
-    assert!(
-        !scan.truncated,
-        "small fixture must finish inside the bound"
-    );
+    assert_eq!(scan.hashed_count, 0, "one-click must not hash during discovery");
+    assert!(!scan.truncated, "small fixture must finish inside the bound");
     assert!(progress_events >= 4, "scan must visibly report progress");
 
     let files = service
         .scan_files(scan.id, InventorySort::Filename, false, 100, 0)
         .expect("scan files");
     assert_eq!(files.len(), 2);
-    assert!(
-        files
-            .iter()
-            .all(|file| file.hashing_status == "not_candidate")
-    );
-    assert!(
-        files
-            .iter()
-            .all(|file| !file.relative_path.contains("AlreadySorted"))
-    );
+    assert!(files.iter().all(|file| file.hashing_status == "not_candidate"));
+    assert!(files.iter().all(|file| !file.relative_path.contains("AlreadySorted")));
 }
