@@ -72,11 +72,11 @@ jobs:
           test -x "$APP/Contents/MacOS/operation-executor"
           codesign --verify --deep --strict "$APP"
           file "$APP/Contents/MacOS/operation-executor"
-          echo "ZEMO_PACKAGED_APP=$APP" >> "$GITHUB_ENV"
+          echo "WORKING_NAME_PACKAGED_APP=$APP" >> "$GITHUB_ENV"
 
       - name: Run packaged sidecar authentication and physical Apply tests
         run: |
-          test -d "$ZEMO_PACKAGED_APP"
+          test -d "$WORKING_NAME_PACKAGED_APP"
           cargo test -p desktop --lib packaged_macos_apply -- --ignored --nocapture --test-threads=1
 
       - name: Package private beta
@@ -85,7 +85,7 @@ jobs:
           set -euo pipefail
           chmod +x scripts/macos-ci/package-macos-beta.sh
           scripts/macos-ci/package-macos-beta.sh \
-            "$ZEMO_PACKAGED_APP" \
+            "$WORKING_NAME_PACKAGED_APP" \
             "target/macos-private-beta/dist" \
             "$ZEMO_DIST_TAG" \
             "$GITHUB_SHA"
@@ -118,5 +118,5 @@ jobs:
           echo "- Tag: \`$ZEMO_DIST_TAG\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Signing: ad-hoc only" >> "$GITHUB_STEP_SUMMARY"
           echo "- Notarization: not configured" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Packaged sidecar authentication + physical Apply/Undo: tested before packaging" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Packaged sidecar authentication + physical Apply/Undo: required before packaging" >> "$GITHUB_STEP_SUMMARY"
           echo "- Artifact retention: 30 days" >> "$GITHUB_STEP_SUMMARY"
