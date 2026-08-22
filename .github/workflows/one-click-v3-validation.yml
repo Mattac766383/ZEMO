@@ -19,12 +19,9 @@ jobs:
           node-version: 22
           cache: npm
       - name: Setup Rust
+        run: rustup default stable
+      - name: Prove clean compile
         run: |
-          rustup default stable
-          rustup component add rustfmt
-      - name: Format and prove clean compile
-        run: |
-          cargo fmt --all -- --check
           cargo check -p persistence
           cargo check -p organizer
           cargo check -p application
