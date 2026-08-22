@@ -22,14 +22,15 @@ export type BetaMetricEntry = {
 
 const STORAGE_KEY = "zemo.beta.metrics.v1";
 const MAX_ENTRIES = 200;
-const EVENTS: ReadonlySet<BetaMetricEvent> = new Set([
+const EVENTS: readonly BetaMetricEvent[] = [
   "onboarding_completed",
   "organization_started",
   "organization_completed",
   "undo_completed",
   "search_opened",
   "ui_crash",
-]);
+];
+const EVENT_SET: ReadonlySet<BetaMetricEvent> = new Set(EVENTS);
 
 function getStorage(): Storage | null {
   if (typeof window === "undefined") {
@@ -62,7 +63,7 @@ function parseEntries(raw: string | null): BetaMetricEntry[] {
       return Boolean(
         entry &&
           typeof entry === "object" &&
-          EVENTS.has(entry.event as BetaMetricEvent) &&
+          EVENT_SET.has(entry.event as BetaMetricEvent) &&
           typeof entry.at === "string",
       );
     });
@@ -123,6 +124,34 @@ export function readBetaMetrics(): BetaMetricEntry[] {
   } catch {
     return [];
   }
+}
+
+export function buildBetaDiagnosticText(
+  entries: BetaMetricEntry[] = readBetaMetrics(),
+): string {
+  const counts = new Map<BetaMetricEvent, number>(
+    EVENTS.map((event) => [event, 0]),
+  );
+  let filesOrganized = 0;
+
+  for (const entry of entries) {
+    counts.set(entry.event, (counts.get(entry.event) ?? 0) + 1);
+    if (entry.event === "organization_completed") {
+      filesOrganized += entry.count ?? 0;
+    }
+  }
+
+  return [
+    "ZEMO beta diagnostic v1",
+    `events=${entries.length}`,
+    `onboarding_completed=${counts.get("onboarding_completed") ?? 0}`,
+    `organization_started=${counts.get("organization_started") ?? 0}`,
+    `organization_completed=${counts.get("organization_completed") ?? 0}`,
+    `files_organized=${filesOrganized}`,
+    `undo_completed=${counts.get("undo_completed") ?? 0}`,
+    `search_opened=${counts.get("search_opened") ?? 0}`,
+    `ui_crash=${counts.get("ui_crash") ?? 0}`,
+  ].join("\n");
 }
 
 export function clearBetaMetrics(): void {
