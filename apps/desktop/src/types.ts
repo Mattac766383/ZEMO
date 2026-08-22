@@ -1182,10 +1182,10 @@ export interface MonitoringExclusion {
 
 export interface MonitoringDashboard {
   workspaceId: Identifier;
-  mode: "PRUDENT" | (string & Record<never, never>);
+  mode: "PRUDENT" | "AUTOMATIC" | "RULES" | (string & Record<never, never>);
   paused: boolean;
   startupReconciliationPending: boolean;
-  automaticExecutionEnabled: false;
+  automaticExecutionEnabled: boolean;
   folders: MonitoredFolder[];
   counts: MonitoringCounts;
   recentActivity: MonitoringActivity[];

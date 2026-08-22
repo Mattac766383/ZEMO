@@ -27,8 +27,8 @@ use catalog::{ScanPhase, ScanProgress};
 use domain::{
     ExecutionDetail, ExecutionId, ExecutionProgress, ExecutionSession, FileId,
     OrganizationProposal, OrganizationProposalOperation, OrganizationProposalStatus, ProposalId,
-    ProposalOverrideAction, RecoveryAssessment, RootId, RuleId, RuleSuggestionId, ScanId,
-    VirtualProposalNode, WorkspaceId,
+    ProposalOperationKind, ProposalOverrideAction, RecoveryAssessment, RootId, RuleId,
+    RuleSuggestionId, ScanId, VirtualProposalNode, WorkspaceId,
 };
 use extraction::LocalExtractionEngine;
 use ipc_contracts::executor_v2::{ROOT_AUTHORITY_SECRET_NAME, ROOT_AUTHORITY_SECRET_SERVICE};
@@ -37,23 +37,22 @@ use ipc_contracts::{
     DuplicateGroupDto, EmbeddingModelStatusDto, EmbeddingSearchStatusDto, ExecutionDetailDto,
     ExecutionOperationDto, ExecutionProgressDto, ExecutionSessionDto, ExecutionSummaryDto,
     ExecutorRequestFactDto, ExecutorSessionFactDto, ExtractionRetryDto, FileReviewItemDto,
-    FileReviewPageDto, IdentityAuditEventDto, IdentityCandidateDto, IdentityDetailDto,
-    IdentityIdentifierDto, IdentityMatchEvidenceDto, IdentityMutationDto, IdentityOccurrenceDto,
-    IdentityRelationshipDto, IdentityResolutionDto, IdentityResolutionProgressDto,
-    IdentityReviewGroupDto, IdentityReviewPageDto, IdentitySummaryDto, JournalDiagnosticDto,
-    JournalDiagnosticStateDto, LocalFileDetailDto, LocalRuleDto, LocalRuleInputDto,
-    LocalSearchPageDto, LocalSearchQueryDto, LocalSearchResultDto, MonitoredFolderDto,
-    MonitoringActivityDto, MonitoringCountsDto, MonitoringDashboardDto, MonitoringExclusionDto,
-    OrganizationOperationDto, OrganizationPreferencesDto, OrganizationProposalChangeDto,
-    OrganizationProposalDto, OrganizationProposalProgressDto, OrganizationProposalSummaryDto,
-    OrganizationReasonDto, QueryChipDto, RecoveryAssessmentDto, RecoveryItemDto,
-    FolderAccessProbeDto, RegisterUserContentRootResultDto, RegisteredRootDto,
-    RestoredWorkspaceSessionDto,
-    RuleSuggestionDto, RulesPreferencesStateDto, ScanFileDto, ScanIssueDto, ScanProgressDto,
-    ScanResultDto, SearchTimingsDto, SemanticAnalysisDetailDto, SemanticAnalysisDto,
-    SemanticAnalysisProgressDto, SemanticCandidateValueDto, SemanticCorrectionDto,
-    SemanticEntityDto, SemanticEvidenceDto, SemanticFieldDto, SystemStatusDto,
-    UserContentLocationDto, VirtualProposalNodeDto, WorkspaceDto,
+    FileReviewPageDto, FolderAccessProbeDto, IdentityAuditEventDto, IdentityCandidateDto,
+    IdentityDetailDto, IdentityIdentifierDto, IdentityMatchEvidenceDto, IdentityMutationDto,
+    IdentityOccurrenceDto, IdentityRelationshipDto, IdentityResolutionDto,
+    IdentityResolutionProgressDto, IdentityReviewGroupDto, IdentityReviewPageDto,
+    IdentitySummaryDto, JournalDiagnosticDto, JournalDiagnosticStateDto, LocalFileDetailDto,
+    LocalRuleDto, LocalRuleInputDto, LocalSearchPageDto, LocalSearchQueryDto, LocalSearchResultDto,
+    MonitoredFolderDto, MonitoringActivityDto, MonitoringCountsDto, MonitoringDashboardDto,
+    MonitoringExclusionDto, OrganizationOperationDto, OrganizationPreferencesDto,
+    OrganizationProposalChangeDto, OrganizationProposalDto, OrganizationProposalProgressDto,
+    OrganizationProposalSummaryDto, OrganizationReasonDto, QueryChipDto, RecoveryAssessmentDto,
+    RecoveryItemDto, RegisterUserContentRootResultDto, RegisteredRootDto,
+    RestoredWorkspaceSessionDto, RuleSuggestionDto, RulesPreferencesStateDto, ScanFileDto,
+    ScanIssueDto, ScanProgressDto, ScanResultDto, SearchTimingsDto, SemanticAnalysisDetailDto,
+    SemanticAnalysisDto, SemanticAnalysisProgressDto, SemanticCandidateValueDto,
+    SemanticCorrectionDto, SemanticEntityDto, SemanticEvidenceDto, SemanticFieldDto,
+    SystemStatusDto, UserContentLocationDto, VirtualProposalNodeDto, WorkspaceDto,
 };
 use knowledge::DeterministicSemanticProvider;
 use operations::{ApplyGate, ExecutionSafetyPolicy, FileJournal, JournalKey};
@@ -63,10 +62,10 @@ use persistence::{
     IdentityDetailRecord, IdentityIdentifierRecord, IdentityMatchEvidenceRecord,
     IdentityMutationRecord, IdentityOccurrenceRecord, IdentityRelationshipRecord,
     IdentityResolverRunRecord, IdentityReviewGroupRecord, IdentityReviewPageRecord,
-    IdentitySummaryRecord, InventorySort, MonitoringExclusionKind, ReviewAction, ReviewItemRecord,
-    ReviewReasonFilter, ReviewStatusFilter, ScanRecord, SemanticAnalysisBatchRecord,
-    SemanticAnalysisDetailRecord, SemanticCandidateValueRecord, SemanticCorrectionRecord,
-    SemanticEntityRecord, SemanticEvidenceRecord, SemanticFieldRecord,
+    IdentitySummaryRecord, InventorySort, MonitoringExclusionKind, MonitoringMode, ReviewAction,
+    ReviewItemRecord, ReviewReasonFilter, ReviewStatusFilter, ScanRecord,
+    SemanticAnalysisBatchRecord, SemanticAnalysisDetailRecord, SemanticCandidateValueRecord,
+    SemanticCorrectionRecord, SemanticEntityRecord, SemanticEvidenceRecord, SemanticFieldRecord,
 };
 use platform::{PlatformError, ReadOnlyPlatform, SecretStore};
 use privacy::OsSecretStore;
@@ -179,6 +178,65 @@ async fn get_monitoring_dashboard(
             .map(monitoring_dashboard_dto)
     })
     .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn set_monitoring_mode(
+    state: State<'_, ManagedScanner>,
+    workspace_id: String,
+    mode: String,
+) -> Result<MonitoringDashboardDto, String> {
+    let workspace_id = parse_workspace_id(&workspace_id).map_err(command_error)?;
+    let requested = match mode.as_str() {
+        "PRUDENT" => MonitoringMode::Prudent,
+        "AUTOMATIC" => MonitoringMode::Automatic,
+        _ => return Err("Mode de surveillance inconnu.".to_owned()),
+    };
+
+    if requested == MonitoringMode::Automatic {
+        let dashboard = state
+            .service
+            .monitoring_dashboard(workspace_id)
+            .map_err(command_error)?;
+        if dashboard.state.startup_reconciliation_pending || dashboard.counts.pending_jobs > 0 {
+            return Err(
+                "Terminez d’abord la mise à jour des dossiers surveillés avant d’activer le rangement automatique."
+                    .to_owned(),
+            );
+        }
+        let execution = state
+            .execution_service
+            .system_status()
+            .map_err(command_error)?;
+        if !execution.apply_gate.enabled || execution.recovery_required || execution.journal_locked
+        {
+            return Err(
+                "Le rangement automatique reste désactivé tant que l’application sécurisée ou la récupération n’est pas prête."
+                    .to_owned(),
+            );
+        }
+        if !show_native_automatic_monitoring_confirmation() {
+            return Ok(monitoring_dashboard_dto(dashboard));
+        }
+    }
+
+    state
+        .service
+        .set_monitoring_mode(workspace_id, requested)
+        .map(monitoring_dashboard_dto)
+        .map_err(command_error)
+}
+
+fn show_native_automatic_monitoring_confirmation() -> bool {
+    rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Warning)
+        .set_title("Activer le rangement automatique ?")
+        .set_description(
+            "ZEMO pourra déplacer ou renommer automatiquement les nouveaux fichiers seulement lorsque la confiance est d’au moins 92 %.\n\nLes fichiers ambigus, instables ou en conflit restent dans À vérifier. Aucun fichier existant n’est remplacé. Chaque Apply reste journalisé et peut être annulé lorsque le rollback est disponible.",
+        )
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        == rfd::MessageDialogResult::Yes
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -433,15 +491,14 @@ fn describe_platform_inspect_error(
             error.to_string(),
             state,
         ),
-        PlatformError::PermissionDenied => {
-            (Some(13), "PermissionDenied".to_owned(), error.to_string(), state)
-        }
-        PlatformError::ReparsePoint => {
-            (None, "ReparsePoint".to_owned(), error.to_string(), state)
-        }
-        PlatformError::SourceMissing => {
-            (Some(2), "NotFound".to_owned(), error.to_string(), state)
-        }
+        PlatformError::PermissionDenied => (
+            Some(13),
+            "PermissionDenied".to_owned(),
+            error.to_string(),
+            state,
+        ),
+        PlatformError::ReparsePoint => (None, "ReparsePoint".to_owned(), error.to_string(), state),
+        PlatformError::SourceMissing => (Some(2), "NotFound".to_owned(), error.to_string(), state),
         other => (None, format!("{other:?}"), other.to_string(), state),
     }
 }
@@ -599,7 +656,11 @@ async fn register_user_content_root(
             .ok_or_else(|| "Emplacement utilisateur inconnu.".to_owned())?;
         let probe = enrich_probe(folder_access::probe_kind(kind, store.as_deref()));
         if !probe.can_scan() {
-            return Ok(register_result_from_probe(&probe, None, &probe.access_state));
+            return Ok(register_result_from_probe(
+                &probe,
+                None,
+                &probe.access_state,
+            ));
         }
         let path = probe
             .resolved_path_buf()
@@ -2184,7 +2245,7 @@ fn monitoring_dashboard_dto(dashboard: MonitoringDashboard) -> MonitoringDashboa
         mode: dashboard.state.mode.database_name().to_owned(),
         paused: dashboard.state.paused,
         startup_reconciliation_pending: dashboard.state.startup_reconciliation_pending,
-        automatic_execution_enabled: false,
+        automatic_execution_enabled: !dashboard.proposal_only,
         folders: dashboard
             .roots
             .into_iter()
@@ -3548,8 +3609,66 @@ fn load_or_create_executor_root(secret_store: &OsSecretStore) -> Result<[u8; 32]
     Ok(root)
 }
 
+const AUTOMATIC_EXECUTION_THRESHOLD: f32 = 0.92;
+
+fn automatic_proposal_is_eligible(proposal: &OrganizationProposal) -> bool {
+    if proposal.status != OrganizationProposalStatus::ReadyForReview {
+        return false;
+    }
+    let candidates = proposal
+        .operations
+        .iter()
+        .filter(|operation| {
+            matches!(
+                operation.operation_kind,
+                ProposalOperationKind::MoveProposal | ProposalOperationKind::RenameProposal
+            )
+        })
+        .collect::<Vec<_>>();
+    if candidates.len() != 1 {
+        return false;
+    }
+    let operation = candidates[0];
+    operation.confidence_score >= AUTOMATIC_EXECUTION_THRESHOLD
+        && !operation.needs_review
+        && !operation.stale
+        && !operation.conflict_state.requires_review()
+}
+
+fn try_run_automatic_execution(
+    scanner: &ScannerApplicationService,
+    execution: &ExecutionApplicationService,
+    proposal: OrganizationProposal,
+) -> Result<(), ApplicationError> {
+    if !automatic_proposal_is_eligible(&proposal) {
+        return Ok(());
+    }
+    let status = execution.system_status()?;
+    if !status.apply_gate.enabled || status.recovery_required || status.journal_locked {
+        return Ok(());
+    }
+
+    let approved = scanner.set_organization_proposal_status(
+        proposal.id,
+        OrganizationProposalStatus::ApprovedForFutureApply,
+    )?;
+    let prepared = execution.prepare_execution(approved.id, approved.revision)?;
+    let execution_id = prepared.session.id;
+    let result = (|| {
+        let challenge = execution.create_execution_consent_challenge(execution_id, None)?;
+        execution.finalize_execution_consent(challenge)?;
+        execution.start_execution(execution_id, &mut |_| {})?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = execution.cancel_execution(execution_id);
+    }
+    result
+}
+
 fn start_monitoring_loop(
     service: Arc<ScannerApplicationService>,
+    execution: Arc<ExecutionApplicationService>,
     cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 ) -> Result<(), io::Error> {
     if let Err(error) = service.restore_monitoring_runtime() {
@@ -3578,9 +3697,26 @@ fn start_monitoring_loop(
                     if !registered {
                         continue;
                     }
-                    let _ = service.run_monitoring_cycle(workspace_id, &|| {
+                    let before = service
+                        .latest_organization_proposal(workspace_id)
+                        .ok()
+                        .map(|proposal| proposal.id);
+                    let startup_was_pending = service
+                        .monitoring_dashboard(workspace_id)
+                        .ok()
+                        .is_some_and(|dashboard| dashboard.state.startup_reconciliation_pending);
+                    let cycle = service.run_monitoring_cycle(workspace_id, &|| {
                         cancellation.load(Ordering::Relaxed)
                     });
+                    if let Ok(dashboard) = cycle
+                        && dashboard.state.mode == MonitoringMode::Automatic
+                        && !startup_was_pending
+                        && !cancellation.load(Ordering::Relaxed)
+                        && let Ok(proposal) = service.latest_organization_proposal(workspace_id)
+                        && Some(proposal.id) != before
+                    {
+                        let _ = try_run_automatic_execution(&service, &execution, proposal);
+                    }
                     if let Ok(mut registry) = cancellations.lock() {
                         registry.remove(&registry_key);
                     }
@@ -3752,7 +3888,11 @@ pub fn run() {
         .setup(|app| {
             let services = initialize_application(app)?;
             let monitoring_cancellations = Arc::new(Mutex::new(HashMap::new()));
-            start_monitoring_loop(services.scanner.clone(), monitoring_cancellations.clone())?;
+            start_monitoring_loop(
+                services.scanner.clone(),
+                services.execution.clone(),
+                monitoring_cancellations.clone(),
+            )?;
             #[cfg(debug_assertions)]
             run_packaged_nsopenpanel_qualification(app, &services.scanner)?;
             app.manage(ManagedScanner {
@@ -3774,6 +3914,7 @@ pub fn run() {
             get_system_status,
             restore_workspace_session,
             get_monitoring_dashboard,
+            set_monitoring_mode,
             pause_monitoring,
             resume_monitoring,
             set_monitored_folder_enabled,

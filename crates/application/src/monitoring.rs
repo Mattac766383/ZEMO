@@ -33,6 +33,8 @@ const STABILITY_RECHECK_MS: i64 = 1_000;
 const RETRY_BASE_MS: i64 = 1_000;
 const MAXIMUM_ATTEMPTS: u8 = 8;
 const MAXIMUM_JOB_BATCH: usize = 500;
+const AUTOMATIC_JOB_BATCH: usize = 1;
+pub(crate) const AUTOMATIC_CONFIDENCE_THRESHOLD: f32 = 0.92;
 const ACTIVITY_LIMIT: usize = 40;
 
 /// Runtime-only handles. Durable monitoring state and queued work always live
@@ -137,6 +139,7 @@ impl ScannerApplicationService {
     ) -> Result<MonitoringDashboard, ApplicationError> {
         self.ensure_monitoring_configuration(workspace_id)?;
         let state = self.database.get_workspace_monitoring_state(workspace_id)?;
+        let proposal_only = state.mode != MonitoringMode::Automatic;
         let roots = self.database.list_monitored_roots(workspace_id)?;
         let counts = self.database.monitoring_dashboard_counts(workspace_id)?;
         let activity = self
@@ -150,8 +153,19 @@ impl ScannerApplicationService {
             activity,
             exclusions,
             local_only: true,
-            proposal_only: true,
+            proposal_only,
         })
+    }
+
+    pub fn set_monitoring_mode(
+        &self,
+        workspace_id: WorkspaceId,
+        mode: MonitoringMode,
+    ) -> Result<MonitoringDashboard, ApplicationError> {
+        self.ensure_monitoring_configuration(workspace_id)?;
+        self.database
+            .set_workspace_monitoring_mode(workspace_id, mode)?;
+        self.monitoring_dashboard(workspace_id)
     }
 
     pub fn pause_monitoring(
@@ -277,7 +291,7 @@ impl ScannerApplicationService {
         let _cycle = self.monitoring.cycle.lock();
         self.ensure_monitoring_configuration(workspace_id)?;
         let state = self.database.get_workspace_monitoring_state(workspace_id)?;
-        if state.mode != MonitoringMode::Prudent || state.paused || is_cancelled() {
+        if state.paused || is_cancelled() {
             return self.monitoring_dashboard(workspace_id);
         }
 
@@ -957,9 +971,18 @@ impl ScannerApplicationService {
                     .map(|exclusions| (*root_id, exclusions))
             })
             .collect::<Result<HashMap<_, _>, _>>()?;
+        let mode = self
+            .database
+            .get_workspace_monitoring_state(workspace_id)?
+            .mode;
+        let batch_limit = if mode == MonitoringMode::Automatic {
+            AUTOMATIC_JOB_BATCH
+        } else {
+            MAXIMUM_JOB_BATCH
+        };
         let due_ids = self
             .database
-            .list_due_monitoring_jobs_for_workspace(workspace_id, now, MAXIMUM_JOB_BATCH)?
+            .list_due_monitoring_jobs_for_workspace(workspace_id, now, batch_limit)?
             .into_iter()
             .filter(|job| roots.contains_key(&job.root_id))
             .map(|job| job.id)
@@ -1438,30 +1461,42 @@ impl ScannerApplicationService {
             .collect::<Vec<_>>();
         let deleted_file_ids =
             self.deleted_proposal_file_ids(root.workspace_id, root.root_id, jobs)?;
+        let monitoring_mode = self
+            .database
+            .get_workspace_monitoring_state(root.workspace_id)?
+            .mode;
         let has_current = self
             .database
             .current_organization_proposal_id_for_root(root.workspace_id, root.root_id)?
             .is_some();
-        let proposal =
-            if has_current && (!dirty_file_ids.is_empty() || !deleted_file_ids.is_empty()) {
-                self.update_organization_proposal_incrementally(
-                    root.workspace_id,
-                    root.root_id,
-                    &dirty_file_ids,
-                    &deleted_file_ids,
-                    is_cancelled,
-                    &mut |_| {},
-                )?
-                .proposal
-            } else {
-                self.generate_organization_proposal_for_root(
-                    root.workspace_id,
-                    root.root_id,
-                    has_current,
-                    is_cancelled,
-                    &mut |_| {},
-                )?
-            };
+        let proposal = if monitoring_mode == MonitoringMode::Automatic && !dirty_file_ids.is_empty()
+        {
+            self.generate_automatic_monitoring_proposal_for_files(
+                root.workspace_id,
+                root.root_id,
+                &dirty_file_ids,
+                is_cancelled,
+                &mut |_| {},
+            )?
+        } else if has_current && (!dirty_file_ids.is_empty() || !deleted_file_ids.is_empty()) {
+            self.update_organization_proposal_incrementally(
+                root.workspace_id,
+                root.root_id,
+                &dirty_file_ids,
+                &deleted_file_ids,
+                is_cancelled,
+                &mut |_| {},
+            )?
+            .proposal
+        } else {
+            self.generate_organization_proposal_for_root(
+                root.workspace_id,
+                root.root_id,
+                has_current,
+                is_cancelled,
+                &mut |_| {},
+            )?
+        };
         if is_cancelled() || proposal.status == OrganizationProposalStatus::Cancelled {
             self.cancel_monitoring_jobs(jobs)?;
             return Ok(BatchOutcome {
@@ -1476,13 +1511,18 @@ impl ScannerApplicationService {
             .iter()
             .map(|file| file.file_id.clone())
             .collect::<HashSet<_>>();
+        let confidence_threshold = if monitoring_mode == MonitoringMode::Automatic {
+            AUTOMATIC_CONFIDENCE_THRESHOLD
+        } else {
+            0.80
+        };
         let ready_from_proposal = proposal
             .operations
             .iter()
             .filter(|operation| {
                 persisted_file_ids.contains(&operation.file_id.to_string())
                     && !operation.needs_review
-                    && operation.confidence_score >= 0.80
+                    && operation.confidence_score >= confidence_threshold
             })
             .count();
         let review_from_proposal = proposal
@@ -1490,7 +1530,7 @@ impl ScannerApplicationService {
             .iter()
             .filter(|operation| {
                 persisted_file_ids.contains(&operation.file_id.to_string())
-                    && (operation.needs_review || operation.confidence_score < 0.80)
+                    && (operation.needs_review || operation.confidence_score < confidence_threshold)
             })
             .count();
         let mut outcome = BatchOutcome {

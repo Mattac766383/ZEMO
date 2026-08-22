@@ -144,6 +144,81 @@ impl ScannerApplicationService {
         )
     }
 
+    pub fn generate_automatic_monitoring_proposal_for_files(
+        &self,
+        workspace_id: WorkspaceId,
+        root_id: RootId,
+        file_ids: &[FileId],
+        is_cancelled: &(dyn Fn() -> bool + Sync),
+        on_progress: &mut dyn FnMut(ProposalBuildProgress),
+    ) -> Result<OrganizationProposal, ApplicationError> {
+        if file_ids.is_empty() {
+            return Err(ApplicationError::InvalidOrganizationProposal);
+        }
+        let source =
+            self.database
+                .organization_source_for_files(workspace_id, root_id, file_ids)?;
+        let mut preferences = self.database.organization_preferences(workspace_id)?;
+        preferences.review_threshold = preferences
+            .review_threshold
+            .max(crate::monitoring::AUTOMATIC_CONFIDENCE_THRESHOLD);
+        let rules = self.database.rules(workspace_id)?;
+        let now = now_iso();
+        let inputs = source
+            .files
+            .into_iter()
+            .map(|source| source_input(source, &rules))
+            .collect::<Result<Vec<_>, _>>()?;
+        let matches = inputs
+            .iter()
+            .flat_map(|input| {
+                input
+                    .rule_evaluation
+                    .matched_rules
+                    .iter()
+                    .map(move |matched| RuleFileMatch {
+                        rule_id: matched.id,
+                        workspace_id,
+                        file_id: input.file_id,
+                        boost: 0.15,
+                        explanation: format!("Matched your rule: {}", matched.explanation.trim()),
+                    })
+            })
+            .collect::<Vec<_>>();
+        self.database
+            .replace_rule_file_matches_for_files(workspace_id, file_ids, &matches)?;
+        let outcome = LocalOrganizationProposalEngine.build_with_mode(
+            OrganizationBuildRequest {
+                proposal_id: ProposalId::new(),
+                revision_id: OrganizationRevisionId::new(),
+                workspace_id,
+                root_id: source.root_id,
+                source_scan_id: source.scan_id,
+                revision: 1,
+                created_at: now.clone(),
+                updated_at: now,
+                source_semantic_version: source.semantic_version,
+                source_relationship_version: source.relationship_version,
+                preferences,
+                inputs,
+                overrides: Vec::new(),
+                previous_operations: Vec::new(),
+                consumer_mode: false,
+                consumer_root_kind: consumer_root_kind(self, workspace_id, root_id),
+            },
+            is_cancelled,
+            on_progress,
+        );
+        self.database.persist_organization_proposal_with_meta(
+            &outcome.proposal,
+            "automatic_monitoring",
+            outcome.rebuild_mode.database_name(),
+            Some("single_new_file_batch"),
+            outcome.dirty_file_count,
+        )?;
+        Ok(outcome.proposal)
+    }
+
     pub fn latest_organization_proposal(
         &self,
         workspace_id: WorkspaceId,

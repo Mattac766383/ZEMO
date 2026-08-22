@@ -22,6 +22,7 @@ vi.mock("./api", () => ({
   removeMonitoringExclusion: vi.fn(),
   resumeMonitoring: vi.fn(),
   runMonitoringCycle: vi.fn(),
+  setMonitoringMode: vi.fn(),
   setMonitoredFolderEnabled: vi.fn(),
 }));
 
@@ -111,6 +112,7 @@ describe("Milestone 10 monitoring dashboard", () => {
     vi.mocked(api.addMonitoringExclusion).mockResolvedValue(undefined);
     vi.mocked(api.removeMonitoringExclusion).mockResolvedValue(undefined);
     vi.mocked(api.runMonitoringCycle).mockResolvedValue(copyDashboard());
+    vi.mocked(api.setMonitoringMode).mockResolvedValue(copyDashboard());
     vi.mocked(api.cancelMonitoring).mockResolvedValue(undefined);
   });
 
@@ -213,6 +215,35 @@ describe("Milestone 10 monitoring dashboard", () => {
         .getByLabelText("État du dossier : Watching")
         .classList.contains("ready"),
     ).toBe(true);
+  });
+
+
+  it("enables automatic organization explicitly and explains the 92 percent gate", async () => {
+    const automatic = copyDashboard({
+      mode: "AUTOMATIC",
+      automaticExecutionEnabled: true,
+      counts: { pendingJobs: 0 },
+    });
+    vi.mocked(api.setMonitoringMode).mockResolvedValue(automatic);
+
+    render(<MonitoringView workspaceId="workspace-10" />);
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Activer le rangement automatique",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(api.setMonitoringMode).toHaveBeenCalledWith(
+        "workspace-10",
+        "AUTOMATIC",
+      );
+    });
+    expect(await screen.findByText("Rangement automatique actif")).toBeTruthy();
+    expect(screen.getByText(/92 % de confiance/i)).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Revenir au mode prudent" }),
+    ).toBeTruthy();
   });
 
   it("pauses and resumes global monitoring", async () => {

@@ -13,6 +13,7 @@ import {
   removeMonitoringExclusion,
   resumeMonitoring,
   runMonitoringCycle,
+  setMonitoringMode,
   setMonitoredFolderEnabled,
 } from "./api";
 import { classifyUserError } from "./errors";
@@ -242,8 +243,9 @@ export function MonitoringView({
 
   const visibleDashboard =
     dashboard?.workspaceId === workspaceId ? dashboard : null;
+  const automaticMode = visibleDashboard?.mode === "AUTOMATIC";
   const safetyInvariantFailed =
-    visibleDashboard?.automaticExecutionEnabled !== undefined &&
+    visibleDashboard?.mode === "PRUDENT" &&
     visibleDashboard.automaticExecutionEnabled !== false;
 
   return (
@@ -257,9 +259,9 @@ export function MonitoringView({
           <span className="eyebrow">Surveillance locale</span>
           <h2 id="monitoring-title">Surveillance</h2>
           <p>
-            Détecte les nouveaux fichiers dans les dossiers choisis et prépare
-            de nouvelles propositions. Les fichiers ne sont pas déplacés
-            automatiquement.
+            {automaticMode
+              ? "Détecte chaque nouveau fichier et le range automatiquement uniquement quand ZEMO est très sûr de son choix."
+              : "Détecte les nouveaux fichiers dans les dossiers choisis et prépare de nouvelles propositions. Les fichiers ne sont pas déplacés automatiquement."}
           </p>
         </div>
         {visibleDashboard ? (
@@ -273,11 +275,25 @@ export function MonitoringView({
       </header>
 
       <div className="monitoring-safety" role="status">
-        <strong>Surveillance = propositions uniquement</strong>
-        <p>
-          La surveillance prépare des propositions d’organisation. Elle ne
-          déplace, ne renomme ni ne supprime jamais de fichiers automatiquement.
-        </p>
+        {automaticMode ? (
+          <>
+            <strong>Rangement automatique actif</strong>
+            <p>
+              Seuls les nouveaux fichiers à au moins 92 % de confiance, stables
+              et sans conflit sont rangés automatiquement. Les autres restent
+              dans À vérifier. Chaque Apply passe par le journal sécurisé et
+              reste annulable lorsque le rollback est disponible.
+            </p>
+          </>
+        ) : (
+          <>
+            <strong>Surveillance = propositions uniquement</strong>
+            <p>
+              La surveillance prépare des propositions d’organisation. Elle ne
+              déplace, ne renomme ni ne supprime jamais de fichiers automatiquement.
+            </p>
+          </>
+        )}
       </div>
 
       {safetyInvariantFailed ? (
@@ -324,6 +340,25 @@ export function MonitoringView({
           ) : null}
 
           <div className="monitoring-controls">
+            <button
+              type="button"
+              className={automaticMode ? undefined : "primary-action"}
+              disabled={busy !== null || visibleDashboard.startupReconciliationPending}
+              onClick={() =>
+                void performAction("mode", () =>
+                  setMonitoringMode(
+                    workspaceId,
+                    automaticMode ? "PRUDENT" : "AUTOMATIC",
+                  ),
+                )
+              }
+            >
+              {busy === "mode"
+                ? "Mise à jour…"
+                : automaticMode
+                  ? "Revenir au mode prudent"
+                  : "Activer le rangement automatique"}
+            </button>
             <button
               type="button"
               disabled={busy !== null}
