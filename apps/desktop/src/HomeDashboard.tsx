@@ -5,6 +5,7 @@ import type {
   ScanResult,
   SystemStatus,
 } from "./types";
+import { recordBetaMetric } from "./betaMetrics";
 
 export type AppDestination =
   | "home"
@@ -187,6 +188,11 @@ export function HomeDashboard({
     organized,
   });
 
+  function startOrganization() {
+    recordBetaMetric("organization_started");
+    onPrimaryAction(action);
+  }
+
   if (loading) {
     return (
       <section className="home-dashboard home-dashboard--simple" aria-labelledby="home-title">
@@ -207,12 +213,18 @@ export function HomeDashboard({
         <button
           type="button"
           className="primary home-primary-cta"
-          onClick={() => onPrimaryAction(action)}
+          onClick={startOrganization}
         >
           Relancer le rangement
         </button>
         <div className="home-secondary-actions">
-          <button type="button" onClick={() => onNavigate("search")}>
+          <button
+            type="button"
+            onClick={() => {
+              recordBetaMetric("search_opened");
+              onNavigate("search");
+            }}
+          >
             Recherche
           </button>
           <button type="button" onClick={() => onNavigate("monitoring")}>
@@ -235,7 +247,7 @@ export function HomeDashboard({
       <button
         type="button"
         className="primary home-primary-cta"
-        onClick={() => onPrimaryAction(action)}
+        onClick={startOrganization}
       >
         Ranger mon ordinateur
       </button>
