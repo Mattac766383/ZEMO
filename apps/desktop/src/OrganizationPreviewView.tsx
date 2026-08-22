@@ -427,7 +427,11 @@ export function OrganizationPreviewView({
                 aria-label={`Sélectionner ${operation.proposedName}`}
                 onClick={() => selectOperation(operation)}
               >
-                <strong>Fichier : {operation.proposedName}</strong>
+                <strong>
+                  {(proposal.nodes ?? []).some((node) => node.kind === "FILE")
+                    ? `Fichier : ${operation.proposedName}`
+                    : operation.proposedName}
+                </strong>
                 <small>{operation.proposedDestination.join(" / ") || "Emplacement actuel"}</small>
               </button>
             ))}
