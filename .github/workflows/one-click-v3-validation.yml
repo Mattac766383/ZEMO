@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   macos-v3-acceptance:
-    if: github.head_ref == 'rebuild/one-click-v3'
     runs-on: macos-14
     timeout-minutes: 90
     steps:
@@ -23,13 +22,9 @@ jobs:
         run: |
           rustup default stable
           rustup component add rustfmt
-      - name: Apply One-Click v3 refactor in validation workspace
-        run: |
-          python3 scripts/apply-one-click-v3.py
-          python3 scripts/fix-one-click-v3-tests.py
       - name: Format and prove clean compile
         run: |
-          cargo fmt --all
+          cargo fmt --all -- --check
           cargo check -p persistence
           cargo check -p organizer
           cargo check -p application
