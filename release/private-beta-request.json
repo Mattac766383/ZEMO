@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "channel": "private-beta",
+  "macos_dist_tag": "0.1.0-beta.7",
+  "windows_dist_tag": "0.1.0-beta.6",
+  "notes": "First external tester candidate after Milestone 17 blue/white UI and Milestone 16 instant auto-organize."
+}
