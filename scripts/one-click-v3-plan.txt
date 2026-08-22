@@ -1,0 +1,9 @@
+One-Click v3 rebuild sequence
+1. package runtime qualification
+2. strict Apply result accounting
+3. richer deterministic classification
+4. bounded-memory scan persistence
+5. runtime diagnostics surfaced to UI
+6. 10k+ fixture
+7. macOS package qualification
+8. Windows package qualification
