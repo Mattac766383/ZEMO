@@ -1,0 +1,38 @@
+name: ZEMO Fix Auto Test Shape
+
+on:
+  push:
+    branches: [zemo/instant-auto-organize]
+
+permissions:
+  contents: write
+
+jobs:
+  fix-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: zemo/instant-auto-organize
+          persist-credentials: true
+      - name: Patch fixture and remove one-shot workflow
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('apps/desktop/src/Milestone10.test.tsx')
+          s = p.read_text()
+          old = '      counts: { pendingJobs: 0 },'
+          new = '      counts: { ...baseDashboard.counts, pendingJobs: 0 },'
+          assert s.count(old) == 1, s.count(old)
+          p.write_text(s.replace(old, new, 1))
+          PY
+          rm -f .github/workflows/zemo-fix-auto-test-shape.yml
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix automatic monitoring test fixture"
+          git push origin HEAD:zemo/instant-auto-organize
