@@ -40,8 +40,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APP="$(find target -type d -path '*/release/bundle/macos/ZEMO.app' -print -quit)"
-          test -n "$APP"
+          APP_REL="$(find target -type d -path '*/release/bundle/macos/ZEMO.app' -print -quit)"
+          test -n "$APP_REL"
+          test -d "$APP_REL"
+          APP="$(cd "$(dirname "$APP_REL")" && pwd -P)/$(basename "$APP_REL")"
           test -d "$APP"
           echo "WORKING_NAME_PACKAGED_APP=$APP" >> "$GITHUB_ENV"
           echo "APP=$APP"
@@ -51,9 +53,8 @@ jobs:
           codesign --verify --deep --strict "$APP"
 
       - name: Run packaged sidecar authentication and physical Apply tests
-        env:
-          WORKING_NAME_PACKAGED_APP: ${{ env.WORKING_NAME_PACKAGED_APP }}
         run: |
+          test -d "$WORKING_NAME_PACKAGED_APP"
           cargo test -p desktop --lib packaged_macos_apply -- --ignored --nocapture --test-threads=1
 
       - name: Verify package still contains sidecar after tests
