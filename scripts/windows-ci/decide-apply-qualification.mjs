@@ -24,6 +24,26 @@ const REQUIRED_PASS_SECTIONS = [
   "SANDBOX SAFETY",
 ];
 
+function isKnownNonBlockingBuildPrepFailure(check) {
+  return (
+    check?.status === Status.FAIL &&
+    check?.name === "cargo tree numkong features" &&
+    /package ID specification [`']numkong[`'] did not match any packages/i.test(
+      String(check?.detail || ""),
+    )
+  );
+}
+
+function buildPrepFailures(report) {
+  const checks = report.sections?.["BUILD PREP"] || [];
+  return {
+    blocking: checks.filter(
+      (check) => check?.status === Status.FAIL && !isKnownNonBlockingBuildPrepFailure(check),
+    ),
+    ignored: checks.filter(isKnownNonBlockingBuildPrepFailure),
+  };
+}
+
 export function decideApplyQualification(report, extras = {}) {
   const sectionStatuses = {};
   for (const [name, checks] of Object.entries(report.sections || {})) {
@@ -40,6 +60,7 @@ export function decideApplyQualification(report, extras = {}) {
   const hostIsWindows = Boolean(report.hostIsWindows);
   const semantic = sectionStatuses.SEMANTIC || Status.NOT_RUN;
   const blockers = [];
+  const buildPrep = buildPrepFailures(report);
 
   if (!hostIsWindows) {
     blockers.push("host is not Windows");
@@ -59,8 +80,10 @@ export function decideApplyQualification(report, extras = {}) {
   if (semantic === Status.FAIL) {
     blockers.push("SEMANTIC failed");
   }
-  if (sectionStatuses["BUILD PREP"] === Status.FAIL) {
-    blockers.push("BUILD PREP failed");
+  if (buildPrep.blocking.length > 0) {
+    blockers.push(
+      `BUILD PREP failed: ${buildPrep.blocking.map((check) => check.name).join(", ")}`,
+    );
   }
 
   const applyQualified = blockers.length === 0;
@@ -75,6 +98,10 @@ export function decideApplyQualification(report, extras = {}) {
     granite: extras.granite || process.env.ZEMO_GRANITE_STATUS || semantic,
     sectionStatuses,
     blockers,
+    ignored_build_prep_failures: buildPrep.ignored.map((check) => ({
+      name: check.name,
+      reason: "obsolete optional dependency probe; numkong is absent from the resolved graph",
+    })),
     required_pass_sections: REQUIRED_PASS_SECTIONS,
   };
 }
@@ -97,6 +124,13 @@ function formatSummary(decision) {
     lines.push(`  ${name}: ${status}`);
   }
   lines.push("");
+  if (decision.ignored_build_prep_failures?.length) {
+    lines.push("NON-BLOCKING BUILD PREP PROBES:");
+    for (const ignored of decision.ignored_build_prep_failures) {
+      lines.push(`  - ${ignored.name}: ${ignored.reason}`);
+    }
+    lines.push("");
+  }
   if (decision.blockers.length) {
     lines.push("BLOCKERS:");
     for (const blocker of decision.blockers) {
