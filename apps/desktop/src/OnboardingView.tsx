@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { recordBetaMetric } from "./betaMetrics";
 
 type OnboardingStep = 0 | 1 | 2;
 
@@ -50,6 +51,11 @@ export function OnboardingView({
 
   const last = step === 2;
 
+  function completeOnboarding() {
+    recordBetaMetric("onboarding_completed", { success: true });
+    onComplete();
+  }
+
   return (
     <div className="onboarding-overlay">
       <div
@@ -66,6 +72,9 @@ export function OnboardingView({
         <section className="onboarding-step" aria-labelledby={titleId}>
           <h1 id={titleId}>{STEPS[step].title}</h1>
           <p>{STEPS[step].body}</p>
+          <p>
+            Analyse locale : les noms, chemins, contenus et recherches de vos fichiers ne sont pas envoyés par la télémétrie bêta.
+          </p>
           <div className="onboarding-actions">
             {step > 0 ? (
               <button
@@ -89,7 +98,7 @@ export function OnboardingView({
                   type="button"
                   disabled={selectBusy || wholeComputerBusy}
                   onClick={() => {
-                    onComplete();
+                    completeOnboarding();
                     void onSelectFolder();
                   }}
                 >
@@ -100,6 +109,8 @@ export function OnboardingView({
                   type="button"
                   disabled={wholeComputerBusy}
                   onClick={() => {
+                    recordBetaMetric("onboarding_completed", { success: true });
+                    recordBetaMetric("organization_started");
                     void onStartWholeComputer([]);
                   }}
                 >

@@ -5,6 +5,7 @@ import type {
   ScanResult,
   SystemStatus,
 } from "./types";
+import { buildBetaDiagnosticText, recordBetaMetric } from "./betaMetrics";
 
 export type AppDestination =
   | "home"
@@ -171,6 +172,19 @@ type HomeDashboardProps = {
   onChooseFolders?: () => void;
 };
 
+function BetaDiagnosticPanel() {
+  return (
+    <details>
+      <summary>Diagnostic bêta local</summary>
+      <p>
+        Ce résumé contient uniquement des compteurs de parcours. Aucun nom,
+        chemin, contenu de fichier ou texte de recherche n’y apparaît.
+      </p>
+      <pre>{buildBetaDiagnosticText()}</pre>
+    </details>
+  );
+}
+
 export function HomeDashboard({
   loading,
   organized = false,
@@ -186,6 +200,11 @@ export function HomeDashboard({
     contentNeedsReview: null,
     organized,
   });
+
+  function startOrganization() {
+    recordBetaMetric("organization_started");
+    onPrimaryAction(action);
+  }
 
   if (loading) {
     return (
@@ -207,12 +226,18 @@ export function HomeDashboard({
         <button
           type="button"
           className="primary home-primary-cta"
-          onClick={() => onPrimaryAction(action)}
+          onClick={startOrganization}
         >
           Relancer le rangement
         </button>
         <div className="home-secondary-actions">
-          <button type="button" onClick={() => onNavigate("search")}>
+          <button
+            type="button"
+            onClick={() => {
+              recordBetaMetric("search_opened");
+              onNavigate("search");
+            }}
+          >
             Recherche
           </button>
           <button type="button" onClick={() => onNavigate("monitoring")}>
@@ -222,6 +247,7 @@ export function HomeDashboard({
             À revoir
           </button>
         </div>
+        <BetaDiagnosticPanel />
       </section>
     );
   }
@@ -235,7 +261,7 @@ export function HomeDashboard({
       <button
         type="button"
         className="primary home-primary-cta"
-        onClick={() => onPrimaryAction(action)}
+        onClick={startOrganization}
       >
         Ranger mon ordinateur
       </button>
@@ -252,6 +278,7 @@ export function HomeDashboard({
       >
         Choisir les dossiers
       </button>
+      <BetaDiagnosticPanel />
     </section>
   );
 }
