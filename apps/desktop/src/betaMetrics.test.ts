@@ -2,6 +2,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  buildBetaDiagnosticText,
   clearBetaMetrics,
   readBetaMetrics,
   recordBetaMetric,
@@ -65,5 +66,19 @@ describe("betaMetrics privacy contract", () => {
       success: false,
     });
     expect(readBetaMetrics()[0]?.count).toBeUndefined();
+  });
+
+  it("builds a shareable diagnostic containing only counters", () => {
+    recordBetaMetric("organization_started");
+    recordBetaMetric("organization_completed", { count: 12, success: true });
+    recordBetaMetric("search_opened");
+
+    const diagnostic = buildBetaDiagnosticText();
+    expect(diagnostic).toContain("ZEMO beta diagnostic v1");
+    expect(diagnostic).toContain("organization_completed=1");
+    expect(diagnostic).toContain("files_organized=12");
+    expect(diagnostic).toContain("search_opened=1");
+    expect(diagnostic).not.toContain("/");
+    expect(diagnostic).not.toContain(".pdf");
   });
 });
