@@ -122,10 +122,13 @@ if (Test-Path -LiteralPath $decisionPath) {
 }
 
 $signing = "NOT CONFIGURED"
+$signingSecretPresent = $false
 if ($env:WINDOWS_CERTIFICATE -or $env:TAURI_SIGNING_PRIVATE_KEY) {
+    $signingSecretPresent = $true
     $signing = "SECRET PRESENT (not printed; signing still not claimed configured unless the build used it)"
 }
 
+$buildTimestamp = (Get-Date).ToUniversalTime().ToString("o")
 $buildInfo = @"
 ZEMO
 version: 0.1.0
@@ -141,7 +144,7 @@ Apply qualification status: $(if ($applyQualified) { "PASS" } else { "NOT QUALIF
 WINDOWS SIGNING: $signing
 SMARTSCREEN USER EXPERIENCE: NOT QUALIFIED
 GUI interaction: NOT TESTED
-build timestamp: $((Get-Date).ToUniversalTime().ToString("o"))
+build timestamp: $buildTimestamp
 source installer: $($source.Name)
 "@
 $buildInfoPath = Join-Path $outDir "BUILDINFO.txt"
@@ -167,6 +170,15 @@ Installation
 4. Ne désactivez pas Windows Defender.
 5. Utilisez d’abord un dossier de test, avec des copies de fichiers.
 
+Test conseillé
+--------------
+1. Faites un premier rangement sur un petit dossier de test.
+2. Vérifiez la proposition avant Apply.
+3. Testez Undo après un petit Apply réussi.
+4. Testez une recherche sémantique simple.
+5. En cas de problème, ouvrez « Diagnostic bêta local » dans l’accueil et
+   partagez uniquement ces compteurs avec le mainteneur.
+
 Ne pas faire
 ------------
 - Ne pas organiser Bureau / Documents / Téléchargements personnels au premier essai.
@@ -177,6 +189,7 @@ Ne pas faire
 Identifiant technique : com.workingname.organizer
 Version : 0.1.0 ($DistTag)
 Fichier : $installerName
+SHA-256 : $hash
 "@
 } else {
     $readme = @"
@@ -197,11 +210,15 @@ Installation
 4. Ne désactivez pas Windows Defender.
 5. Utilisez d’abord un dossier de test, avec des copies de fichiers.
 
+En cas de problème, ouvrez « Diagnostic bêta local » dans l’accueil et partagez
+uniquement ces compteurs avec le mainteneur.
+
 Les fichiers ne sont PAS déplacés par cette version.
 
 Identifiant technique : com.workingname.organizer
 Version : 0.1.0 ($DistTag)
 Fichier : $installerName
+SHA-256 : $hash
 "@
 }
 
@@ -219,6 +236,38 @@ if (Test-Path -LiteralPath $summarySource) {
     Set-Content -LiteralPath $summaryDest -Value "qualification-summary missing" -Encoding utf8
 }
 
+$manifest = [ordered]@{
+    schema_version = 1
+    product = "ZEMO"
+    version = "0.1.0"
+    distribution_tag = $DistTag
+    channel = "private-beta"
+    platform = "windows"
+    architecture = "x64"
+    git_commit = $GitCommit
+    artifact = $installerName
+    sha256 = $hash
+    distribution_kind = $DistributionKind
+    qualification = [ordered]@{
+        status = $qualificationStatus
+        apply_qualified = $applyQualified
+        filesystem = "NTFS"
+    }
+    signing = [ordered]@{
+        configured = $false
+        secret_present = $signingSecretPresent
+        smartscreen_external_user_experience_qualified = $false
+    }
+    privacy = [ordered]@{
+        beta_metrics_local_only = $true
+        diagnostic_contains_user_file_data = $false
+    }
+    built_at_utc = $buildTimestamp
+}
+$manifestPath = Join-Path $outDir "beta-manifest.json"
+Assert-NonEmptyPath -Name "beta manifest output" -Value $manifestPath
+($manifest | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $manifestPath -Encoding utf8
+
 $package = @{
     installer_status = "PASS"
     artifact_status = "PASS"
@@ -227,6 +276,7 @@ $package = @{
     sha256 = $hash
     distribution_kind = $DistributionKind
     repo_root = $RepoRoot
+    manifest_name = "beta-manifest.json"
     notes = "NSIS installer packaged. GUI interaction NOT TESTED. SmartScreen NOT QUALIFIED."
 }
 $packagePath = Join-Path $qualificationRoot "package-result.json"
@@ -241,4 +291,5 @@ if ($env:GITHUB_OUTPUT) {
 Write-Host "RepoRoot $RepoRoot"
 Write-Host "Packaged $installerName"
 Write-Host "SHA-256 $hash"
+Write-Host "Manifest $manifestPath"
 Write-Host "Dist $outDir"
