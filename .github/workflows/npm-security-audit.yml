@@ -45,15 +45,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          MAIN_SHA="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq '.sha')"
           MAC_ID=""
           WIN_ID=""
           for attempt in {1..20}; do
-            MAC_ID="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow zemo-macos-private-beta.yml --event workflow_dispatch --branch main --limit 1 --json databaseId --jq '.[0].databaseId // ""')"
-            WIN_ID="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow zemo-windows-private-beta.yml --event workflow_dispatch --branch main --limit 1 --json databaseId --jq '.[0].databaseId // ""')"
+            MAC_ID="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow zemo-macos-private-beta.yml --event workflow_dispatch --branch main --limit 10 --json databaseId,headSha --jq ".[] | select(.headSha == \"$MAIN_SHA\") | .databaseId" | head -n 1)"
+            WIN_ID="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow zemo-windows-private-beta.yml --event workflow_dispatch --branch main --limit 10 --json databaseId,headSha --jq ".[] | select(.headSha == \"$MAIN_SHA\") | .databaseId" | head -n 1)"
             if [ -n "$MAC_ID" ] && [ -n "$WIN_ID" ]; then
               break
             fi
             sleep 3
           done
-          REPORT="$(printf 'Private-beta workflows dispatched from main.\n\nmacOS tag: 0.1.0-beta.7\nmacOS run ID: `%s`\n\nWindows tag: 0.1.0-beta.6\nWindows run ID: `%s`\n' "$MAC_ID" "$WIN_ID")"
+          if [ -z "$MAC_ID" ] || [ -z "$WIN_ID" ]; then
+            echo "Could not resolve both dispatched runs for main SHA $MAIN_SHA" >&2
+            exit 3
+          fi
+          REPORT="$(printf 'Private-beta workflows dispatched from main.\n\nmain SHA: `%s`\n\nmacOS tag: 0.1.0-beta.7\nmacOS run ID: `%s`\n\nWindows tag: 0.1.0-beta.6\nWindows run ID: `%s`\n' "$MAIN_SHA" "$MAC_ID" "$WIN_ID")"
           gh issue edit 18 --repo "$GITHUB_REPOSITORY" --body "$REPORT"
