@@ -21,21 +21,30 @@ use search::{
 };
 use std::{
     collections::HashMap,
+    ffi::OsStr,
     fs,
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// One-click intentionally organizes only loose files at the top level of the
-/// standard personal folders. Existing user folder trees are left alone.
-/// There is no arbitrary file-count or wall-clock cutoff. The scan runs until
-/// the folder is exhausted or the user explicitly cancels it. Progress events
-/// are throttled only to keep the UI responsive on large folders.
+/// The consumer scan remains metadata-only, but now walks the complete user
+/// tree iteratively. Iterative traversal is intentional: a very deep folder
+/// hierarchy must not be able to overflow the process stack.
 const CONSUMER_PROGRESS_EMIT_EVERY: u64 = 128;
 const CONSUMER_SCAN_BATCH_SIZE: usize = 256;
 const DEFAULT_MONITORING_SIZE_THRESHOLD_BYTES: u64 = 512 * 1_024 * 1_024;
 const DEFAULT_MONITORING_STARTUP_ENTRY_LIMIT: u32 = 100_000;
+
+/// Directories that contain generated dependency/build trees rather than user
+/// documents. Hidden directories are already skipped separately.
+const CONSUMER_EXCLUDED_DIRECTORY_NAMES: &[&str] = &[
+    "node_modules",
+    "__pycache__",
+    ".git",
+    ".svn",
+    ".hg",
+];
 
 /// Scanner-only application boundary. It deliberately owns no filesystem
 /// mutation capability, parser, model gateway, or network client.
@@ -255,9 +264,6 @@ impl ScannerApplicationService {
             )
             .map_err(ApplicationError::Persistence)?;
 
-        // Persist monitoring metadata, but deliberately do not start an OS
-        // watcher here. Manual One-Click organization must never wait on a
-        // watcher. The watcher is started only by explicit monitoring flows.
         self.database.set_current_workspace(workspace_id)?;
         self.database.set_current_root(workspace_id, root.id)?;
         self.ensure_root_monitoring_metadata(workspace_id, root.id)?;
@@ -334,12 +340,10 @@ impl ScannerApplicationService {
         self.persist_catalog_output(workspace_id, &root, scan_id, output, on_progress)
     }
 
-    /// Fast path used by the consumer "Ranger mon ordinateur" experience.
-    ///
-    /// It is strictly metadata-only: no file content handle is opened on
-    /// macOS, no `read_prefix`, no duplicate hash, no extractor/model and no
-    /// watcher startup. This prevents FileProvider/iCloud placeholders from
-    /// being hydrated merely because the user wants to tidy visible files.
+    /// Metadata-only deep scan used by the consumer "Ranger mon ordinateur"
+    /// experience. It walks subfolders without opening file content, hashing,
+    /// invoking extractors/models, hydrating cloud placeholders, or starting a
+    /// watcher. Symlinks/reparse points are never followed.
     #[inline(never)]
     pub fn scan_workspace_consumer(
         &self,
@@ -376,148 +380,236 @@ impl ScannerApplicationService {
         let mut persisted_files = 0_u64;
         let mut issue_count = 0_u64;
         let mut cancelled = false;
+        let mut entries_seen = 0_u64;
+
+        // Empty relative path means the registered root itself. A Vec is used
+        // as an explicit work stack so deep trees cannot overflow Rust's stack.
+        let mut pending_directories = vec![PathBuf::new()];
 
         progress.phase = ScanPhase::Inspecting;
         on_progress(progress);
 
-        let entries = fs::read_dir(&root.absolute_path_native).map_err(ApplicationError::Io)?;
-        for entry_result in entries {
+        while let Some(relative_directory) = pending_directories.pop() {
             if is_cancelled() {
                 cancelled = true;
                 break;
             }
 
-            let entry = match entry_result {
-                Ok(entry) => entry,
+            let absolute_directory = if relative_directory.as_os_str().is_empty() {
+                root.absolute_path_native.clone()
+            } else {
+                root.absolute_path_native.join(&relative_directory)
+            };
+
+            let entries = match fs::read_dir(&absolute_directory) {
+                Ok(entries) => entries,
                 Err(error) => {
+                    if relative_directory.as_os_str().is_empty() {
+                        let _ = self.database.fail_scan(scan_id, "root_unreadable");
+                        return Err(ApplicationError::Io(error));
+                    }
                     progress.errors = progress.errors.saturating_add(1);
                     progress.skipped_items = progress.skipped_items.saturating_add(1);
                     issues.push(ScanIssueInput {
-                        relative_path: ".".to_owned(),
-                        code: "directory_entry_unreadable".to_owned(),
+                        relative_path: display_relative_path(&relative_directory),
+                        code: "directory_unreadable".to_owned(),
                         message: error.to_string(),
-                        is_directory: false,
+                        is_directory: true,
                         is_error: true,
                         skipped: true,
                     });
-                    if issues.len() >= CONSUMER_SCAN_BATCH_SIZE {
-                        let (file_count, issues_written) = flush_consumer_batch(
+                    flush_if_needed(
+                        self.database.as_ref(),
+                        workspace_id,
+                        scan_id,
+                        &mut files,
+                        &mut issues,
+                        &mut persisted_files,
+                        &mut issue_count,
+                    )?;
+                    continue;
+                }
+            };
+
+            for entry_result in entries {
+                if is_cancelled() {
+                    cancelled = true;
+                    break;
+                }
+                entries_seen = entries_seen.saturating_add(1);
+
+                let entry = match entry_result {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        progress.errors = progress.errors.saturating_add(1);
+                        progress.skipped_items = progress.skipped_items.saturating_add(1);
+                        issues.push(ScanIssueInput {
+                            relative_path: display_relative_path(&relative_directory),
+                            code: "directory_entry_unreadable".to_owned(),
+                            message: error.to_string(),
+                            is_directory: false,
+                            is_error: true,
+                            skipped: true,
+                        });
+                        flush_if_needed(
                             self.database.as_ref(),
                             workspace_id,
                             scan_id,
                             &mut files,
                             &mut issues,
+                            &mut persisted_files,
+                            &mut issue_count,
                         )?;
-                        persisted_files = persisted_files.saturating_add(file_count);
-                        issue_count = issue_count.saturating_add(issues_written);
-                    }
-                    continue;
-                }
-            };
-
-            let name = entry.file_name();
-            if name.to_string_lossy().starts_with('.') {
-                progress.skipped_items = progress.skipped_items.saturating_add(1);
-                continue;
-            }
-            let file_type = match entry.file_type() {
-                Ok(value) => value,
-                Err(error) => {
-                    progress.errors = progress.errors.saturating_add(1);
-                    progress.skipped_items = progress.skipped_items.saturating_add(1);
-                    issues.push(ScanIssueInput {
-                        relative_path: name.to_string_lossy().into_owned(),
-                        code: "metadata_unavailable".to_owned(),
-                        message: error.to_string(),
-                        is_directory: false,
-                        is_error: true,
-                        skipped: true,
-                    });
-                    continue;
-                }
-            };
-            if file_type.is_dir() {
-                progress.directories_discovered = progress.directories_discovered.saturating_add(1);
-                continue;
-            }
-            if file_type.is_symlink() {
-                progress.skipped_items = progress.skipped_items.saturating_add(1);
-                issues.push(ScanIssueInput {
-                    relative_path: name.to_string_lossy().into_owned(),
-                    code: "reparse_point".to_owned(),
-                    message: "symbolic links and aliases are intentionally left in place"
-                        .to_owned(),
-                    is_directory: false,
-                    is_error: false,
-                    skipped: true,
-                });
-                continue;
-            }
-            if !file_type.is_file() {
-                progress.skipped_items = progress.skipped_items.saturating_add(1);
-                continue;
-            }
-
-            let relative_path = PathBuf::from(name);
-            match inspect_consumer_metadata(
-                self.read_only_platform.as_ref(),
-                &root.absolute_path_native,
-                &relative_path,
-                &volume,
-            ) {
-                Ok(entry) => {
-                    if entry.hidden {
-                        progress.skipped_items = progress.skipped_items.saturating_add(1);
                         continue;
                     }
-                    progress.files_discovered = progress.files_discovered.saturating_add(1);
-                    progress.bytes_discovered =
-                        progress.bytes_discovered.saturating_add(entry.byte_size);
-                    if entry.cloud_placeholder {
+                };
+
+                let name = entry.file_name();
+                let relative_path = relative_directory.join(&name);
+
+                // Dot-prefixed nodes are intentionally invisible in consumer
+                // mode. They normally contain OS/app state rather than user data.
+                if name.to_string_lossy().starts_with('.') {
+                    progress.skipped_items = progress.skipped_items.saturating_add(1);
+                    continue;
+                }
+
+                let file_type = match entry.file_type() {
+                    Ok(value) => value,
+                    Err(error) => {
+                        progress.errors = progress.errors.saturating_add(1);
+                        progress.skipped_items = progress.skipped_items.saturating_add(1);
                         issues.push(ScanIssueInput {
-                            relative_path: relative_path.to_string_lossy().into_owned(),
-                            code: "cloud_placeholder".to_owned(),
-                            message: "cloud placeholder left in place; content was not hydrated"
-                                .to_owned(),
+                            relative_path: display_relative_path(&relative_path),
+                            code: "metadata_unavailable".to_owned(),
+                            message: error.to_string(),
                             is_directory: false,
+                            is_error: true,
+                            skipped: true,
+                        });
+                        flush_if_needed(
+                            self.database.as_ref(),
+                            workspace_id,
+                            scan_id,
+                            &mut files,
+                            &mut issues,
+                            &mut persisted_files,
+                            &mut issue_count,
+                        )?;
+                        continue;
+                    }
+                };
+
+                // Never follow aliases/junctions/symlinks. This both prevents
+                // cycles and keeps the scan inside the user-selected root.
+                if file_type.is_symlink() {
+                    progress.skipped_items = progress.skipped_items.saturating_add(1);
+                    issues.push(ScanIssueInput {
+                        relative_path: display_relative_path(&relative_path),
+                        code: "reparse_point".to_owned(),
+                        message: "symbolic links, aliases and junctions are intentionally not followed"
+                            .to_owned(),
+                        is_directory: false,
+                        is_error: false,
+                        skipped: true,
+                    });
+                    flush_if_needed(
+                        self.database.as_ref(),
+                        workspace_id,
+                        scan_id,
+                        &mut files,
+                        &mut issues,
+                        &mut persisted_files,
+                        &mut issue_count,
+                    )?;
+                    continue;
+                }
+
+                if file_type.is_dir() {
+                    progress.directories_discovered =
+                        progress.directories_discovered.saturating_add(1);
+                    if should_skip_consumer_directory(&name) {
+                        progress.skipped_items = progress.skipped_items.saturating_add(1);
+                        issues.push(ScanIssueInput {
+                            relative_path: display_relative_path(&relative_path),
+                            code: "generated_directory_excluded".to_owned(),
+                            message: "generated dependency/cache directory excluded from consumer indexing"
+                                .to_owned(),
+                            is_directory: true,
                             is_error: false,
                             skipped: true,
                         });
-                        progress.skipped_items = progress.skipped_items.saturating_add(1);
                     } else {
-                        files.push(metadata_scan_file_input(
-                            workspace_id,
-                            root.id,
-                            scan_id,
-                            entry,
-                        )?);
+                        pending_directories.push(relative_path);
                     }
-                }
-                Err(error) => {
-                    let issue = scan_issue_for_platform_error(&relative_path, &error);
-                    if issue.is_error {
-                        progress.errors = progress.errors.saturating_add(1);
+                } else if file_type.is_file() {
+                    match inspect_consumer_metadata(
+                        self.read_only_platform.as_ref(),
+                        &root.absolute_path_native,
+                        &relative_path,
+                        &volume,
+                    ) {
+                        Ok(entry) => {
+                            if entry.hidden {
+                                progress.skipped_items = progress.skipped_items.saturating_add(1);
+                            } else {
+                                progress.files_discovered =
+                                    progress.files_discovered.saturating_add(1);
+                                progress.bytes_discovered =
+                                    progress.bytes_discovered.saturating_add(entry.byte_size);
+                                if entry.cloud_placeholder {
+                                    issues.push(ScanIssueInput {
+                                        relative_path: display_relative_path(&relative_path),
+                                        code: "cloud_placeholder".to_owned(),
+                                        message: "cloud placeholder left in place; content was not hydrated"
+                                            .to_owned(),
+                                        is_directory: false,
+                                        is_error: false,
+                                        skipped: true,
+                                    });
+                                    progress.skipped_items =
+                                        progress.skipped_items.saturating_add(1);
+                                } else {
+                                    files.push(metadata_scan_file_input(
+                                        workspace_id,
+                                        root.id,
+                                        scan_id,
+                                        entry,
+                                    )?);
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            let issue = scan_issue_for_platform_error(&relative_path, &error);
+                            if issue.is_error {
+                                progress.errors = progress.errors.saturating_add(1);
+                            }
+                            progress.skipped_items = progress.skipped_items.saturating_add(1);
+                            issues.push(issue);
+                        }
                     }
+                } else {
                     progress.skipped_items = progress.skipped_items.saturating_add(1);
-                    issues.push(issue);
                 }
-            }
 
-            if files.len() + issues.len() >= CONSUMER_SCAN_BATCH_SIZE {
-                let (file_count, issues_written) = flush_consumer_batch(
+                flush_if_needed(
                     self.database.as_ref(),
                     workspace_id,
                     scan_id,
                     &mut files,
                     &mut issues,
+                    &mut persisted_files,
+                    &mut issue_count,
                 )?;
-                persisted_files = persisted_files.saturating_add(file_count);
-                issue_count = issue_count.saturating_add(issues_written);
+                progress.files_indexed = persisted_files
+                    .saturating_add(u64::try_from(files.len()).unwrap_or(u64::MAX));
+                if entries_seen % CONSUMER_PROGRESS_EMIT_EVERY == 0 {
+                    on_progress(progress);
+                }
             }
-            progress.files_indexed =
-                persisted_files.saturating_add(u64::try_from(files.len()).unwrap_or(u64::MAX));
-            if progress.files_discovered % CONSUMER_PROGRESS_EMIT_EVERY == 0 {
-                on_progress(progress);
+
+            if cancelled {
+                break;
             }
         }
 
@@ -678,6 +770,25 @@ impl ScannerApplicationService {
     }
 }
 
+fn flush_if_needed(
+    database: &Database,
+    workspace_id: WorkspaceId,
+    scan_id: ScanId,
+    files: &mut Vec<ScanFileInput>,
+    issues: &mut Vec<ScanIssueInput>,
+    persisted_files: &mut u64,
+    issue_count: &mut u64,
+) -> Result<(), ApplicationError> {
+    if files.len() + issues.len() < CONSUMER_SCAN_BATCH_SIZE {
+        return Ok(());
+    }
+    let (file_count, issues_written) =
+        flush_consumer_batch(database, workspace_id, scan_id, files, issues)?;
+    *persisted_files = persisted_files.saturating_add(file_count);
+    *issue_count = issue_count.saturating_add(issues_written);
+    Ok(())
+}
+
 fn flush_consumer_batch(
     database: &Database,
     workspace_id: WorkspaceId,
@@ -761,7 +872,6 @@ fn inspect_consumer_metadata(
 
     if relative_path.as_os_str().is_empty()
         || relative_path.is_absolute()
-        || relative_path.components().count() != 1
         || relative_path
             .components()
             .any(|component| !matches!(component, Component::Normal(_)))
@@ -784,6 +894,13 @@ fn inspect_consumer_metadata(
             "only regular files are analyzable".to_owned(),
         ));
     }
+
+    let parent = target.parent().ok_or(PlatformError::OutsideRoot)?;
+    let parent_metadata = fs::symlink_metadata(parent).map_err(metadata_io_error)?;
+    if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
+        return Err(PlatformError::ReparsePoint);
+    }
+
     let leaf_bytes = target
         .file_name()
         .ok_or(PlatformError::OutsideRoot)?
@@ -800,7 +917,7 @@ fn inspect_consumer_metadata(
         identity: NativeFileIdentity {
             volume: volume.clone(),
             object_key: metadata.ino().to_le_bytes().to_vec(),
-            parent_key: root_metadata.ino().to_le_bytes().to_vec(),
+            parent_key: parent_metadata.ino().to_le_bytes().to_vec(),
             leaf_name: NativePath {
                 encoding: PathEncoding::UnixBytes,
                 bytes: leaf_bytes,
@@ -844,6 +961,21 @@ fn metadata_time_ns(value: std::io::Result<SystemTime>) -> Option<i128> {
     i128::try_from(duration.as_nanos()).ok()
 }
 
+fn display_relative_path(path: &Path) -> String {
+    if path.as_os_str().is_empty() {
+        ".".to_owned()
+    } else {
+        path.to_string_lossy().into_owned()
+    }
+}
+
+fn should_skip_consumer_directory(name: &OsStr) -> bool {
+    let normalized = name.to_string_lossy().to_ascii_lowercase();
+    CONSUMER_EXCLUDED_DIRECTORY_NAMES
+        .iter()
+        .any(|excluded| normalized == *excluded)
+}
+
 fn scan_issue_for_platform_error(relative_path: &Path, error: &PlatformError) -> ScanIssueInput {
     let (code, is_error, skipped) = match error {
         PlatformError::ReparsePoint
@@ -877,27 +1009,51 @@ fn scan_issue_for_platform_error(relative_path: &Path, error: &PlatformError) ->
 fn metadata_mime_from_extension(path: &Path) -> Option<String> {
     let extension = path.extension()?.to_string_lossy().to_ascii_lowercase();
     let mime = match extension.as_str() {
-        "txt" | "log" | "md" => "text/plain",
+        "txt" | "log" | "md" | "rtf" | "ini" => "text/plain",
         "csv" => "text/csv",
         "json" => "application/json",
+        "xml" => "application/xml",
+        "yaml" | "yml" => "application/yaml",
+        "toml" => "application/toml",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" | "mjs" | "cjs" => "text/javascript",
+        "ts" | "tsx" | "jsx" | "py" | "java" | "rs" | "go" | "swift" | "sql" | "c"
+        | "h" | "cpp" | "hpp" | "cs" | "sh" | "ps1" => "text/plain",
         "pdf" => "application/pdf",
         "doc" => "application/msword",
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "odt" => "application/vnd.oasis.opendocument.text",
         "xls" => "application/vnd.ms-excel",
         "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ods" => "application/vnd.oasis.opendocument.spreadsheet",
         "ppt" => "application/vnd.ms-powerpoint",
         "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "odp" => "application/vnd.oasis.opendocument.presentation",
         "zip" => "application/zip",
+        "7z" => "application/x-7z-compressed",
+        "rar" => "application/vnd.rar",
+        "tar" => "application/x-tar",
+        "gz" => "application/gzip",
         "jpg" | "jpeg" => "image/jpeg",
         "png" => "image/png",
         "gif" => "image/gif",
         "webp" => "image/webp",
-        "heic" => "image/heic",
-        "mp4" => "video/mp4",
+        "heic" | "heif" => "image/heic",
+        "bmp" => "image/bmp",
+        "tif" | "tiff" => "image/tiff",
+        "svg" => "image/svg+xml",
+        "mp4" | "m4v" => "video/mp4",
         "mov" => "video/quicktime",
         "mkv" => "video/x-matroska",
+        "avi" => "video/x-msvideo",
+        "webm" => "video/webm",
         "mp3" => "audio/mpeg",
         "wav" => "audio/wav",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "flac" => "audio/flac",
+        "ogg" | "oga" => "audio/ogg",
         _ => return None,
     };
     Some(mime.to_owned())
@@ -933,6 +1089,8 @@ fn is_standard_personal_root(path: &Path) -> bool {
             | "movies"
             | "videos"
             | "vidéos"
+            | "music"
+            | "musique"
     )
 }
 
@@ -978,5 +1136,40 @@ const fn hashing_status(status: HashingStatus) -> &'static str {
         HashingStatus::Hashed => "hashed",
         HashingStatus::Failed => "failed",
         HashingStatus::Cancelled => "cancelled",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_extended_consumer_mime_types() {
+        assert_eq!(
+            metadata_mime_from_extension(Path::new("report.odt")).as_deref(),
+            Some("application/vnd.oasis.opendocument.text")
+        );
+        assert_eq!(
+            metadata_mime_from_extension(Path::new("clip.webm")).as_deref(),
+            Some("video/webm")
+        );
+        assert_eq!(
+            metadata_mime_from_extension(Path::new("photo.tiff")).as_deref(),
+            Some("image/tiff")
+        );
+    }
+
+    #[test]
+    fn excludes_generated_dependency_directories_case_insensitively() {
+        assert!(should_skip_consumer_directory(OsStr::new("node_modules")));
+        assert!(should_skip_consumer_directory(OsStr::new("NODE_MODULES")));
+        assert!(should_skip_consumer_directory(OsStr::new("__pycache__")));
+        assert!(!should_skip_consumer_directory(OsStr::new("Clients")));
+    }
+
+    #[test]
+    fn music_is_a_standard_personal_root() {
+        assert!(is_standard_personal_root(Path::new("/Users/test/Music")));
+        assert!(is_standard_personal_root(Path::new("C:\\Users\\test\\Musique")));
     }
 }
