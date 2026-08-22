@@ -24,16 +24,15 @@ use std::{
     fs,
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 /// One-click intentionally organizes only loose files at the top level of the
 /// standard personal folders. Existing user folder trees are left alone.
-const CONSUMER_TOP_LEVEL_MAX_ENTRIES: usize = 5_000;
-/// A normal personal folder should never monopolize the app indefinitely. The
-/// bound is checked between native metadata inspections; it never weakens the
-/// Apply-time identity/source-drift checks.
-const CONSUMER_FOLDER_TIME_BUDGET: Duration = Duration::from_secs(3);
+/// There is no arbitrary file-count or wall-clock cutoff. The scan runs until
+/// the folder is exhausted or the user explicitly cancels it. Progress events
+/// are throttled only to keep the UI responsive on large folders.
+const CONSUMER_PROGRESS_EMIT_EVERY: u64 = 128;
 const DEFAULT_MONITORING_SIZE_THRESHOLD_BYTES: u64 = 512 * 1_024 * 1_024;
 const DEFAULT_MONITORING_STARTUP_ENTRY_LIMIT: u32 = 100_000;
 
@@ -211,7 +210,8 @@ impl ScannerApplicationService {
             .create_workspace(name)
             .map_err(ApplicationError::Persistence)?;
         self.database.set_current_workspace(workspace.id)?;
-        self.database.ensure_workspace_monitoring_state(workspace.id)?;
+        self.database
+            .ensure_workspace_monitoring_state(workspace.id)?;
         Ok(workspace)
     }
 
@@ -370,12 +370,8 @@ impl ScannerApplicationService {
         };
         on_progress(progress);
 
-        let started = Instant::now();
-        let (paths, mut truncated) = top_level_regular_paths(
-            &root.absolute_path_native,
-            CONSUMER_TOP_LEVEL_MAX_ENTRIES,
-            is_cancelled,
-        )?;
+        let paths = top_level_regular_paths(&root.absolute_path_native, is_cancelled)?;
+        let truncated = false;
         let mut files = Vec::with_capacity(paths.len());
         let mut issues = Vec::new();
         let mut cancelled = false;
@@ -388,20 +384,6 @@ impl ScannerApplicationService {
                 cancelled = true;
                 break;
             }
-            if started.elapsed() >= CONSUMER_FOLDER_TIME_BUDGET {
-                truncated = true;
-                issues.push(ScanIssueInput {
-                    relative_path: ".".to_owned(),
-                    code: "time_budget_exceeded".to_owned(),
-                    message: "consumer metadata scan reached its per-folder time budget".to_owned(),
-                    is_directory: true,
-                    is_error: false,
-                    skipped: true,
-                });
-                progress.skipped_items = progress.skipped_items.saturating_add(1);
-                break;
-            }
-
             match inspect_consumer_metadata(
                 self.read_only_platform.as_ref(),
                 &root.absolute_path_native,
@@ -446,8 +428,11 @@ impl ScannerApplicationService {
                     issues.push(issue);
                 }
             }
-            on_progress(progress);
+            if progress.files_discovered % CONSUMER_PROGRESS_EMIT_EVERY == 0 {
+                on_progress(progress);
+            }
         }
+        on_progress(progress);
 
         progress.phase = if cancelled {
             ScanPhase::Cancelled
@@ -751,9 +736,9 @@ fn metadata_time_ns(value: std::io::Result<SystemTime>) -> Option<i128> {
 
 fn scan_issue_for_platform_error(relative_path: &Path, error: &PlatformError) -> ScanIssueInput {
     let (code, is_error, skipped) = match error {
-        PlatformError::ReparsePoint | PlatformError::PathPolicyRefusal | PlatformError::OutsideRoot => {
-            ("reparse_point", false, true)
-        }
+        PlatformError::ReparsePoint
+        | PlatformError::PathPolicyRefusal
+        | PlatformError::OutsideRoot => ("reparse_point", false, true),
         PlatformError::CloudPlaceholder => ("cloud_placeholder", false, true),
         PlatformError::PermissionDenied => ("permission_denied", true, true),
         PlatformError::SourceMissing => ("source_missing", false, true),
@@ -843,18 +828,12 @@ fn is_standard_personal_root(path: &Path) -> bool {
 
 fn top_level_regular_paths(
     root: &Path,
-    max_entries: usize,
     is_cancelled: &dyn Fn() -> bool,
-) -> Result<(Vec<PathBuf>, bool), ApplicationError> {
+) -> Result<Vec<PathBuf>, ApplicationError> {
     let mut paths = Vec::new();
-    let mut truncated = false;
     let entries = fs::read_dir(root).map_err(ApplicationError::Io)?;
     for entry in entries {
         if is_cancelled() {
-            break;
-        }
-        if paths.len() >= max_entries {
-            truncated = true;
             break;
         }
         let entry = match entry {
@@ -873,7 +852,7 @@ fn top_level_regular_paths(
             paths.push(PathBuf::from(name));
         }
     }
-    Ok((paths, truncated))
+    Ok(paths)
 }
 
 #[inline(never)]

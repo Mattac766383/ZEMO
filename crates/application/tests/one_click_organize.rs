@@ -69,7 +69,10 @@ fn execution_service(
     .unwrap_or_else(|error| panic!("execution service should initialize: {error}"))
 }
 
-fn attest(service: &ExecutionApplicationService, execution_id: ExecutionId) -> domain::ExecutionDetail {
+fn attest(
+    service: &ExecutionApplicationService,
+    execution_id: ExecutionId,
+) -> domain::ExecutionDetail {
     let challenge = service
         .create_execution_consent_challenge(execution_id, None)
         .unwrap_or_else(|error| panic!("consent challenge should exist: {error}"));
@@ -98,8 +101,14 @@ fn one_click_consumer_proposal_moves_personal_files_and_undo_restores() {
     let scan = scanner
         .scan_workspace_consumer(workspace.id, &|| false, &mut |_| {})
         .unwrap_or_else(|error| panic!("metadata-only consumer scan should succeed: {error}"));
-    assert_eq!(scan.indexed_count, 12, "all top-level fixture files should be indexed");
-    assert_eq!(scan.hashed_count, 0, "one-click discovery must never hash content");
+    assert_eq!(
+        scan.indexed_count, 12,
+        "all top-level fixture files should be indexed"
+    );
+    assert_eq!(
+        scan.hashed_count, 0,
+        "one-click discovery must never hash content"
+    );
     assert_eq!(
         sandbox.snapshot(),
         before,
@@ -156,10 +165,7 @@ fn one_click_consumer_proposal_moves_personal_files_and_undo_restores() {
         by_name["App.lnk"].operation_kind,
         ProposalOperationKind::KeepInPlace
     );
-    assert_eq!(
-        by_name["unknown.xyz"].proposed_destination,
-        ["À vérifier"]
-    );
+    assert_eq!(by_name["unknown.xyz"].proposed_destination, ["À vérifier"]);
     assert!(proposal.summary.maximum_depth <= 3);
 
     let approved = scanner
@@ -198,4 +204,33 @@ fn one_click_consumer_proposal_moves_personal_files_and_undo_restores() {
         OrganizationExecutionStatus::RolledBack | OrganizationExecutionStatus::RollbackPartial
     ));
     assert_eq!(sandbox.snapshot(), before);
+}
+
+#[test]
+fn consumer_scan_has_no_arbitrary_file_count_cap() {
+    let sandbox = MutationSandbox::new();
+    const FILE_COUNT: usize = 5_257;
+    for index in 0..FILE_COUNT {
+        sandbox.write(&format!("loose-{index:05}.txt"), b"x");
+    }
+    let database = Arc::new(
+        Database::open_in_memory(&DatabaseKey::from_bytes([31; 32]))
+            .unwrap_or_else(|error| panic!("database should open: {error}")),
+    );
+    let platform = native_platform();
+    let scanner = ScannerApplicationService::new(database, platform);
+    let workspace = scanner
+        .create_workspace("Unbounded one-click corpus")
+        .unwrap_or_else(|error| panic!("workspace should be created: {error}"));
+    scanner
+        .register_root(workspace.id, sandbox.path())
+        .unwrap_or_else(|error| panic!("root should register: {error}"));
+    let scan = scanner
+        .scan_workspace_consumer(workspace.id, &|| false, &mut |_| {})
+        .unwrap_or_else(|error| panic!("unbounded metadata scan should succeed: {error}"));
+    assert_eq!(scan.indexed_count as usize, FILE_COUNT);
+    assert!(
+        !scan.truncated,
+        "one-click must not silently truncate a large folder"
+    );
 }

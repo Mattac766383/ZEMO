@@ -788,8 +788,14 @@ function App() {
         const prepared = await prepareExecution(current.id, current.revision);
         const approved = await approveExecution(prepared.session.id);
         const completed = await startExecution(approved.session.id);
+        const applied = completed.session.summary?.applied ?? 0;
+        if (current.summary.proposedMoves > 0 && applied === 0) {
+          throw new Error(
+            `Apply returned zero physical moves for proposal ${current.id}; ZEMO will not report success.`,
+          );
+        }
         executionIds.push(completed.session.id);
-        filesMoved += completed.session.summary?.applied ?? current.summary.proposedMoves;
+        filesMoved += applied;
       }
       const result = {
         filesMoved,
