@@ -222,7 +222,7 @@ describe("Milestone 10 monitoring dashboard", () => {
     const automatic = copyDashboard({
       mode: "AUTOMATIC",
       automaticExecutionEnabled: true,
-      counts: { pendingJobs: 0 },
+      counts: { ...baseDashboard.counts, pendingJobs: 0 },
     });
     vi.mocked(api.setMonitoringMode).mockResolvedValue(automatic);
 
