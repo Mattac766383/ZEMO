@@ -10,7 +10,10 @@ function BrokenView(): never {
 }
 
 describe("BetaErrorBoundary", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
 
   beforeEach(() => {
     window.localStorage.clear();
