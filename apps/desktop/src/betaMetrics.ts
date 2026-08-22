@@ -22,6 +22,25 @@ export type BetaMetricEntry = {
 
 const STORAGE_KEY = "zemo.beta.metrics.v1";
 const MAX_ENTRIES = 200;
+const EVENTS: ReadonlySet<BetaMetricEvent> = new Set([
+  "onboarding_completed",
+  "organization_started",
+  "organization_completed",
+  "undo_completed",
+  "search_opened",
+  "ui_crash",
+]);
+
+function getStorage(): Storage | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    return window.localStorage ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function safeInteger(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -43,7 +62,7 @@ function parseEntries(raw: string | null): BetaMetricEntry[] {
       return Boolean(
         entry &&
           typeof entry === "object" &&
-          typeof entry.event === "string" &&
+          EVENTS.has(entry.event as BetaMetricEvent) &&
           typeof entry.at === "string",
       );
     });
@@ -64,7 +83,8 @@ export function recordBetaMetric(
   event: BetaMetricEvent,
   fields: BetaMetricFields = {},
 ): void {
-  if (typeof window === "undefined" || !window.localStorage) {
+  const storage = getStorage();
+  if (!storage) {
     return;
   }
 
@@ -85,31 +105,33 @@ export function recordBetaMetric(
   }
 
   try {
-    const previous = parseEntries(window.localStorage.getItem(STORAGE_KEY));
+    const previous = parseEntries(storage.getItem(STORAGE_KEY));
     const next = [...previous.slice(-(MAX_ENTRIES - 1)), entry];
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    storage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch {
     // Metrics must never block or degrade the product experience.
   }
 }
 
 export function readBetaMetrics(): BetaMetricEntry[] {
-  if (typeof window === "undefined" || !window.localStorage) {
+  const storage = getStorage();
+  if (!storage) {
     return [];
   }
   try {
-    return parseEntries(window.localStorage.getItem(STORAGE_KEY));
+    return parseEntries(storage.getItem(STORAGE_KEY));
   } catch {
     return [];
   }
 }
 
 export function clearBetaMetrics(): void {
-  if (typeof window === "undefined" || !window.localStorage) {
+  const storage = getStorage();
+  if (!storage) {
     return;
   }
   try {
-    window.localStorage.removeItem(STORAGE_KEY);
+    storage.removeItem(STORAGE_KEY);
   } catch {
     // Best effort only.
   }
