@@ -1,0 +1,61 @@
+name: ZEMO One-Click v3 Rebuild
+
+on:
+  push:
+    branches: [rebuild/one-click-v3]
+
+permissions:
+  contents: write
+
+jobs:
+  rebuild-and-prove:
+    if: ${{ !contains(github.event.head_commit.message, '[v3-applied]') }}
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Setup Rust
+        run: |
+          rustup default stable
+          rustup component add rustfmt
+      - name: Apply deterministic v3 refactor
+        run: python3 scripts/apply-one-click-v3.py
+      - name: Format Rust
+        run: cargo fmt --all
+      - name: Install dependencies
+        run: npm ci
+      - name: Compile persistence organizer application
+        run: |
+          cargo check -p persistence
+          cargo check -p organizer
+          cargo check -p application
+      - name: Consumer policy tests
+        run: cargo test -p organizer consumer -- --nocapture
+      - name: Ten-thousand-file bounded scan
+        run: cargo test -p application --test one_click_organize consumer_scan_has_no_arbitrary_file_count_cap -- --nocapture
+      - name: Physical Apply and exact Undo
+        run: cargo test -p application --test one_click_organize one_click_consumer_proposal_moves_personal_files_and_undo_restores -- --nocapture
+      - name: Frontend typecheck and tests
+        run: |
+          npm run typecheck
+          npm test
+      - name: Production frontend build
+        run: npm run build
+      - name: Commit only proven product changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/persistence/src/lib.rs crates/persistence/src/consumer_scan.rs crates/application/src/scanner.rs crates/organizer/src/consumer.rs crates/application/tests/one_click_organize.rs apps/desktop/src/App.tsx apps/desktop/src/OneClickOrganize.tsx scripts/macos-apply-qualification/run.mjs
+          if git diff --cached --quiet; then
+            echo "No product changes to commit"
+            exit 0
+          fi
+          git commit -m "refactor: rebuild one-click v3 core [v3-applied]"
+          git push origin HEAD:rebuild/one-click-v3
