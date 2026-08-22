@@ -1,3 +1,5 @@
+import { recordBetaMetric } from "./betaMetrics";
+
 const ORGANIZE_RESULT_KEY = "supremacy.oneclick.v1.lastResult";
 
 export type LastOrganizeResult = {
@@ -26,6 +28,10 @@ export function readLastOrganizeResult(): LastOrganizeResult | null {
 
 export function writeLastOrganizeResult(result: LastOrganizeResult): void {
   memoryResult = result;
+  recordBetaMetric("organization_completed", {
+    count: result.filesMoved,
+    success: true,
+  });
   try {
     window.localStorage.setItem(ORGANIZE_RESULT_KEY, JSON.stringify(result));
   } catch {
@@ -34,7 +40,11 @@ export function writeLastOrganizeResult(result: LastOrganizeResult): void {
 }
 
 export function clearLastOrganizeResult(): void {
+  const hadResult = memoryResult !== null;
   memoryResult = null;
+  if (hadResult) {
+    recordBetaMetric("undo_completed", { success: true });
+  }
   try {
     window.localStorage.removeItem(ORGANIZE_RESULT_KEY);
   } catch {
