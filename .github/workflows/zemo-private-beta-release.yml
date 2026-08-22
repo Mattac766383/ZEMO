@@ -6,6 +6,11 @@ on:
     paths:
       - "release/private-beta-request.json"
       - ".github/workflows/zemo-private-beta-release.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "release/private-beta-request.json"
+      - ".github/workflows/zemo-private-beta-release.yml"
   workflow_dispatch:
 
 permissions:
@@ -15,9 +20,10 @@ permissions:
 
 jobs:
   dispatch-private-beta:
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/private-beta-request')
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout main
+      - name: Checkout release request
         uses: actions/checkout@v4
 
       - name: Read release request
