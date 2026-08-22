@@ -1,0 +1,32 @@
+name: ZEMO Private Beta Dispatch Bridge
+
+on:
+  push:
+    branches:
+      - release/private-beta-dispatch
+    paths:
+      - ".github/workflows/private-beta-dispatch-bridge.yml"
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch-private-beta:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch macOS private beta from main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run zemo-macos-private-beta.yml --repo "$GITHUB_REPOSITORY" --ref main -f dist_tag=0.1.0-beta.7
+
+      - name: Dispatch Windows private beta from main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run zemo-windows-private-beta.yml --repo "$GITHUB_REPOSITORY" --ref main
+
+      - name: Confirm dispatch requests
+        run: |
+          echo "Requested macOS candidate: 0.1.0-beta.7"
+          echo "Requested Windows candidate: workflow default 0.1.0-beta.6"
+          echo "Both workflows were dispatched with ref=main."
