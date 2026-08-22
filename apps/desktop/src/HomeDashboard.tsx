@@ -5,7 +5,7 @@ import type {
   ScanResult,
   SystemStatus,
 } from "./types";
-import { recordBetaMetric } from "./betaMetrics";
+import { buildBetaDiagnosticText, recordBetaMetric } from "./betaMetrics";
 
 export type AppDestination =
   | "home"
@@ -172,6 +172,19 @@ type HomeDashboardProps = {
   onChooseFolders?: () => void;
 };
 
+function BetaDiagnosticPanel() {
+  return (
+    <details>
+      <summary>Diagnostic bêta local</summary>
+      <p>
+        Ce résumé contient uniquement des compteurs de parcours. Aucun nom,
+        chemin, contenu de fichier ou texte de recherche n’y apparaît.
+      </p>
+      <pre>{buildBetaDiagnosticText()}</pre>
+    </details>
+  );
+}
+
 export function HomeDashboard({
   loading,
   organized = false,
@@ -234,6 +247,7 @@ export function HomeDashboard({
             À revoir
           </button>
         </div>
+        <BetaDiagnosticPanel />
       </section>
     );
   }
@@ -264,6 +278,7 @@ export function HomeDashboard({
       >
         Choisir les dossiers
       </button>
+      <BetaDiagnosticPanel />
     </section>
   );
 }
