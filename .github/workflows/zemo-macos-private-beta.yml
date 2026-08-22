@@ -1,0 +1,122 @@
+name: ZEMO macOS Private Beta
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/zemo-macos-private-beta.yml"
+      - "scripts/macos-ci/**"
+  workflow_dispatch:
+    inputs:
+      dist_tag:
+        description: "Private beta tag (example: 0.1.0-beta.7)"
+        required: true
+        default: "0.1.0-beta.7"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zemo-macos-private-beta-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ZEMO_DIST_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.dist_tag || '0.1.0-beta.0' }}
+
+jobs:
+  macos-private-beta:
+    name: macos-private-beta
+    runs-on: macos-14
+    timeout-minutes: 100
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup Rust
+        run: |
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Validate distribution tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$ZEMO_DIST_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+            echo "Invalid private beta tag: $ZEMO_DIST_TAG" >&2
+            exit 2
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build actual ZEMO.app with packaged sidecar
+        run: npm run tauri -- build --bundles app
+
+      - name: Inspect actual app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_REL="$(find target -type d -path '*/release/bundle/macos/ZEMO.app' -print -quit)"
+          test -n "$APP_REL"
+          test -d "$APP_REL"
+          APP="$(cd "$(dirname "$APP_REL")" && pwd -P)/$(basename "$APP_REL")"
+          test -x "$APP/Contents/MacOS/operation-executor"
+          codesign --verify --deep --strict "$APP"
+          file "$APP/Contents/MacOS/operation-executor"
+          echo "WORKING_NAME_PACKAGED_APP=$APP" >> "$GITHUB_ENV"
+
+      - name: Run packaged sidecar authentication and physical Apply tests
+        run: |
+          test -d "$WORKING_NAME_PACKAGED_APP"
+          cargo test -p desktop --lib packaged_macos_apply -- --ignored --nocapture --test-threads=1
+
+      - name: Package private beta
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/macos-ci/package-macos-beta.sh
+          scripts/macos-ci/package-macos-beta.sh \
+            "$WORKING_NAME_PACKAGED_APP" \
+            "target/macos-private-beta/dist" \
+            "$ZEMO_DIST_TAG" \
+            "$GITHUB_SHA"
+
+      - name: Verify packaged artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s target/macos-private-beta/dist/SHA256SUMS.txt
+          test -s target/macos-private-beta/dist/BUILDINFO.txt
+          test -s target/macos-private-beta/dist/README-FIRST.txt
+          test -s target/macos-private-beta/dist/beta-manifest.json
+          (cd target/macos-private-beta/dist && shasum -a 256 -c SHA256SUMS.txt)
+          cat target/macos-private-beta/dist/beta-manifest.json
+
+      - name: Upload private beta artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZEMO-${{ env.ZEMO_DIST_TAG }}-macos-arm64
+          if-no-files-found: error
+          retention-days: 30
+          path: target/macos-private-beta/dist/*
+
+      - name: Job summary
+        if: always() && !cancelled()
+        shell: bash
+        run: |
+          echo "## ZEMO macOS private beta" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Tag: \`$ZEMO_DIST_TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Signing: ad-hoc only" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Notarization: not configured" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Packaged sidecar authentication + physical Apply/Undo: required before packaging" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Artifact retention: 30 days" >> "$GITHUB_STEP_SUMMARY"
