@@ -10,6 +10,7 @@ on:
 permissions:
   contents: read
   actions: write
+  issues: write
 
 jobs:
   dispatch-private-beta:
@@ -25,8 +26,38 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run zemo-windows-private-beta.yml --repo "$GITHUB_REPOSITORY" --ref main
 
-      - name: Confirm dispatch requests
+      - name: Record dispatched runs in issue 18
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          echo "Requested macOS candidate: 0.1.0-beta.7"
-          echo "Requested Windows candidate: workflow default 0.1.0-beta.6"
-          echo "Both workflows were dispatched with ref=main."
+          set -euo pipefail
+          MAC='[]'
+          WIN='[]'
+          for attempt in {1..12}; do
+            MAC="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow zemo-macos-private-beta.yml --event workflow_dispatch --branch main --limit 1 --json databaseId,status,conclusion,headSha,createdAt,url)"
+            WIN="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow zemo-windows-private-beta.yml --event workflow_dispatch --branch main --limit 1 --json databaseId,status,conclusion,headSha,createdAt,url)"
+            if [ "$MAC" != "[]" ] && [ "$WIN" != "[]" ]; then
+              break
+            fi
+            sleep 5
+          done
+          BODY="$(cat <<EOF
+Private-beta dispatch bridge completed from branch \`release/private-beta-dispatch\`.
+
+Requested source ref: \`main\`.
+
+macOS requested tag: \`0.1.0-beta.7\`
+
+\`\`\`json
+$MAC
+\`\`\`
+
+Windows workflow tag: \`0.1.0-beta.6\` (current workflow default)
+
+\`\`\`json
+$WIN
+\`\`\`
+EOF
+)"
+          gh issue edit 18 --repo "$GITHUB_REPOSITORY" --body "$BODY"
