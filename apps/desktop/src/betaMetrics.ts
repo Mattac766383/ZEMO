@@ -130,7 +130,7 @@ export function buildBetaDiagnosticText(
   entries: BetaMetricEntry[] = readBetaMetrics(),
 ): string {
   const counts = new Map<BetaMetricEvent, number>(
-    EVENTS.map((event) => [event, 0]),
+    EVENTS.map((event) => [event, 0] as const),
   );
   let filesOrganized = 0;
 
