@@ -2596,8 +2596,7 @@ mod tests {
         request.consumer_mode = true;
         request.consumer_root_kind = ConsumerRootKind::Desktop;
         request.preferences.maximum_depth = 3;
-        let proposal =
-            LocalOrganizationProposalEngine.build(request, &|| false, &mut |_| {});
+        let proposal = LocalOrganizationProposalEngine.build(request, &|| false, &mut |_| {});
         let by_name = proposal
             .operations
             .iter()
@@ -2605,16 +2604,13 @@ mod tests {
             .collect::<HashMap<_, _>>();
         assert_eq!(
             by_name["invoice.pdf"].proposed_destination,
-            ["Documents", "Administratif"]
+            ["Documents", "Administratif", "Factures"]
         );
         assert_eq!(
             by_name["invoice.pdf"].operation_kind,
             ProposalOperationKind::MoveProposal
         );
-        assert_eq!(
-            by_name["setup.exe"].proposed_destination,
-            ["Installateurs"]
-        );
+        assert_eq!(by_name["setup.exe"].proposed_destination, ["Installateurs"]);
         assert_eq!(
             by_name["App.lnk"].operation_kind,
             ProposalOperationKind::KeepInPlace
@@ -2627,16 +2623,8 @@ mod tests {
             by_name["library.dll"].operation_kind,
             ProposalOperationKind::KeepInPlace
         );
-        assert_eq!(
-            by_name["unknown.xyz"].proposed_destination,
-            ["À vérifier"]
-        );
-        assert!(
-            proposal
-                .summary
-                .maximum_depth
-                <= 3
-        );
+        assert_eq!(by_name["unknown.xyz"].proposed_destination, ["À vérifier"]);
+        assert!(proposal.summary.maximum_depth <= 3);
     }
 
     #[test]

@@ -310,13 +310,14 @@ export function OneClickDoneView({
 }: OneClickDoneViewProps) {
   return (
     <section className="one-click-panel" aria-labelledby="one-click-done-title">
-      <h2 id="one-click-done-title">Votre ordinateur est rangé.</h2>
+      <h2 id="one-click-done-title">Rangement appliqué.</h2>
       <p>
         {filesMoved.toLocaleString()} fichier{filesMoved === 1 ? "" : "s"} rangé
         {filesMoved === 1 ? "" : "s"}
       </p>
       <p>0 fichier supprimé</p>
       <p>0 fichier écrasé</p>
+      <p className="one-click-note">Les applications, raccourcis et dossiers existants protégés sont laissés en place.</p>
       <div className="one-click-actions">
         <button type="button" disabled={undoBusy} onClick={onUndo}>
           {undoBusy ? "Annulation…" : "Annuler le rangement"}

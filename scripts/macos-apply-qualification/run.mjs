@@ -75,11 +75,11 @@ function findBundleApp() {
   const candidates = [
     path.join(
       cargoTarget,
-      "release/bundle/macos/Working Name.app",
+      "release/bundle/macos/ZEMO.app",
     ),
     path.join(
       cargoTarget,
-      "aarch64-apple-darwin/release/bundle/macos/Working Name.app",
+      "aarch64-apple-darwin/release/bundle/macos/ZEMO.app",
     ),
   ];
   return candidates.find((candidate) => existsSync(candidate));
@@ -121,16 +121,16 @@ function main() {
 
   const builtApp = findBundleApp();
   if (!builtApp) {
-    throw new Error("release Working Name.app was not found after build");
+    throw new Error("release ZEMO.app was not found after build");
   }
-  const appPath = path.join(artifactsDirectory, "Working Name.app");
+  const appPath = path.join(artifactsDirectory, "ZEMO.app");
   rmSync(appPath, { recursive: true, force: true });
   cpSync(builtApp, appPath, { recursive: true });
 
   const builtDmg = findBundleDmg();
   const dmgPath = path.join(
     artifactsDirectory,
-    `Working-Name-${packVersion}-arm64.dmg`,
+    `ZEMO-${packVersion}-arm64.dmg`,
   );
   if (builtDmg) {
     copyFileSync(builtDmg, dmgPath);
@@ -173,7 +173,7 @@ function main() {
   writeFileSync(
     path.join(artifactsDirectory, "SHA256SUMS.txt"),
     existsSync(dmgPath)
-      ? `${dmgChecksum}  Working-Name-${packVersion}-arm64.dmg\n`
+      ? `${dmgChecksum}  ZEMO-${packVersion}-arm64.dmg\n`
       : "dmg not produced\n",
   );
 
@@ -217,7 +217,7 @@ function main() {
       path.join(appPath, "Contents/MacOS/desktop"),
     )
       ? path.join(appPath, "Contents/MacOS/desktop")
-      : path.join(appPath, "Contents/MacOS/Working Name");
+      : path.join(appPath, "Contents/MacOS/ZEMO");
     const launch = spawnSync(
       launchBinary,
       [],
