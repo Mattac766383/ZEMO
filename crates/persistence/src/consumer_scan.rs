@@ -1,6 +1,6 @@
 use crate::{
     Database, PersistenceError, ScanFileInput, ScanIssueInput, ScanRecord, persist_observation,
-    synchronize_scanner_review, to_sql_integer, to_sql_u64, upsert_scan_search_document,
+    synchronize_scanner_review, to_sql_u64, upsert_scan_search_document,
 };
 use domain::{ScanId, WorkspaceId};
 use rusqlite::params;
@@ -41,7 +41,8 @@ impl Database {
         let transaction = connection.unchecked_transaction()?;
 
         for file in files {
-            let persisted = persist_observation(&transaction, &file.observation, file.accessed_at_ns)?;
+            let persisted =
+                persist_observation(&transaction, &file.observation, file.accessed_at_ns)?;
             transaction.execute(
                 "INSERT INTO scan_file_statuses(
                     scan_id, file_version_id, extension, readability_status,
