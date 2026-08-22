@@ -475,7 +475,7 @@ describe("ZEMO one-click organize", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Appliquer le rangement" }));
     expect(
-      await screen.findByRole("heading", { name: "Votre ordinateur est rangé." }),
+      await screen.findByRole("heading", { name: "Rangement appliqué." }),
     ).toBeTruthy();
     expect(screen.getByText(/7 fichiers rangés/i)).toBeTruthy();
     expect(screen.getByText(/0 fichier supprimé/i)).toBeTruthy();

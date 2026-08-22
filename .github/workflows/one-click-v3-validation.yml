@@ -1,0 +1,41 @@
+name: ZEMO One-Click v3 Acceptance
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-v3-acceptance:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Setup Rust
+        run: rustup default stable
+      - name: Prove clean compile
+        run: |
+          cargo check -p persistence
+          cargo check -p organizer
+          cargo check -p application
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Deterministic consumer policy
+        run: cargo test -p organizer consumer -- --nocapture
+      - name: 10001-file bounded-memory scan
+        run: cargo test -p application --test one_click_organize consumer_scan_has_no_arbitrary_file_count_cap -- --nocapture
+      - name: Physical Apply and exact Undo
+        run: cargo test -p application --test one_click_organize one_click_consumer_proposal_moves_personal_files_and_undo_restores -- --nocapture
+      - name: Typecheck and UI tests
+        run: |
+          npm run typecheck
+          npm test
+      - name: Production frontend build
+        run: npm run build

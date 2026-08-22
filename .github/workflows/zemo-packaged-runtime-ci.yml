@@ -1,0 +1,64 @@
+name: ZEMO Packaged Runtime CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-packaged-runtime:
+    name: macos-packaged-runtime
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup Rust
+        run: |
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build actual ZEMO.app with packaged sidecar
+        run: npm run tauri -- build --bundles app
+
+      - name: Inspect actual app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_REL="$(find target -type d -path '*/release/bundle/macos/ZEMO.app' -print -quit)"
+          test -n "$APP_REL"
+          test -d "$APP_REL"
+          APP="$(cd "$(dirname "$APP_REL")" && pwd -P)/$(basename "$APP_REL")"
+          test -d "$APP"
+          echo "WORKING_NAME_PACKAGED_APP=$APP" >> "$GITHUB_ENV"
+          echo "APP=$APP"
+          find "$APP/Contents" -maxdepth 2 -type f -print
+          test -x "$APP/Contents/MacOS/operation-executor"
+          file "$APP/Contents/MacOS/operation-executor"
+          codesign --verify --deep --strict "$APP"
+
+      - name: Run packaged sidecar authentication and physical Apply tests
+        run: |
+          test -d "$WORKING_NAME_PACKAGED_APP"
+          cargo test -p desktop --lib packaged_macos_apply -- --ignored --nocapture --test-threads=1
+
+      - name: Verify package still contains sidecar after tests
+        shell: bash
+        run: |
+          test -x "$WORKING_NAME_PACKAGED_APP/Contents/MacOS/operation-executor"
+          shasum -a 256 "$WORKING_NAME_PACKAGED_APP/Contents/MacOS/operation-executor"

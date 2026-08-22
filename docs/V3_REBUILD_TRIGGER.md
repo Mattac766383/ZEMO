@@ -1,0 +1,1 @@
+Trigger the deterministic One-Click v3 rebuild workflow after the workflow definition is present on the branch.

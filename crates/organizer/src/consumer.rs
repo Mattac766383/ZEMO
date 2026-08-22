@@ -30,8 +30,10 @@ impl ConsumerRootKind {
         let haystack = format!("{last} {label}");
         if matches_any(&haystack, &["desktop", "bureau"]) {
             Self::Desktop
-        } else if matches_any(&haystack, &["downloads", "téléchargements", "telechargements"])
-        {
+        } else if matches_any(
+            &haystack,
+            &["downloads", "téléchargements", "telechargements"],
+        ) {
             Self::Downloads
         } else if matches_any(&haystack, &["documents"]) {
             Self::Documents
@@ -150,12 +152,16 @@ pub fn decide_consumer_organization(
         );
     }
 
-    if let Some(decision) = classify_media_or_archive(
-        root_kind,
-        extension.as_deref(),
-        &name_lower,
-        document_type,
-    ) {
+    if is_project_manifest(&name_lower) {
+        return leave_in_place(
+            "project_manifest",
+            "Ce fichier peut définir un projet ou un outil de développement. ZEMO l’a laissé en place.",
+        );
+    }
+
+    if let Some(decision) =
+        classify_media_or_archive(root_kind, extension.as_deref(), &name_lower, document_type)
+    {
         return maybe_preserve_existing(source_relative_path, decision);
     }
 
@@ -204,9 +210,11 @@ pub fn category_from_destination(destination: &[String], leave_in_place: bool) -
         DOCUMENTS_FOLDER | "Travail" | "Administratif" | "Études" | "Etudes" | "Personnel" => {
             ConsumerCategory::Documents
         }
-        IMAGES_FOLDER | "Photos" | "Captures d’écran" | "Captures d'écran" | "Images téléchargées" => {
-            ConsumerCategory::Images
-        }
+        IMAGES_FOLDER
+        | "Photos"
+        | "Captures d’écran"
+        | "Captures d'écran"
+        | "Images téléchargées" => ConsumerCategory::Images,
         VIDEOS_FOLDER => ConsumerCategory::Videos,
         ARCHIVES_FOLDER => ConsumerCategory::Archives,
         INSTALLERS_FOLDER => ConsumerCategory::Installers,
@@ -278,6 +286,29 @@ fn looks_system_msi(filename_lower: &str) -> bool {
         || filename_lower.contains("hotfix")
         || filename_lower.contains("update")
         || filename_lower.starts_with("windows")
+}
+
+fn is_project_manifest(filename_lower: &str) -> bool {
+    matches!(
+        filename_lower,
+        "package.json"
+            | "package-lock.json"
+            | "pnpm-lock.yaml"
+            | "yarn.lock"
+            | "cargo.toml"
+            | "cargo.lock"
+            | "pyproject.toml"
+            | "requirements.txt"
+            | "poetry.lock"
+            | "go.mod"
+            | "go.sum"
+            | "pom.xml"
+            | "build.gradle"
+            | "build.gradle.kts"
+            | "gradle.properties"
+            | "composer.json"
+            | "composer.lock"
+    )
 }
 
 fn is_unknown_executable(extension: Option<&str>) -> bool {
@@ -363,53 +394,77 @@ fn document_destination(
     name_lower: &str,
     document_type: Option<&str>,
 ) -> Vec<String> {
-    let leaf = document_leaf(name_lower, document_type);
+    let leaf = document_leaf_segments(name_lower, document_type);
     match root_kind {
-        ConsumerRootKind::Documents => vec![leaf.to_owned()],
+        ConsumerRootKind::Documents => leaf.into_iter().map(str::to_owned).collect(),
         ConsumerRootKind::Pictures | ConsumerRootKind::Videos | ConsumerRootKind::Music => {
-            vec![DOCUMENTS_FOLDER.to_owned(), leaf.to_owned()]
+            std::iter::once(DOCUMENTS_FOLDER.to_owned())
+                .chain(leaf.into_iter().map(str::to_owned))
+                .collect()
         }
-        _ => vec![DOCUMENTS_FOLDER.to_owned(), leaf.to_owned()],
+        _ => std::iter::once(DOCUMENTS_FOLDER.to_owned())
+            .chain(leaf.into_iter().map(str::to_owned))
+            .collect(),
     }
 }
 
-fn document_leaf(name_lower: &str, document_type: Option<&str>) -> &'static str {
-    if matches!(
-        document_type,
-        Some("invoice" | "tax_document" | "insurance_document" | "bank_statement" | "receipt")
-    ) || contains_any(
+fn document_leaf_segments(name_lower: &str, document_type: Option<&str>) -> Vec<&'static str> {
+    if matches!(document_type, Some("invoice" | "receipt"))
+        || contains_any(
+            name_lower,
+            &["invoice", "facture", "receipt", "reçu", "recu", "quittance"],
+        )
+    {
+        return vec!["Administratif", "Factures"];
+    }
+    if matches!(document_type, Some("bank_statement"))
+        || contains_any(
+            name_lower,
+            &["bank", "banque", "releve", "relevé", "iban", "rib"],
+        )
+    {
+        return vec!["Administratif", "Banque"];
+    }
+    if matches!(document_type, Some("insurance_document"))
+        || contains_any(name_lower, &["assurance", "insurance", "mutuelle"])
+    {
+        return vec!["Administratif", "Assurances"];
+    }
+    if matches!(document_type, Some("tax_document"))
+        || contains_any(name_lower, &["tax", "impot", "impôt", "fiscal", "fisc"])
+    {
+        return vec!["Administratif", "Impôts"];
+    }
+    if matches!(document_type, Some("contract"))
+        || contains_any(name_lower, &["contrat", "contract", "cerfa", "admin"])
+    {
+        return vec!["Administratif"];
+    }
+    if contains_any(
         name_lower,
         &[
-            "invoice",
-            "facture",
-            "tax",
-            "impot",
-            "impôt",
-            "bank",
-            "releve",
-            "relevé",
-            "admin",
-            "contrat",
-            "contract",
-            "assurance",
-            "cerfa",
+            "school",
+            "cours",
+            "etude",
+            "étude",
+            "homework",
+            "devoir",
+            "université",
+            "universite",
         ],
     ) {
-        return "Administratif";
+        return vec!["Études"];
     }
     if contains_any(
         name_lower,
-        &["school", "cours", "etude", "étude", "homework", "devoir", "université", "universite"],
+        &[
+            "work", "travail", "meeting", "reunion", "réunion", "projet", "client", "chantier",
+            "devis",
+        ],
     ) {
-        return "Études";
+        return vec!["Travail"];
     }
-    if contains_any(
-        name_lower,
-        &["work", "travail", "meeting", "reunion", "réunion", "projet", "client"],
-    ) {
-        return "Travail";
-    }
-    "Personnel"
+    vec!["Personnel"]
 }
 
 fn image_destination(root_kind: ConsumerRootKind, leaf: &str) -> Vec<String> {
@@ -590,7 +645,10 @@ mod tests {
     #[test]
     fn desktop_personal_files_get_shallow_visible_folders() {
         let invoice = decide(ConsumerRootKind::Desktop, "invoice.pdf");
-        assert_eq!(invoice.destination, ["Documents", "Administratif"]);
+        assert_eq!(
+            invoice.destination,
+            ["Documents", "Administratif", "Factures"]
+        );
         assert!(!invoice.leave_in_place);
 
         let photo = decide(ConsumerRootKind::Desktop, "holiday.jpg");

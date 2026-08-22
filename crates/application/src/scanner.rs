@@ -10,9 +10,9 @@ use domain::{
 use extraction::{ContentExtractionEngine, LocalExtractionEngine};
 use knowledge::{DeterministicSemanticProvider, SemanticProvider};
 use persistence::{
-    Database, DuplicateGroupInput, DuplicateGroupRecord, InventorySort, MonitoringRootStatus,
-    RootMonitoringConfiguration, RootRecord, ScanCompletionInput, ScanFileInput, ScanFileRecord,
-    ScanIssueInput, ScanIssueRecord, ScanRecord, WorkspaceRecord,
+    ConsumerScanFinalization, Database, DuplicateGroupInput, DuplicateGroupRecord, InventorySort,
+    MonitoringRootStatus, RootMonitoringConfiguration, RootRecord, ScanCompletionInput,
+    ScanFileInput, ScanFileRecord, ScanIssueInput, ScanIssueRecord, ScanRecord, WorkspaceRecord,
 };
 use platform::{PlatformError, ReadOnlyEntry, ReadOnlyPlatform};
 use search::{
@@ -33,6 +33,7 @@ use std::{
 /// the folder is exhausted or the user explicitly cancels it. Progress events
 /// are throttled only to keep the UI responsive on large folders.
 const CONSUMER_PROGRESS_EMIT_EVERY: u64 = 128;
+const CONSUMER_SCAN_BATCH_SIZE: usize = 256;
 const DEFAULT_MONITORING_SIZE_THRESHOLD_BYTES: u64 = 512 * 1_024 * 1_024;
 const DEFAULT_MONITORING_STARTUP_ENTRY_LIMIT: u32 = 100_000;
 
@@ -370,20 +371,94 @@ impl ScannerApplicationService {
         };
         on_progress(progress);
 
-        let paths = top_level_regular_paths(&root.absolute_path_native, is_cancelled)?;
-        let truncated = false;
-        let mut files = Vec::with_capacity(paths.len());
-        let mut issues = Vec::new();
+        let mut files = Vec::with_capacity(CONSUMER_SCAN_BATCH_SIZE);
+        let mut issues = Vec::with_capacity(CONSUMER_SCAN_BATCH_SIZE);
+        let mut persisted_files = 0_u64;
+        let mut issue_count = 0_u64;
         let mut cancelled = false;
 
         progress.phase = ScanPhase::Inspecting;
         on_progress(progress);
 
-        for relative_path in paths {
+        let entries = fs::read_dir(&root.absolute_path_native).map_err(ApplicationError::Io)?;
+        for entry_result in entries {
             if is_cancelled() {
                 cancelled = true;
                 break;
             }
+
+            let entry = match entry_result {
+                Ok(entry) => entry,
+                Err(error) => {
+                    progress.errors = progress.errors.saturating_add(1);
+                    progress.skipped_items = progress.skipped_items.saturating_add(1);
+                    issues.push(ScanIssueInput {
+                        relative_path: ".".to_owned(),
+                        code: "directory_entry_unreadable".to_owned(),
+                        message: error.to_string(),
+                        is_directory: false,
+                        is_error: true,
+                        skipped: true,
+                    });
+                    if issues.len() >= CONSUMER_SCAN_BATCH_SIZE {
+                        let (file_count, issues_written) = flush_consumer_batch(
+                            self.database.as_ref(),
+                            workspace_id,
+                            scan_id,
+                            &mut files,
+                            &mut issues,
+                        )?;
+                        persisted_files = persisted_files.saturating_add(file_count);
+                        issue_count = issue_count.saturating_add(issues_written);
+                    }
+                    continue;
+                }
+            };
+
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with('.') {
+                progress.skipped_items = progress.skipped_items.saturating_add(1);
+                continue;
+            }
+            let file_type = match entry.file_type() {
+                Ok(value) => value,
+                Err(error) => {
+                    progress.errors = progress.errors.saturating_add(1);
+                    progress.skipped_items = progress.skipped_items.saturating_add(1);
+                    issues.push(ScanIssueInput {
+                        relative_path: name.to_string_lossy().into_owned(),
+                        code: "metadata_unavailable".to_owned(),
+                        message: error.to_string(),
+                        is_directory: false,
+                        is_error: true,
+                        skipped: true,
+                    });
+                    continue;
+                }
+            };
+            if file_type.is_dir() {
+                progress.directories_discovered = progress.directories_discovered.saturating_add(1);
+                continue;
+            }
+            if file_type.is_symlink() {
+                progress.skipped_items = progress.skipped_items.saturating_add(1);
+                issues.push(ScanIssueInput {
+                    relative_path: name.to_string_lossy().into_owned(),
+                    code: "reparse_point".to_owned(),
+                    message: "symbolic links and aliases are intentionally left in place"
+                        .to_owned(),
+                    is_directory: false,
+                    is_error: false,
+                    skipped: true,
+                });
+                continue;
+            }
+            if !file_type.is_file() {
+                progress.skipped_items = progress.skipped_items.saturating_add(1);
+                continue;
+            }
+
+            let relative_path = PathBuf::from(name);
             match inspect_consumer_metadata(
                 self.read_only_platform.as_ref(),
                 &root.absolute_path_native,
@@ -409,15 +484,14 @@ impl ScannerApplicationService {
                             skipped: true,
                         });
                         progress.skipped_items = progress.skipped_items.saturating_add(1);
-                        continue;
+                    } else {
+                        files.push(metadata_scan_file_input(
+                            workspace_id,
+                            root.id,
+                            scan_id,
+                            entry,
+                        )?);
                     }
-                    files.push(metadata_scan_file_input(
-                        workspace_id,
-                        root.id,
-                        scan_id,
-                        entry,
-                    )?);
-                    progress.files_indexed = u64::try_from(files.len()).unwrap_or(u64::MAX);
                 }
                 Err(error) => {
                     let issue = scan_issue_for_platform_error(&relative_path, &error);
@@ -428,10 +502,35 @@ impl ScannerApplicationService {
                     issues.push(issue);
                 }
             }
+
+            if files.len() + issues.len() >= CONSUMER_SCAN_BATCH_SIZE {
+                let (file_count, issues_written) = flush_consumer_batch(
+                    self.database.as_ref(),
+                    workspace_id,
+                    scan_id,
+                    &mut files,
+                    &mut issues,
+                )?;
+                persisted_files = persisted_files.saturating_add(file_count);
+                issue_count = issue_count.saturating_add(issues_written);
+            }
+            progress.files_indexed =
+                persisted_files.saturating_add(u64::try_from(files.len()).unwrap_or(u64::MAX));
             if progress.files_discovered % CONSUMER_PROGRESS_EMIT_EVERY == 0 {
                 on_progress(progress);
             }
         }
+
+        let (file_count, issues_written) = flush_consumer_batch(
+            self.database.as_ref(),
+            workspace_id,
+            scan_id,
+            &mut files,
+            &mut issues,
+        )?;
+        persisted_files = persisted_files.saturating_add(file_count);
+        issue_count = issue_count.saturating_add(issues_written);
+        progress.files_indexed = persisted_files;
         on_progress(progress);
 
         progress.phase = if cancelled {
@@ -441,42 +540,33 @@ impl ScannerApplicationService {
         };
         on_progress(progress);
 
-        let completion = ScanCompletionInput {
-            scan_id,
-            workspace_id,
-            root_id: root.id,
-            status: if cancelled {
-                "cancelled".to_owned()
-            } else {
-                "completed".to_owned()
-            },
-            files_discovered: progress.files_discovered,
-            directories_discovered: progress.directories_discovered,
-            bytes_discovered: progress.bytes_discovered,
-            files_hashed: 0,
-            errors: progress.errors,
-            skipped_items: progress.skipped_items,
-            truncated,
-            files,
-            issues,
-            duplicate_groups: Vec::new(),
-        };
-
-        let persisted = match self.database.complete_scan(&completion) {
-            Ok(persisted) => persisted,
-            Err(error) => {
-                let _ = self.database.fail_scan(scan_id, "persistence_failed");
-                return Err(ApplicationError::Persistence(error));
-            }
-        };
-        progress.files_indexed = persisted.scan.indexed_count;
+        let scan = self
+            .database
+            .finalize_consumer_scan(&ConsumerScanFinalization {
+                scan_id,
+                status: if cancelled {
+                    "cancelled".to_owned()
+                } else {
+                    "completed".to_owned()
+                },
+                files_discovered: progress.files_discovered,
+                files_indexed: persisted_files,
+                directories_discovered: progress.directories_discovered,
+                bytes_discovered: progress.bytes_discovered,
+                errors: progress.errors,
+                skipped_items: progress.skipped_items,
+                issue_count,
+                truncated: false,
+            })
+            .map_err(ApplicationError::Persistence)?;
+        progress.files_indexed = scan.indexed_count;
         progress.phase = if cancelled {
             ScanPhase::Cancelled
         } else {
             ScanPhase::Completed
         };
         on_progress(progress);
-        Ok(persisted.scan)
+        Ok(scan)
     }
 
     fn persist_catalog_output(
@@ -586,6 +676,26 @@ impl ScannerApplicationService {
             .scan_issues(scan_id)
             .map_err(ApplicationError::Persistence)
     }
+}
+
+fn flush_consumer_batch(
+    database: &Database,
+    workspace_id: WorkspaceId,
+    scan_id: ScanId,
+    files: &mut Vec<ScanFileInput>,
+    issues: &mut Vec<ScanIssueInput>,
+) -> Result<(u64, u64), ApplicationError> {
+    if files.is_empty() && issues.is_empty() {
+        return Ok((0, 0));
+    }
+    let file_count = u64::try_from(files.len()).unwrap_or(u64::MAX);
+    let issue_count = u64::try_from(issues.len()).unwrap_or(u64::MAX);
+    database
+        .append_consumer_scan_batch(workspace_id, scan_id, files, issues)
+        .map_err(ApplicationError::Persistence)?;
+    files.clear();
+    issues.clear();
+    Ok((file_count, issue_count))
 }
 
 fn metadata_scan_file_input(
@@ -824,35 +934,6 @@ fn is_standard_personal_root(path: &Path) -> bool {
             | "videos"
             | "vidéos"
     )
-}
-
-fn top_level_regular_paths(
-    root: &Path,
-    is_cancelled: &dyn Fn() -> bool,
-) -> Result<Vec<PathBuf>, ApplicationError> {
-    let mut paths = Vec::new();
-    let entries = fs::read_dir(root).map_err(ApplicationError::Io)?;
-    for entry in entries {
-        if is_cancelled() {
-            break;
-        }
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => continue,
-        };
-        let name = entry.file_name();
-        if name.to_string_lossy().starts_with('.') {
-            continue;
-        }
-        let file_type = match entry.file_type() {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-        if file_type.is_file() && !file_type.is_symlink() {
-            paths.push(PathBuf::from(name));
-        }
-    }
-    Ok(paths)
 }
 
 #[inline(never)]

@@ -1,6 +1,7 @@
 //! SQLCipher-backed persistence with a single serialized writer.
 
 mod ann_chunks;
+mod consumer_scan;
 mod execution;
 mod hybrid_search;
 mod identity;
@@ -14,6 +15,7 @@ pub use ann_chunks::{
     AnnFileCandidate, AnnRebuildVector, AnnUpsertRecord, FileChunkReplaceResult,
     FileChunkReplacement,
 };
+pub use consumer_scan::*;
 pub use hybrid_search::FileEmbeddingReplacement;
 pub use records::*;
 pub use scale_fixture::{

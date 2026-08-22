@@ -209,7 +209,7 @@ fn one_click_consumer_proposal_moves_personal_files_and_undo_restores() {
 #[test]
 fn consumer_scan_has_no_arbitrary_file_count_cap() {
     let sandbox = MutationSandbox::new();
-    const FILE_COUNT: usize = 5_257;
+    const FILE_COUNT: usize = 10_001;
     for index in 0..FILE_COUNT {
         sandbox.write(&format!("loose-{index:05}.txt"), b"x");
     }

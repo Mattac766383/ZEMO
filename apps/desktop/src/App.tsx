@@ -788,14 +788,24 @@ function App() {
         const prepared = await prepareExecution(current.id, current.revision);
         const approved = await approveExecution(prepared.session.id);
         const completed = await startExecution(approved.session.id);
-        const applied = completed.session.summary?.applied ?? 0;
-        if (current.summary.proposedMoves > 0 && applied === 0) {
+        const summary = completed.session.summary;
+        if (
+          completed.session.status !== "COMPLETED" ||
+          summary.failed > 0 ||
+          summary.blocked > 0 ||
+          summary.skipped > 0
+        ) {
+          throw new Error(
+            `Apply incomplete for proposal ${current.id}: status=${completed.session.status}, applied=${summary.applied}, blocked=${summary.blocked}, skipped=${summary.skipped}, failed=${summary.failed}`,
+          );
+        }
+        if (current.summary.proposedMoves > 0 && summary.applied === 0) {
           throw new Error(
             `Apply returned zero physical moves for proposal ${current.id}; ZEMO will not report success.`,
           );
         }
         executionIds.push(completed.session.id);
-        filesMoved += applied;
+        filesMoved += current.summary.proposedMoves;
       }
       const result = {
         filesMoved,
@@ -820,7 +830,16 @@ function App() {
     clearError();
     try {
       for (const executionId of [...lastOrganize.executionIds].reverse()) {
-        await rollbackExecution(executionId);
+        const rolledBack = await rollbackExecution(executionId);
+        if (
+          rolledBack.session.status !== "ROLLED_BACK" ||
+          rolledBack.session.summary.rollbackBlocked > 0 ||
+          rolledBack.session.summary.rollbackFailed > 0
+        ) {
+          throw new Error(
+            `Undo incomplete for execution ${executionId}: status=${rolledBack.session.status}, blocked=${rolledBack.session.summary.rollbackBlocked}, failed=${rolledBack.session.summary.rollbackFailed}`,
+          );
+        }
       }
       clearLastOrganizeResult();
       setLastOrganize(null);
