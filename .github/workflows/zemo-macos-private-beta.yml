@@ -223,15 +223,7 @@ jobs:
           cat target/macos-private-beta/dist/beta-manifest.json
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            node <<'NODE'
-            const fs = require("fs");
-            const manifest = JSON.parse(
-              fs.readFileSync("target/macos-private-beta/dist/beta-manifest.json", "utf8"),
-            );
-            if (manifest.signing.mode !== "Developer ID Application") process.exit(10);
-            if (manifest.signing.notarized !== true) process.exit(11);
-            if (manifest.signing.external_user_experience_qualified !== true) process.exit(12);
-            NODE
+            node -e 'const fs=require("fs"); const m=JSON.parse(fs.readFileSync("target/macos-private-beta/dist/beta-manifest.json","utf8")); if(m.signing.mode!=="Developer ID Application") process.exit(10); if(m.signing.notarized!==true) process.exit(11); if(m.signing.external_user_experience_qualified!==true) process.exit(12);'
           fi
 
       - name: Upload private beta artifact
