@@ -241,17 +241,14 @@ jobs:
           powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\print-environment.ps1
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "ZEMO_CI_ENVIRONMENT_STATUS=PASS"
 
-      - name: Detect code signing without printing secrets
+      - name: Prepare Windows Authenticode signing
+        id: signing
+        shell: pwsh
         env:
-          HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
-          HAS_TAURI_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
-        run: |
-          if ($env:HAS_WINDOWS_CERT -eq "true" -or $env:HAS_TAURI_KEY -eq "true") {
-            Write-Host "WINDOWS SIGNING: a secret exists; this workflow does not use it"
-          } else {
-            Write-Host "WINDOWS SIGNING: NOT CONFIGURED"
-          }
-          Write-Host "SMARTSCREEN USER EXPERIENCE: NOT QUALIFIED"
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+        run: .\scripts\windows-ci\prepare-code-signing.ps1
 
       - name: Install npm dependencies from lockfile
         run: npm ci
@@ -280,13 +277,34 @@ jobs:
           }
 
       - name: Build Apply-enabled NSIS installer
-        run: npm run tauri -- build --features windows-apply-qualified
+        shell: pwsh
+        run: |
+          if ($env:ZEMO_WINDOWS_SIGNING_ENABLED -eq "true") {
+            Write-Host "Building with Tauri Authenticode signing enabled."
+            npm run tauri -- build --features windows-apply-qualified --config "$env:ZEMO_TAURI_SIGNING_CONFIG"
+          } else {
+            Write-Host "Building unsigned private beta because certificate secrets are absent."
+            npm run tauri -- build --features windows-apply-qualified
+          }
 
       - name: Inspect packaged runtime
         run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\inspect-bundle.ps1 -RepoRoot $env:GITHUB_WORKSPACE
 
+      - name: Verify Authenticode signatures
+        shell: pwsh
+        run: |
+          if ($env:ZEMO_WINDOWS_SIGNING_ENABLED -eq "true") {
+            .\scripts\windows-ci\verify-authenticode.ps1 -RepoRoot $env:GITHUB_WORKSPACE -RequireSigned
+          } else {
+            .\scripts\windows-ci\verify-authenticode.ps1 -RepoRoot $env:GITHUB_WORKSPACE
+          }
+
       - name: Package private-beta files
         run: powershell -ExecutionPolicy Bypass -File .\scripts\windows-ci\package-windows-beta.ps1 -DistributionKind apply -DistTag $env:ZEMO_DIST_TAG -GitCommit $env:GITHUB_SHA -RepoRoot $env:GITHUB_WORKSPACE
+
+      - name: Stamp signing evidence into beta metadata
+        shell: pwsh
+        run: .\scripts\windows-ci\stamp-signing-metadata.ps1 -RepoRoot $env:GITHUB_WORKSPACE
 
       - name: Silent NSIS install smoke
         continue-on-error: true
