@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "channel": "private-beta",
-  "request_id": 3,
-  "macos_dist_tag": "0.1.0-beta.8",
+  "request_id": 4,
+  "macos_dist_tag": "0.1.0-beta.9",
   "windows_dist_tag": "0.1.0-beta.6",
-  "notes": "Rebuild private beta from main after merging the new ZEMO logo so installed apps can be updated."
+  "notes": "Trigger the first macOS private beta release that requires Developer ID signing, Apple notarization, stapling, and Gatekeeper qualification after merging PR #32."
 }
