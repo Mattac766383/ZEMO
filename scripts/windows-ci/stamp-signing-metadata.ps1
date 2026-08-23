@@ -23,6 +23,7 @@ if (-not (Test-Path -LiteralPath $authenticodePath)) {
 }
 $auth = Get-Content -LiteralPath $authenticodePath -Raw | ConvertFrom-Json
 $valid = [bool]$auth.all_required_valid
+$signingEnabled = [string]$env:ZEMO_WINDOWS_SIGNING_ENABLED -eq "true"
 
 $manifestPath = Join-Path $distRoot "beta-manifest.json"
 if (-not (Test-Path -LiteralPath $manifestPath)) {
@@ -30,7 +31,7 @@ if (-not (Test-Path -LiteralPath $manifestPath)) {
 }
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 $manifest.signing.configured = $valid
-$manifest.signing.secret_present = -not [string]::IsNullOrWhiteSpace([string]$env:WINDOWS_CERTIFICATE)
+$manifest.signing.secret_present = $signingEnabled
 $manifest.signing | Add-Member -NotePropertyName authenticode_valid -NotePropertyValue $valid -Force
 $manifest.signing | Add-Member -NotePropertyName certificate_thumbprint -NotePropertyValue ([string]$env:ZEMO_WINDOWS_CERT_THUMBPRINT) -Force
 $manifest.signing.smartscreen_external_user_experience_qualified = $false
