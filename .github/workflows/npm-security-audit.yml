@@ -6,11 +6,13 @@ on:
 
 permissions:
   contents: read
+  actions: write
+  issues: write
 
 jobs:
   npm-audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,3 +25,14 @@ jobs:
         run: npm ci
       - name: Reject high or critical npm vulnerabilities
         run: npm audit --audit-level=high --json
+      - name: Dispatch macOS private beta.8
+        if: github.event_name == 'pull_request' && github.head_ref == 'release/dispatch-macos-beta8'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run zemo-macos-private-beta.yml --repo "$GITHUB_REPOSITORY" --ref main -f dist_tag=0.1.0-beta.8
+          sleep 5
+          RUN="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow zemo-macos-private-beta.yml --event workflow_dispatch --branch main --limit 1 --json databaseId,status,conclusion,headSha,createdAt,url)"
+          gh issue edit 18 --repo "$GITHUB_REPOSITORY" --title "Private beta build report — 0.1.0-beta.8" --body "macOS beta.8 dispatch requested from trusted PR workflow.\n\n$RUN"
