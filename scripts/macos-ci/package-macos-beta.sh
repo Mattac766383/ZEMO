@@ -5,6 +5,9 @@ APP_PATH="${1:-}"
 OUT_DIR="${2:-}"
 DIST_TAG="${3:-}"
 GIT_COMMIT="${4:-${GITHUB_SHA:-unknown}}"
+SIGNING_MODE="${ZEMO_MACOS_SIGNING_MODE:-ad-hoc}"
+NOTARIZED="${ZEMO_MACOS_NOTARIZED:-false}"
+EXTERNAL_QUALIFIED="${ZEMO_MACOS_EXTERNAL_QUALIFIED:-false}"
 
 if [[ -z "$APP_PATH" || -z "$OUT_DIR" || -z "$DIST_TAG" ]]; then
   echo "usage: package-macos-beta.sh <ZEMO.app> <out-dir> <dist-tag> [git-commit]" >&2
@@ -29,6 +32,10 @@ fi
 
 codesign --verify --deep --strict "$APP_PATH"
 
+if [[ "$NOTARIZED" == "true" ]]; then
+  xcrun stapler validate "$APP_PATH"
+fi
+
 mkdir -p "$OUT_DIR"
 rm -f "$OUT_DIR"/*
 
@@ -36,7 +43,7 @@ ARCH="$(uname -m)"
 ZIP_NAME="ZEMO-${DIST_TAG}-macos-${ARCH}.zip"
 ZIP_PATH="$OUT_DIR/$ZIP_NAME"
 
-# ditto preserves the macOS application bundle metadata better than a generic zip.
+# ditto preserves the macOS application bundle metadata and stapled ticket.
 ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_PATH"
 
 SHA256="$(shasum -a 256 "$ZIP_PATH" | awk '{print $1}')"
@@ -55,15 +62,16 @@ macOS runner version: $MACOS_VERSION
 git commit: $GIT_COMMIT
 bundle: $ZIP_NAME
 sha256: $SHA256
-signing: ad-hoc only
-notarization: NOT CONFIGURED
-Gatekeeper external-user experience: NOT QUALIFIED
+signing: $SIGNING_MODE
+notarized: $NOTARIZED
+Gatekeeper external-user experience qualified: $EXTERNAL_QUALIFIED
 packaged sidecar: PRESENT
 physical Apply/Undo qualification: PASS before packaging
 build timestamp: $BUILD_TIME
 EOF
 
-cat > "$OUT_DIR/README-FIRST.txt" <<EOF
+if [[ "$EXTERNAL_QUALIFIED" == "true" ]]; then
+  cat > "$OUT_DIR/README-FIRST.txt" <<EOF
 ZEMO — Bêta privée macOS
 ========================
 
@@ -71,24 +79,22 @@ Cette archive contient ZEMO.app et son exécuteur local packagé.
 La build a passé les tests du bundle réel, l’authentification du sidecar et les
 tests physiques Apply/Undo avant création de cette archive.
 
-IMPORTANT
----------
-- Cette bêta utilise uniquement une signature ad-hoc.
-- Elle n’est PAS notariée par Apple.
-- Ne désactivez pas Gatekeeper ou les protections macOS pour la lancer.
-- Si macOS bloque l’application, arrêtez le test et signalez-le au mainteneur.
-- Utilisez d’abord un dossier de test contenant des copies de fichiers.
+Sécurité macOS
+--------------
+- Signature : Apple Developer ID Application.
+- Notarisation Apple : validée.
+- Ticket de notarisation : agrafé (stapled) dans ZEMO.app.
+- Gatekeeper : qualification externe validée par `spctl` avant packaging.
 
 Test conseillé
 --------------
 1. Décompressez $ZIP_NAME.
-2. Ouvrez ZEMO normalement.
-3. Faites le premier essai sur un petit dossier de test.
-4. Vérifiez la proposition avant Apply.
-5. Testez Undo après un petit Apply réussi.
-6. Testez une recherche sémantique simple.
-7. En cas de problème, ouvrez « Diagnostic bêta local » dans l’accueil et
-   partagez uniquement ces compteurs avec le mainteneur.
+2. Glissez ZEMO.app dans Applications.
+3. Ouvrez ZEMO normalement depuis Applications.
+4. Faites le premier essai sur un petit dossier de test.
+5. Vérifiez la proposition avant Apply.
+6. Testez Undo après un petit Apply réussi.
+7. Testez une recherche sémantique simple.
 
 Confidentialité
 ---------------
@@ -101,6 +107,23 @@ Version : 0.1.0 ($DIST_TAG)
 Fichier : $ZIP_NAME
 SHA-256 : $SHA256
 EOF
+else
+  cat > "$OUT_DIR/README-FIRST.txt" <<EOF
+ZEMO — Bêta privée macOS
+========================
+
+Cette archive contient ZEMO.app et son exécuteur local packagé.
+
+IMPORTANT
+---------
+Cette build n’est pas qualifiée pour une distribution externe macOS.
+Signature : $SIGNING_MODE
+Notarisation : $NOTARIZED
+Gatekeeper externe : $EXTERNAL_QUALIFIED
+
+Ne distribuez pas cette archive à des testeurs externes.
+EOF
+fi
 
 export ZEMO_BETA_DIST_TAG="$DIST_TAG"
 export ZEMO_BETA_GIT_COMMIT="$GIT_COMMIT"
@@ -108,6 +131,9 @@ export ZEMO_BETA_ARCH="$ARCH"
 export ZEMO_BETA_BUNDLE="$ZIP_NAME"
 export ZEMO_BETA_SHA256="$SHA256"
 export ZEMO_BETA_BUILD_TIME="$BUILD_TIME"
+export ZEMO_BETA_SIGNING_MODE="$SIGNING_MODE"
+export ZEMO_BETA_NOTARIZED="$NOTARIZED"
+export ZEMO_BETA_EXTERNAL_QUALIFIED="$EXTERNAL_QUALIFIED"
 
 node <<'NODE' > "$OUT_DIR/beta-manifest.json"
 const manifest = {
@@ -122,9 +148,10 @@ const manifest = {
   artifact: process.env.ZEMO_BETA_BUNDLE,
   sha256: process.env.ZEMO_BETA_SHA256,
   signing: {
-    mode: "ad-hoc",
-    notarized: false,
-    external_user_experience_qualified: false,
+    mode: process.env.ZEMO_BETA_SIGNING_MODE,
+    notarized: process.env.ZEMO_BETA_NOTARIZED === "true",
+    external_user_experience_qualified:
+      process.env.ZEMO_BETA_EXTERNAL_QUALIFIED === "true",
   },
   runtime_qualification: {
     bundle_inspected: true,
