@@ -5,18 +5,15 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   npm-audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          persist-credentials: true
-          ref: ${{ github.head_ref || github.ref_name }}
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -26,33 +23,3 @@ jobs:
         run: npm ci
       - name: Reject high or critical npm vulnerabilities
         run: npm audit --audit-level=high --json
-      - name: Generate minimal ZEMO icon assets
-        if: github.event_name == 'pull_request' && github.head_ref == 'zemo/import-new-logo'
-        run: |
-          python -m pip install --disable-pip-version-check Pillow
-          python apps/desktop/src-tauri/icons/generate_zemo_icon.py
-          python - <<'PY'
-          from PIL import Image
-          from pathlib import Path
-          root = Path('apps/desktop/src-tauri/icons')
-          required = ['icon.png','zemo-icon-1024.png','32x32.png','128x128.png','128x128@2x.png','icon.ico','icon.icns']
-          for name in required:
-              path = root / name
-              assert path.exists() and path.stat().st_size > 0, f'missing {name}'
-          img = Image.open(root / 'icon.png')
-          assert img.size == (1024, 1024), img.size
-          print('ZEMO icon generation: PASS')
-          PY
-      - name: Commit generated icon assets to logo branch
-        if: github.event_name == 'pull_request' && github.head_ref == 'zemo/import-new-logo'
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add apps/desktop/src-tauri/icons/*.png apps/desktop/src-tauri/icons/icon.ico apps/desktop/src-tauri/icons/icon.icns
-          if git diff --cached --quiet; then
-            echo "Icon assets already up to date."
-            exit 0
-          fi
-          git commit -m "Generate minimal ZEMO platform icons"
-          git push origin HEAD:${{ github.head_ref }}
