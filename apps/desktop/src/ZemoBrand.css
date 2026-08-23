@@ -1,0 +1,59 @@
+/* ZEMO minimal brand mark: black ground, blue z, white emo. */
+
+.scanner-header.scanner-header--simple .eyebrow {
+  position: relative;
+  display: inline-flex;
+  width: 8.6rem;
+  min-width: 8.6rem;
+  height: 2.7rem;
+  min-height: 2.7rem;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 13px;
+  color: transparent;
+  background: #050506;
+  box-shadow: 0 8px 24px rgb(16 42 79 / 12%);
+  font-size: 0;
+  line-height: 1;
+  letter-spacing: 0;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.scanner-header.scanner-header--simple .eyebrow::before,
+.scanner-header.scanner-header--simple .eyebrow::after {
+  display: inline-block;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 1.45rem;
+  font-weight: 620;
+  letter-spacing: -0.07em;
+  line-height: 1;
+  text-transform: lowercase;
+}
+
+.scanner-header.scanner-header--simple .eyebrow::before {
+  color: #1478ff;
+  content: "z";
+}
+
+.scanner-header.scanner-header--simple .eyebrow::after {
+  color: #f8f9fb;
+  content: "emo";
+}
+
+@media (max-width: 640px) {
+  .scanner-header.scanner-header--simple .eyebrow {
+    width: 7.7rem;
+    min-width: 7.7rem;
+    height: 2.5rem;
+    min-height: 2.5rem;
+  }
+
+  .scanner-header.scanner-header--simple .eyebrow::before,
+  .scanner-header.scanner-header--simple .eyebrow::after {
+    font-size: 1.3rem;
+  }
+}
