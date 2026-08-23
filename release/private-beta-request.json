@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "channel": "private-beta",
-  "request_id": 4,
+  "request_id": 5,
   "macos_dist_tag": "0.1.0-beta.9",
   "windows_dist_tag": "0.1.0-beta.6",
-  "notes": "Trigger the first macOS private beta release that requires Developer ID signing, Apple notarization, stapling, and Gatekeeper qualification after merging PR #32."
+  "notes": "Trusted PR dispatch retry for macOS beta.9 after PR #32. Requires Developer ID signing, Apple notarization, stapling, and Gatekeeper qualification."
 }
