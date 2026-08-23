@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "icons": "tauri icon src-tauri/icons/zemo-icon-1024.png",
     "preview": "vite preview",
     "sidecar:check": "node ./scripts/prepare-operation-executor-sidecar.mjs --check",
     "sidecar:prepare": "node ./scripts/prepare-operation-executor-sidecar.mjs",
