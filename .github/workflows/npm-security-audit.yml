@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   npm-audit:
@@ -23,3 +24,20 @@ jobs:
         run: npm ci
       - name: Reject high or critical npm vulnerabilities
         run: npm audit --audit-level=high --json
+
+      - name: Dispatch final private beta candidates
+        if: startsWith(github.head_ref, 'release/private-beta-6-final-dispatch')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_MAIN_SHA: 0b98ea531c9f7ac9570b6b677a9ecc740e1f44f3
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAIN_SHA="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq '.sha')"
+          if [[ "$MAIN_SHA" != "$EXPECTED_MAIN_SHA" ]]; then
+            echo "main moved: expected $EXPECTED_MAIN_SHA, got $MAIN_SHA" >&2
+            exit 2
+          fi
+          gh workflow run zemo-macos-private-beta.yml --repo "$GITHUB_REPOSITORY" --ref main -f dist_tag=0.1.0-beta.6
+          gh workflow run zemo-windows-private-beta.yml --repo "$GITHUB_REPOSITORY" --ref main
+          echo "Dispatched macOS and Windows private beta.6 from main $MAIN_SHA"
