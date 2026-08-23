@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "channel": "private-beta",
-  "request_id": 2,
-  "macos_dist_tag": "0.1.0-beta.7",
+  "request_id": 3,
+  "macos_dist_tag": "0.1.0-beta.8",
   "windows_dist_tag": "0.1.0-beta.6",
-  "notes": "Trigger external tester candidate after installing the main-branch private beta release orchestrator."
+  "notes": "Rebuild private beta from main after merging the new ZEMO logo so installed apps can be updated."
 }
