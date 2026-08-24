@@ -224,20 +224,36 @@ export function OneClickPreviewView({
   onRetry,
   onChooseAnother,
 }: OneClickPreviewViewProps) {
+  const filesAnalyzed = Math.max(filesToOrganize, counts.filesAnalyzed ?? filesToOrganize);
+  const filesLeftInPlace = Math.max(0, filesAnalyzed - filesToOrganize);
+  const visibleCategories = PREVIEW_CATEGORY_ORDER.filter(
+    (category) => counts[category] > 0,
+  );
+
   return (
     <section className="one-click-panel" aria-labelledby="one-click-preview-title">
       <h2 id="one-click-preview-title">
         ZEMO peut ranger {filesToOrganize.toLocaleString()} fichier
-        {filesToOrganize === 1 ? "" : "s"}.
+        {filesToOrganize === 1 ? "" : "s"} sur {filesAnalyzed.toLocaleString()} analysé
+        {filesAnalyzed === 1 ? "" : "s"}.
       </h2>
-      <ul className="one-click-category-list">
-        {PREVIEW_CATEGORY_ORDER.map((category) => (
-          <li key={category}>
-            <span>{category}</span>
-            <strong>{counts[category].toLocaleString()}</strong>
-          </li>
-        ))}
-      </ul>
+      {filesLeftInPlace > 0 ? (
+        <p className="one-click-note" role="status">
+          {filesLeftInPlace.toLocaleString()} fichier{filesLeftInPlace === 1 ? "" : "s"} déjà bien placé
+          {filesLeftInPlace === 1 ? "" : "s"}, protégé{filesLeftInPlace === 1 ? "" : "s"} ou laissé
+          {filesLeftInPlace === 1 ? "" : "s"} en place par prudence.
+        </p>
+      ) : null}
+      {visibleCategories.length > 0 ? (
+        <ul className="one-click-category-list">
+          {visibleCategories.map((category) => (
+            <li key={category}>
+              <span>{category}</span>
+              <strong>{counts[category].toLocaleString()}</strong>
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {authorizationCount > 0 ? (
         <div className="one-click-local-error" role="status">
           <p>
@@ -318,6 +334,9 @@ export function OneClickDoneView({
       <p>0 fichier supprimé</p>
       <p>0 fichier écrasé</p>
       <p className="one-click-note">Les applications, raccourcis et dossiers existants protégés sont laissés en place.</p>
+      <p className="one-click-note">
+        Option disponible depuis l’accueil : « Garder mon PC rangé » surveille ensuite les nouveaux fichiers.
+      </p>
       <div className="one-click-actions">
         <button type="button" disabled={undoBusy} onClick={onUndo}>
           {undoBusy ? "Annulation…" : "Annuler le rangement"}
