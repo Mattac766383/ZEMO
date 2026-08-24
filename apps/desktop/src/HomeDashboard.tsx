@@ -1,3 +1,4 @@
+import { lazy, Suspense, useState } from "react";
 import type {
   MonitoringDashboard,
   OrganizationOperation,
@@ -6,6 +7,12 @@ import type {
   SystemStatus,
 } from "./types";
 import { buildBetaDiagnosticText, recordBetaMetric } from "./betaMetrics";
+
+const LazyKnowledgeMapView = lazy(() =>
+  import("./KnowledgeMapView").then((module) => ({
+    default: module.KnowledgeMapView,
+  })),
+);
 
 export type AppDestination =
   | "home"
@@ -187,12 +194,14 @@ function BetaDiagnosticPanel() {
 
 export function HomeDashboard({
   loading,
+  workspaceId,
   organized = false,
   organizedCount = null,
   onPrimaryAction,
   onNavigate,
   onChooseFolders,
 }: HomeDashboardProps) {
+  const [showKnowledgeMap, setShowKnowledgeMap] = useState(false);
   const action = resolvePrimaryAction({
     root: null,
     scan: null,
@@ -204,6 +213,23 @@ export function HomeDashboard({
   function startOrganization() {
     recordBetaMetric("organization_started");
     onPrimaryAction(action);
+  }
+
+  if (showKnowledgeMap && workspaceId) {
+    return (
+      <Suspense
+        fallback={
+          <section className="home-dashboard home-dashboard--simple" aria-label="Chargement de la carte ZEMO">
+            <p className="home-loading">Chargement de la carte locale…</p>
+          </section>
+        }
+      >
+        <LazyKnowledgeMapView
+          workspaceId={workspaceId}
+          onClose={() => setShowKnowledgeMap(false)}
+        />
+      </Suspense>
+    );
   }
 
   if (loading) {
@@ -234,6 +260,11 @@ export function HomeDashboard({
           Option : ZEMO peut ensuite surveiller les nouveaux fichiers pour garder votre PC rangé.
         </p>
         <div className="home-secondary-actions">
+          {workspaceId ? (
+            <button type="button" onClick={() => setShowKnowledgeMap(true)}>
+              Explorer ma carte
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => {
@@ -281,6 +312,15 @@ export function HomeDashboard({
       >
         Choisir les dossiers
       </button>
+      {workspaceId ? (
+        <button
+          type="button"
+          className="home-secondary-cta"
+          onClick={() => setShowKnowledgeMap(true)}
+        >
+          Explorer ma carte
+        </button>
+      ) : null}
       <BetaDiagnosticPanel />
     </section>
   );
