@@ -1,0 +1,392 @@
+.file-intelligence-hero {
+  display: grid;
+  gap: 0.7rem;
+  margin-bottom: 1rem;
+  padding: 1rem;
+  border: 1px solid #c5cec7;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #f8fbf8, #edf4ef);
+}
+
+.file-intelligence-hero-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.file-intelligence-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.8rem;
+}
+
+.file-intelligence-icon {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  flex: 0 0 auto;
+  border-radius: 13px;
+  color: #17492f;
+  background: #dceae1;
+  font-size: 1.35rem;
+  font-weight: 900;
+}
+
+.file-intelligence-hero h2 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.file-intelligence-subtitle {
+  margin: 0.25rem 0 0;
+  color: #5b685f;
+  font-size: 0.9rem;
+}
+
+.file-intelligence-status {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 0.35rem 0.62rem;
+  font-size: 0.75rem;
+  font-weight: 850;
+}
+
+.file-intelligence-status--good {
+  color: #175137;
+  background: #dcf0e2;
+}
+
+.file-intelligence-status--partial {
+  color: #765025;
+  background: #fff0dc;
+}
+
+.file-intelligence-status--review {
+  color: #873d35;
+  background: #fae5e2;
+}
+
+.file-intelligence-status--unknown {
+  color: #606b64;
+  background: #ecefed;
+}
+
+.file-intelligence-summary {
+  margin: 0;
+  color: #25332b;
+  line-height: 1.55;
+}
+
+.file-intelligence-quick-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.file-intelligence-quick-facts span {
+  padding: 0.3rem 0.52rem;
+  border: 1px solid #cdd6cf;
+  border-radius: 999px;
+  color: #526058;
+  background: rgb(255 255 255 / 72%);
+  font-size: 0.76rem;
+}
+
+.file-intelligence-section {
+  margin-top: 0.95rem;
+  padding: 0.95rem;
+  border: 1px solid #cbd3cd;
+  border-radius: 14px;
+  background: rgb(252 253 252 / 82%);
+}
+
+.file-intelligence-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin-bottom: 0.7rem;
+}
+
+.file-intelligence-section-heading h3 {
+  margin: 0;
+}
+
+.file-intelligence-section-heading p {
+  margin: 0.18rem 0 0;
+  color: #66726a;
+  font-size: 0.82rem;
+}
+
+.file-intelligence-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.file-intelligence-field {
+  display: grid;
+  gap: 0.42rem;
+  padding: 0.75rem;
+  border: 1px solid #d5dcd7;
+  border-radius: 12px;
+  background: white;
+}
+
+.file-intelligence-field-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.file-intelligence-field-label {
+  display: block;
+  margin-bottom: 0.18rem;
+  color: #617068;
+  font-size: 0.72rem;
+  font-weight: 850;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.file-intelligence-field strong {
+  overflow-wrap: anywhere;
+}
+
+.file-intelligence-confidence {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 0.2rem 0.44rem;
+  color: #4e5e54;
+  background: #eef1ef;
+  font-size: 0.68rem;
+  font-weight: 850;
+}
+
+.file-intelligence-confidence--human {
+  color: #164f34;
+  background: #dff0e5;
+}
+
+.file-intelligence-field small,
+.file-intelligence-machine-value {
+  color: #68756d;
+  font-size: 0.73rem;
+}
+
+.file-intelligence-field details {
+  padding-top: 0.35rem;
+  border-top: 1px solid #e5e9e6;
+}
+
+.file-intelligence-field summary {
+  cursor: pointer;
+  color: #285a40;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.file-intelligence-evidence {
+  margin-top: 0.45rem;
+  padding: 0.55rem;
+  border-radius: 9px;
+  background: #f5f7f5;
+}
+
+.file-intelligence-evidence q {
+  display: block;
+  overflow-wrap: anywhere;
+  color: #26352c;
+  font-weight: 700;
+}
+
+.file-intelligence-evidence p {
+  margin: 0.35rem 0 0;
+  color: #67736b;
+  font-size: 0.73rem;
+}
+
+.file-intelligence-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.file-intelligence-actions button {
+  padding: 0.45rem 0.6rem;
+  font-size: 0.72rem;
+}
+
+.file-intelligence-editor {
+  display: grid;
+  gap: 0.5rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid #e3e8e4;
+}
+
+.file-intelligence-editor label {
+  display: grid;
+  gap: 0.3rem;
+  color: #5d6961;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.file-intelligence-editor input,
+.file-intelligence-editor select {
+  width: 100%;
+  min-height: 39px;
+  border: 1px solid #aeb8b1;
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  color: #18201c;
+  background: white;
+}
+
+.file-intelligence-relations {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.file-intelligence-relation {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.75rem;
+  border: 1px solid #d4dbd6;
+  border-radius: 11px;
+  background: #fafcfa;
+}
+
+.file-intelligence-relation-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.file-intelligence-relation-label {
+  display: block;
+  color: #5d6a62;
+  font-size: 0.7rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.file-intelligence-relation small {
+  color: #69766e;
+}
+
+.file-intelligence-empty {
+  margin: 0;
+  color: #6b766f;
+}
+
+.file-intelligence-preview {
+  max-height: 280px;
+  overflow: auto;
+  margin: 0;
+  padding: 0.8rem;
+  border-radius: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #2b3730;
+  background: #f4f6f4;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.77rem;
+  line-height: 1.5;
+}
+
+.file-intelligence-review-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.file-intelligence-review-item {
+  padding: 0.7rem;
+  border: 1px solid #dbc6c2;
+  border-radius: 10px;
+  background: #fff9f7;
+}
+
+.file-intelligence-review-item p {
+  margin: 0.35rem 0 0;
+  color: #725e58;
+  font-size: 0.78rem;
+}
+
+.file-intelligence-technical {
+  margin-top: 0.95rem;
+  padding: 0.8rem 0.95rem;
+  border: 1px solid #cbd3cd;
+  border-radius: 14px;
+  background: #fafcfa;
+}
+
+.file-intelligence-technical > summary {
+  cursor: pointer;
+  font-weight: 850;
+}
+
+.file-intelligence-technical-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin-top: 0.8rem;
+}
+
+.file-intelligence-technical-grid div {
+  min-width: 0;
+  padding: 0.55rem;
+  border-radius: 9px;
+  background: #f1f4f2;
+}
+
+.file-intelligence-technical-grid dt {
+  color: #69756d;
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.file-intelligence-technical-grid dd {
+  margin: 0.2rem 0 0;
+  overflow-wrap: anywhere;
+  color: #27342c;
+  font-size: 0.78rem;
+}
+
+.file-intelligence-technical-grid dd.is-mono {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.file-intelligence-entity-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.55rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.file-intelligence-entity-list li {
+  padding: 0.35rem 0.5rem;
+  border-radius: 999px;
+  color: #49584f;
+  background: #edf1ee;
+  font-size: 0.72rem;
+}
+
+@media (max-width: 720px) {
+  .file-intelligence-hero-main,
+  .file-intelligence-relation-head {
+    display: grid;
+  }
+
+  .file-intelligence-field-grid,
+  .file-intelligence-technical-grid {
+    grid-template-columns: 1fr;
+  }
+}
