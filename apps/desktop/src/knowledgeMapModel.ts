@@ -62,7 +62,7 @@ export interface KnowledgeMapInput {
 
 type MutableNode = Omit<KnowledgeMapNode, "fileIds" | "contexts"> & {
   fileIds: Set<string>;
-  contexts: Set<KnowledgeContext>();
+  contexts: Set<KnowledgeContext>;
 };
 
 const DOCUMENT_TYPE_LABELS: Record<string, string> = {
