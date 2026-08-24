@@ -166,7 +166,9 @@ describe("FileDetailPanel V2", () => {
     render(<FileDetailPanel fileId="file-1" onClose={() => undefined} />);
 
     expect(
-      await screen.findByText(/n’a pas encore suffisamment d’informations structurées/i),
+      await screen.findByText(
+        "ZEMO n’a pas encore suffisamment d’informations structurées sur ce fichier.",
+      ),
     ).toBeTruthy();
     expect(screen.getByText("PDF")).toBeTruthy();
   });
