@@ -230,7 +230,7 @@ export function FileDetailPanel({
                           type="button"
                           onClick={() => onOpenIdentity(relationship.identityId)}
                         >
-                          Voir l’identité
+                          Voir l’identité et les preuves
                         </button>
                       ) : null}
                     </div>
