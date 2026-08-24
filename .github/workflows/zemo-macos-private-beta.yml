@@ -23,7 +23,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  ZEMO_DIST_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.dist_tag || '0.1.0-beta.0' }}
+  ZEMO_DIST_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.dist_tag || '0.1.0-beta.10' }}
 
 jobs:
   macos-private-beta:
@@ -170,9 +170,6 @@ jobs:
             exit 5
           fi
 
-          # Tauri submits the signed app for notarization when the App Store Connect
-          # API environment variables are present. Stapling here is an independent,
-          # fail-closed proof that Apple issued a notarization ticket for this bundle.
           xcrun stapler staple "$APP"
           xcrun stapler validate "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
