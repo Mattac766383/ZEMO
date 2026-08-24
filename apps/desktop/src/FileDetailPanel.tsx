@@ -236,7 +236,7 @@ export function FileDetailPanel({
                     </div>
                     {relationship.evidence.length > 0 ? (
                       <details>
-                        <summary>Pourquoi ZEMO relie ces éléments ?</summary>
+                        <summary>Pourquoi ?</summary>
                         <ul>
                           {relationship.evidence.map((evidence, index) => (
                             <li key={`${relationship.relationshipId}-${index}`}>{evidence}</li>
@@ -415,7 +415,7 @@ function SemanticFieldCard({
 
       {field.evidence.length > 0 ? (
         <details>
-          <summary>Pourquoi ZEMO pense ça ?</summary>
+          <summary>Pourquoi ?</summary>
           {field.evidence.map((evidence, index) => (
             <div
               className="file-intelligence-evidence"
