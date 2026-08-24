@@ -104,11 +104,11 @@ describe("Milestone 9 hybrid search surface", () => {
     });
   });
 
-  it("exposes high-value structured filters without replacing the search bar", async () => {
+  it("keeps high-value structured filters available without cluttering the main search", async () => {
     render(<SearchView workspaceId="workspace-1" onOpenFile={vi.fn()} />);
     await screen.findByRole("searchbox");
 
-    fireEvent.click(screen.getByText("Filtres structurés"));
+    fireEvent.click(screen.getByText(/Filtres structurés/));
     fireEvent.change(screen.getByLabelText("Fournisseur"), {
       target: { value: "Point P" },
     });
@@ -134,7 +134,7 @@ describe("Milestone 9 hybrid search surface", () => {
     expect(screen.getAllByRole("searchbox")).toHaveLength(1);
   });
 
-  it("shows local semantic model status and install controls", async () => {
+  it("shows compact local semantic model activation", async () => {
     vi.mocked(api.activateLocalEmbeddingModel).mockResolvedValue({
       modelId: "granite-embedding-97m-multilingual-r2",
       version: "835ad14087e140460703cf0fae09f97d469d65c2",
@@ -151,14 +151,10 @@ describe("Milestone 9 hybrid search surface", () => {
     render(<SearchView workspaceId="workspace-1" onOpenFile={vi.fn()} />);
     expect(await screen.findByText("Recherche intelligente")).toBeTruthy();
     expect(screen.getByText(/Recherche améliorée non activée/)).toBeTruthy();
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Activer",
-      }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Activer" }));
     await waitFor(() => {
       expect(api.activateLocalEmbeddingModel).toHaveBeenCalled();
-      expect(screen.getByText(/Recherche améliorée active/)).toBeTruthy();
+      expect(screen.getByText(/Intelligence sémantique locale active/)).toBeTruthy();
     });
   });
 });
