@@ -277,8 +277,12 @@ export function HomeDashboard({
           <button type="button" onClick={() => onNavigate("monitoring")}>
             Garder mon PC rangé
           </button>
-          <button type="button" onClick={() => onNavigate("review")}>
-            À revoir
+          <button
+            type="button"
+            aria-label="Décisions (anciennement À revoir)"
+            onClick={() => onNavigate("review")}
+          >
+            Décisions
           </button>
         </div>
         <BetaDiagnosticPanel />
