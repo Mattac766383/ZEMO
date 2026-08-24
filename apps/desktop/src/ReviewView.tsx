@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   cancelExtractionRetry,
   getErrorMessage,
@@ -7,25 +7,35 @@ import {
   updateReviewItem,
 } from "./api";
 import type {
+  FileReviewItem,
   FileReviewPage,
   ReviewReasonFilter,
   ReviewStatusFilter,
 } from "./types";
+import "./ReviewViewV2.css";
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 500;
+const GROUP_ACTION_BATCH = 8;
 const REASON_FILTERS: Array<{ value: ReviewReasonFilter; label: string }> = [
   { value: "all", label: "Tous" },
-  { value: "ocr", label: "Reconnaissance du texte" },
-  { value: "unsupported", label: "Formats non pris en charge" },
+  { value: "ocr", label: "Lecture des scans" },
+  { value: "unsupported", label: "Formats" },
   { value: "permissions", label: "Accès" },
-  { value: "partial", label: "Extraction partielle" },
+  { value: "partial", label: "Lecture partielle" },
   { value: "corrupt", label: "Fichiers endommagés" },
-  { value: "semantic", label: "Compréhension incertaine" },
+  { value: "semantic", label: "Compréhension" },
 ];
 
 interface ReviewViewProps {
   workspaceId: string;
   onOpenFile: (fileId: string) => void;
+}
+
+interface DecisionGroup {
+  key: string;
+  reason: string;
+  explanation: string;
+  items: FileReviewItem[];
 }
 
 export function ReviewView({ workspaceId, onOpenFile }: ReviewViewProps) {
@@ -65,13 +75,48 @@ export function ReviewView({ workspaceId, onOpenFile }: ReviewViewProps) {
     };
   }, [offset, reason, refresh, status, workspaceId]);
 
+  const decisions = useMemo(() => groupReviewItems(page?.items ?? []), [page?.items]);
+  const isActiveDecisions = status === "needs_review";
+
   async function changeState(reviewId: string, action: "resolve" | "ignore") {
     setWorkingId(reviewId);
     setError(null);
     setNotice(null);
     try {
       await updateReviewItem(reviewId, action);
-      setNotice(action === "resolve" ? "Élément marqué comme résolu." : "Élément ignoré.");
+      setNotice(action === "resolve" ? "Décision enregistrée." : "Élément ignoré.");
+      setRefresh((value) => value + 1);
+    } catch (cause) {
+      setError(getErrorMessage(cause));
+    } finally {
+      setWorkingId(null);
+    }
+  }
+
+  async function changeGroupState(group: DecisionGroup, action: "resolve" | "ignore") {
+    setWorkingId(group.key);
+    setError(null);
+    setNotice(
+      `ZEMO applique cette décision à ${group.items.length.toLocaleString()} fichier${group.items.length === 1 ? "" : "s"}…`,
+    );
+    let failures = 0;
+    try {
+      for (let index = 0; index < group.items.length; index += GROUP_ACTION_BATCH) {
+        const batch = group.items.slice(index, index + GROUP_ACTION_BATCH);
+        const results = await Promise.allSettled(
+          batch.map((item) => updateReviewItem(item.reviewId, action)),
+        );
+        failures += results.filter((result) => result.status === "rejected").length;
+      }
+      if (failures === 0) {
+        setNotice(
+          action === "resolve"
+            ? `${group.items.length.toLocaleString()} fichier${group.items.length === 1 ? "" : "s"} traité${group.items.length === 1 ? "" : "s"} avec une seule décision.`
+            : `${group.items.length.toLocaleString()} signal${group.items.length === 1 ? "" : "s"} ignoré${group.items.length === 1 ? "" : "s"}.`,
+        );
+      } else {
+        setError(`${failures} élément${failures === 1 ? "" : "s"} n’ont pas pu être mis à jour.`);
+      }
       setRefresh((value) => value + 1);
     } catch (cause) {
       setError(getErrorMessage(cause));
@@ -83,7 +128,7 @@ export function ReviewView({ workspaceId, onOpenFile }: ReviewViewProps) {
   async function retry(reviewId: string) {
     setRetryingId(reviewId);
     setError(null);
-    setNotice("Nouvelle extraction locale en cours…");
+    setNotice("Nouvelle lecture locale en cours…");
     try {
       const outcome = await retryExtraction(reviewId);
       setNotice(outcome.message);
@@ -106,165 +151,204 @@ export function ReviewView({ workspaceId, onOpenFile }: ReviewViewProps) {
   }
 
   return (
-    <div className="review-surface">
-      <div className="surface-heading">
+    <main className="decisions-v2" aria-labelledby="decisions-v2-title">
+      <header className="decisions-v2__header">
         <div>
-          <span className="step">À vérifier</span>
-          <h2>Les fichiers qui demandent votre attention</h2>
+          <span className="step">Décisions</span>
+          <h2 id="decisions-v2-title">
+            {isActiveDecisions ? "ZEMO a presque terminé" : "Historique des décisions"}
+          </h2>
           <p>
-            Rien n’est déplacé ni modifié. Vous choisissez simplement comment traiter
-            chaque signal.
+            {isActiveDecisions
+              ? "ZEMO regroupe les fichiers qui ont le même problème. Une réponse peut régler des dizaines ou des centaines de fichiers d’un coup."
+              : "Consultez les signaux déjà traités sans encombrer votre rangement quotidien."}
           </p>
         </div>
-        <div className="review-total" aria-live="polite">
-          <strong>{page?.total.toLocaleString() ?? "—"}</strong>
-          <span>à vérifier</span>
+        <div className="decisions-v2__count" aria-live="polite">
+          <strong>{loading ? "—" : decisions.length.toLocaleString()}</strong>
+          <span>décision{decisions.length === 1 ? "" : "s"}</span>
+          {!loading && page?.total ? (
+            <small>{page.total.toLocaleString()} fichier{page.total === 1 ? "" : "s"} concerné{page.total === 1 ? "" : "s"}</small>
+          ) : null}
         </div>
-      </div>
+      </header>
 
-      <div className="review-toolbar">
-        <div className="review-filters" aria-label="Catégories de vérification">
-          {REASON_FILTERS.map((filter) => (
-            <button
-              type="button"
-              key={filter.value}
-              className={reason === filter.value ? "filter-chip filter-chip--active" : "filter-chip"}
-              aria-pressed={reason === filter.value}
-              onClick={() => {
+      {isActiveDecisions && !loading && decisions.length > 0 ? (
+        <div className="decisions-v2__promise" role="status">
+          <strong>Pas de liste interminable.</strong>
+          <span>
+            ZEMO vous montre seulement les décisions qu’il ne peut pas résoudre de façon sûre tout seul.
+          </span>
+        </div>
+      ) : null}
+
+      <details className="decisions-v2__filters">
+        <summary>Filtres et historique</summary>
+        <div className="decisions-v2__toolbar">
+          <div className="review-filters" aria-label="Catégories de vérification">
+            {REASON_FILTERS.map((filter) => (
+              <button
+                type="button"
+                key={filter.value}
+                className={reason === filter.value ? "filter-chip filter-chip--active" : "filter-chip"}
+                aria-pressed={reason === filter.value}
+                onClick={() => {
+                  setOffset(0);
+                  setReason(filter.value);
+                }}
+              >
+                {filter.label}
+              </button>
+            ))}
+          </div>
+          <label className="status-filter">
+            <span>État</span>
+            <select
+              value={status}
+              onChange={(event) => {
                 setOffset(0);
-                setReason(filter.value);
+                setStatus(event.target.value as ReviewStatusFilter);
               }}
             >
-              {filter.label}
-            </button>
-          ))}
+              <option value="needs_review">Décisions nécessaires</option>
+              <option value="resolved">Résolus</option>
+              <option value="ignored">Ignorés</option>
+              <option value="all">Tous les états</option>
+            </select>
+          </label>
         </div>
-        <label className="status-filter">
-          <span>État</span>
-          <select
-            value={status}
-            onChange={(event) => {
-              setOffset(0);
-              setStatus(event.target.value as ReviewStatusFilter);
-            }}
-          >
-            <option value="needs_review">À vérifier</option>
-            <option value="resolved">Résolus</option>
-            <option value="ignored">Ignorés</option>
-            <option value="all">Tous les états</option>
-          </select>
-        </label>
-      </div>
+      </details>
 
-      {notice ? (
-        <p className="notice-banner" role="status">
-          {notice}
-        </p>
-      ) : null}
-      {error ? (
-        <p className="inline-error" role="alert">
-          {error}
-        </p>
-      ) : null}
+      {notice ? <p className="notice-banner" role="status">{notice}</p> : null}
+      {error ? <p className="inline-error" role="alert">{error}</p> : null}
       {loading ? (
-        <p className="view-note" aria-live="polite">
-          Chargement de la liste locale…
-        </p>
+        <p className="view-note" aria-live="polite">ZEMO regroupe les décisions…</p>
       ) : null}
-      {!loading && !error && page?.items.length === 0 ? (
-        <div className="empty-state">
-          <strong>Aucun fichier dans cette vue</strong>
-          <p>Les éléments résolus ou ignorés restent consultables via le filtre d’état.</p>
+
+      {!loading && !error && decisions.length === 0 ? (
+        <div className="decisions-v2__empty empty-state">
+          <strong>{isActiveDecisions ? "Rien à décider" : "Aucun élément dans cette vue"}</strong>
+          <p>
+            {isActiveDecisions
+              ? "ZEMO n’a pas besoin de vous pour le moment."
+              : "Changez le filtre d’état pour consulter d’autres décisions."}
+          </p>
         </div>
       ) : null}
 
-      <div className="review-list" aria-busy={loading}>
-        {page?.items.map((item) => {
-          const working = workingId === item.reviewId;
-          const retrying = retryingId === item.reviewId;
+      <div className="decisions-v2__list" aria-busy={loading}>
+        {decisions.map((group) => {
+          const groupWorking = workingId === group.key;
+          const single = group.items.length === 1;
+          const first = group.items[0];
           return (
-            <article className={`review-card review-card--${item.severity.toLowerCase()}`} key={item.reviewId}>
-              <div className="review-card-main">
-                <div className="review-file-mark" aria-hidden="true">
-                  !
-                </div>
+            <article className="decisions-v2__card" key={group.key}>
+              <div className="decisions-v2__card-heading">
+                <div className="decisions-v2__mark" aria-hidden="true">?</div>
                 <div>
-                  <div className="review-card-heading">
-                    <div>
-                      <h3>{item.filename}</h3>
-                      <code>{item.relativePath}</code>
-                    </div>
-                    <span className={`review-state review-state--${item.status.toLowerCase()}`}>
-                      {statusLabel(item.status)}
-                    </span>
-                  </div>
-                  <p className="review-explanation">{item.explanation}</p>
-                  <div className="result-meta">
-                    <span>{reasonLabel(item.reason)}</span>
-                    <span>
-                      Extraction : {statusLabel(item.extractionStatus ?? "NOT_ANALYZED")}
-                    </span>
-                    {item.retryCount > 0 ? (
-                      <span>{item.retryCount} nouvelle(s) tentative(s)</span>
-                    ) : null}
-                  </div>
-                  {item.technicalDetails ? (
-                    <details className="technical-details">
-                      <summary>Détails techniques</summary>
-                      <p>{item.technicalDetails}</p>
-                    </details>
-                  ) : null}
+                  <span className="decisions-v2__reason">{reasonLabel(group.reason)}</span>
+                  <h3>{single ? first.filename : decisionTitle(group)}</h3>
+                  <p>{group.explanation}</p>
+                </div>
+                <div className="decisions-v2__group-count">
+                  <strong>{group.items.length.toLocaleString()}</strong>
+                  <span>fichier{group.items.length === 1 ? "" : "s"}</span>
                 </div>
               </div>
-              <div className="review-actions">
-                <button type="button" onClick={() => onOpenFile(item.fileId)}>
-                  Voir les détails
-                </button>
-                {item.status === "NEEDS_REVIEW" ? (
-                  <>
-                    {item.retryAvailable ? (
-                      retrying ? (
-                        <button
-                          type="button"
-                          className="danger-outline"
-                          onClick={() => void cancelRetry(item.reviewId)}
-                        >
-                          Annuler la tentative
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          disabled={workingId !== null || retryingId !== null}
-                          onClick={() => void retry(item.reviewId)}
-                        >
-                          Réessayer
-                        </button>
-                      )
-                    ) : null}
-                    <button
-                      type="button"
-                      disabled={working || retrying}
-                      onClick={() => void changeState(item.reviewId, "resolve")}
-                    >
-                      Résoudre
-                    </button>
-                    <button
-                      type="button"
-                      disabled={working || retrying}
-                      onClick={() => void changeState(item.reviewId, "ignore")}
-                    >
-                      Ignorer
-                    </button>
-                  </>
-                ) : null}
-              </div>
+
+              {!single ? (
+                <div className="decisions-v2__samples" aria-label="Exemples de fichiers concernés">
+                  {group.items.slice(0, 3).map((item) => (
+                    <span key={item.reviewId}>{item.filename}</span>
+                  ))}
+                  {group.items.length > 3 ? <span>+ {group.items.length - 3} autres</span> : null}
+                </div>
+              ) : (
+                <code className="decisions-v2__single-path">{first.relativePath}</code>
+              )}
+
+              {isActiveDecisions ? (
+                <div className="decisions-v2__actions">
+                  {single ? (
+                    <SingleItemActions
+                      item={first}
+                      working={workingId === first.reviewId}
+                      retrying={retryingId === first.reviewId}
+                      blocked={workingId !== null || retryingId !== null}
+                      onOpenFile={onOpenFile}
+                      onRetry={retry}
+                      onCancelRetry={cancelRetry}
+                      onChangeState={changeState}
+                    />
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="primary-action"
+                        disabled={groupWorking || retryingId !== null}
+                        onClick={() => void changeGroupState(group, "resolve")}
+                      >
+                        {groupWorking ? "Application…" : `Régler les ${group.items.length.toLocaleString()} fichiers`}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={groupWorking || retryingId !== null}
+                        onClick={() => void changeGroupState(group, "ignore")}
+                      >
+                        Ignorer ce groupe
+                      </button>
+                    </>
+                  )}
+                </div>
+              ) : null}
+
+              {!single ? (
+                <details className="decisions-v2__files">
+                  <summary>Voir les fichiers ({group.items.length.toLocaleString()})</summary>
+                  <ul>
+                    {group.items.map((item) => (
+                      <li key={item.reviewId}>
+                        <div>
+                          <strong>{item.filename}</strong>
+                          <code>{item.relativePath}</code>
+                        </div>
+                        <div>
+                          <button type="button" onClick={() => onOpenFile(item.fileId)}>
+                            Voir les détails
+                          </button>
+                          {item.status === "NEEDS_REVIEW" && item.retryAvailable ? (
+                            retryingId === item.reviewId ? (
+                              <button type="button" onClick={() => void cancelRetry(item.reviewId)}>
+                                Annuler la tentative
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={workingId !== null || retryingId !== null}
+                                onClick={() => void retry(item.reviewId)}
+                              >
+                                Réessayer
+                              </button>
+                            )
+                          ) : null}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : first.technicalDetails ? (
+                <details className="technical-details">
+                  <summary>Détails techniques</summary>
+                  <p>{first.technicalDetails}</p>
+                </details>
+              ) : null}
             </article>
           );
         })}
       </div>
 
       {page && (offset > 0 || page.hasMore) ? (
-        <nav className="pagination" aria-label="Pages des fichiers à vérifier">
+        <nav className="pagination" aria-label="Pages des décisions">
           <button
             type="button"
             disabled={offset === 0 || loading}
@@ -272,7 +356,7 @@ export function ReviewView({ workspaceId, onOpenFile }: ReviewViewProps) {
           >
             Précédent
           </button>
-          <span>Page {Math.floor(offset / PAGE_SIZE) + 1}</span>
+          <span>Lot {Math.floor(offset / PAGE_SIZE) + 1}</span>
           <button
             type="button"
             disabled={!page.hasMore || loading}
@@ -282,38 +366,107 @@ export function ReviewView({ workspaceId, onOpenFile }: ReviewViewProps) {
           </button>
         </nav>
       ) : null}
-    </div>
+    </main>
   );
 }
 
-function statusLabel(value: string): string {
-  const labels: Record<string, string> = {
-    NEEDS_REVIEW: "À vérifier",
-    RESOLVED: "Résolu",
-    IGNORED: "Ignoré",
-    SUCCESS: "Réussie",
-    PARTIAL: "Partielle",
-    FAILED: "Échec",
-    UNSUPPORTED: "Non pris en charge",
-    NOT_ANALYZED: "Non analysée",
-  };
-  return labels[value.toUpperCase()] ?? value.replace(/_/g, " ").toLowerCase();
+function SingleItemActions({
+  item,
+  working,
+  retrying,
+  blocked,
+  onOpenFile,
+  onRetry,
+  onCancelRetry,
+  onChangeState,
+}: {
+  item: FileReviewItem;
+  working: boolean;
+  retrying: boolean;
+  blocked: boolean;
+  onOpenFile: (fileId: string) => void;
+  onRetry: (reviewId: string) => Promise<void>;
+  onCancelRetry: (reviewId: string) => Promise<void>;
+  onChangeState: (reviewId: string, action: "resolve" | "ignore") => Promise<void>;
+}) {
+  return (
+    <>
+      <button type="button" onClick={() => onOpenFile(item.fileId)}>Voir les détails</button>
+      {item.status === "NEEDS_REVIEW" ? (
+        <>
+          {item.retryAvailable ? (
+            retrying ? (
+              <button type="button" className="danger-outline" onClick={() => void onCancelRetry(item.reviewId)}>
+                Annuler la tentative
+              </button>
+            ) : (
+              <button type="button" disabled={blocked} onClick={() => void onRetry(item.reviewId)}>
+                Réessayer
+              </button>
+            )
+          ) : null}
+          <button type="button" disabled={working || retrying} onClick={() => void onChangeState(item.reviewId, "resolve")}>
+            Résoudre
+          </button>
+          <button type="button" disabled={working || retrying} onClick={() => void onChangeState(item.reviewId, "ignore")}>
+            Ignorer
+          </button>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+function groupReviewItems(items: FileReviewItem[]): DecisionGroup[] {
+  const groups = new Map<string, DecisionGroup>();
+  for (const item of items) {
+    const explanationKey = normalizeDecisionText(item.explanation);
+    const key = `${item.status}|${item.sourceSubsystem}|${item.reason}|${explanationKey}`;
+    const current = groups.get(key);
+    if (current) {
+      current.items.push(item);
+    } else {
+      groups.set(key, {
+        key,
+        reason: item.reason,
+        explanation: item.explanation,
+        items: [item],
+      });
+    }
+  }
+  return [...groups.values()].sort((left, right) => {
+    if (right.items.length !== left.items.length) return right.items.length - left.items.length;
+    return left.explanation.localeCompare(right.explanation, "fr");
+  });
+}
+
+function normalizeDecisionText(value: string): string {
+  return value
+    .toLocaleLowerCase("fr")
+    .replace(/\b\d+\b/g, "#")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function decisionTitle(group: DecisionGroup): string {
+  const label = reasonLabel(group.reason);
+  return `${label} · ${group.items.length.toLocaleString()} fichiers concernés`;
 }
 
 function reasonLabel(value: string): string {
   const labels: Record<string, string> = {
-    OCR_FAILED: "Document scanné partiellement illisible",
-    OCR_PROVIDER_UNAVAILABLE: "Certains documents scannés n’ont pas pu être lus complètement",
-    UNSUPPORTED_FORMAT: "Format non pris en charge",
-    PERMISSION_DENIED: "Autorisation refusée",
-    UNREADABLE: "Fichier illisible",
-    PARTIAL_EXTRACTION: "Extraction partielle",
-    ENCRYPTED: "Document chiffré",
-    CORRUPT: "Fichier endommagé",
-    TOO_LARGE: "Limite de sécurité",
-    TYPE_MISMATCH: "Type inattendu",
-    EXTRACTION_FAILED: "Extraction échouée",
-    UNKNOWN: "Vérification nécessaire",
+    OCR_FAILED: "Documents scannés difficiles à lire",
+    OCR_PROVIDER_UNAVAILABLE: "Lecture des documents scannés à compléter",
+    UNSUPPORTED_FORMAT: "Format à traiter autrement",
+    PERMISSION_DENIED: "Autorisation nécessaire",
+    UNREADABLE: "Fichiers illisibles",
+    PARTIAL_EXTRACTION: "Compréhension partielle",
+    ENCRYPTED: "Documents protégés",
+    CORRUPT: "Fichiers endommagés",
+    TOO_LARGE: "Fichiers volumineux",
+    TYPE_MISMATCH: "Type de fichier inattendu",
+    EXTRACTION_FAILED: "Lecture à relancer",
+    UNKNOWN: "Décision nécessaire",
   };
   return labels[value.toUpperCase()] ?? value.replace(/_/g, " ").toLowerCase();
 }
