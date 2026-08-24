@@ -153,7 +153,9 @@ describe("FileDetailPanel V2", () => {
 
     render(<FileDetailPanel fileId="file-1" onClose={() => undefined} />);
 
-    expect(await screen.findByText("Facture_PointP_1482.pdf")).toBeTruthy();
+    expect(
+      await screen.findByRole("heading", { name: "Facture_PointP_1482.pdf" }),
+    ).toBeTruthy();
     expect(screen.getByText("Ce que ZEMO a compris")).toBeTruthy();
     expect(screen.getAllByText("Point P").length).toBeGreaterThan(0);
     expect(screen.getByText(/Montant détecté : 1 482,40 EUR/i)).toBeTruthy();
