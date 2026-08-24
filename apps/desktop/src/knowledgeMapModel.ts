@@ -62,7 +62,7 @@ export interface KnowledgeMapInput {
 
 type MutableNode = Omit<KnowledgeMapNode, "fileIds" | "contexts"> & {
   fileIds: Set<string>;
-  contexts: Set<KnowledgeContext>;
+  contexts: Set<KnowledgeContext>();
 };
 
 const DOCUMENT_TYPE_LABELS: Record<string, string> = {
@@ -314,7 +314,7 @@ function addSemanticFallback(
   needsReview: boolean,
   kind: "organization" | "project",
   keys: string[],
-  relationshipKind = kind,
+  relationshipKind: string = kind,
 ) {
   const value = semanticValue(detail, keys);
   if (!value) {
@@ -357,9 +357,16 @@ function semanticField(detail: LocalFileDetail | null, keys: string[]): Semantic
   }
   const normalized = new Set(keys.map((key) => key.toLowerCase()));
   return (
-    detail.semanticAnalysis.fields.find(
-      (field) => normalized.has(field.fieldKey.toLowerCase()) && Boolean(field.displayValue?.trim()),
-    ) ?? null
+    detail.semanticAnalysis.fields.find((field) => {
+      if (!normalized.has(field.fieldKey.toLowerCase()) || !field.displayValue?.trim()) {
+        return false;
+      }
+      if (field.valueSource.toUpperCase().includes("USER")) {
+        return true;
+      }
+      const status = field.status.toUpperCase();
+      return !["UNKNOWN", "AMBIGUOUS", "CONFLICTING"].includes(status) && field.confidence >= 0.65;
+    }) ?? null
   );
 }
 
