@@ -79,7 +79,7 @@ impl UserContentKind {
 
     #[must_use]
     pub fn recommended(self) -> bool {
-        !matches!(self, Self::Music)
+        true
     }
 
     /// Resolve the real OS path. Never uses localized Finder/Explorer labels.
@@ -351,19 +351,19 @@ fn probe_resolved(kind: UserContentKind, resolved: Option<PathBuf>) -> FolderAcc
     };
 
     if path.parent().is_none() || is_forbidden_path(&path) {
-            return finished_probe(
-                kind,
-                &path,
-                false,
-                false,
-                false,
-                false,
-                None,
-                Some("protected_system_or_program_path".to_owned()),
-                Some("forbidden_path".to_owned()),
-                Some("protected_system_or_program_path".to_owned()),
-                ACCESS_UNSUPPORTED,
-            );
+        return finished_probe(
+            kind,
+            &path,
+            false,
+            false,
+            false,
+            false,
+            None,
+            Some("protected_system_or_program_path".to_owned()),
+            Some("forbidden_path".to_owned()),
+            Some("protected_system_or_program_path".to_owned()),
+            ACCESS_UNSUPPORTED,
+        );
     }
 
     let meta = match fs::symlink_metadata(&path) {
@@ -741,8 +741,8 @@ mod tests {
 
     #[test]
     fn recommended_scope_matches_product() {
-        assert!(UserContentKind::Desktop.recommended());
-        assert!(UserContentKind::Movies.recommended());
-        assert!(!UserContentKind::Music.recommended());
+        for kind in UserContentKind::all() {
+            assert!(kind.recommended());
+        }
     }
 }
