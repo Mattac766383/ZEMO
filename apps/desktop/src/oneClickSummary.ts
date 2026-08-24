@@ -11,7 +11,9 @@ export const PREVIEW_CATEGORY_ORDER = [
 
 export type PreviewCategory = (typeof PREVIEW_CATEGORY_ORDER)[number];
 
-export type CategoryCounts = Record<PreviewCategory, number>;
+export type CategoryCounts = Record<PreviewCategory, number> & {
+  filesAnalyzed?: number;
+};
 
 const EMPTY_COUNTS: CategoryCounts = {
   Documents: 0,
@@ -20,6 +22,7 @@ const EMPTY_COUNTS: CategoryCounts = {
   Archives: 0,
   Installateurs: 0,
   "À vérifier": 0,
+  filesAnalyzed: 0,
 };
 
 export function emptyCategoryCounts(): CategoryCounts {
@@ -80,7 +83,9 @@ export function summarizeProposals(
 ): { filesToOrganize: number; counts: CategoryCounts } {
   const counts = emptyCategoryCounts();
   let filesToOrganize = 0;
+  let filesAnalyzed = 0;
   for (const proposal of proposals) {
+    filesAnalyzed += proposal.summary.filesAnalyzed;
     for (const operation of proposal.operations) {
       if (!countableMove(operation)) {
         continue;
@@ -92,5 +97,6 @@ export function summarizeProposals(
       }
     }
   }
+  counts.filesAnalyzed = filesAnalyzed;
   return { filesToOrganize, counts };
 }

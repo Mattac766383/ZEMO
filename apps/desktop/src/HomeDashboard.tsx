@@ -230,6 +230,9 @@ export function HomeDashboard({
         >
           Relancer le rangement
         </button>
+        <p className="home-promise">
+          Option : ZEMO peut ensuite surveiller les nouveaux fichiers pour garder votre PC rangé.
+        </p>
         <div className="home-secondary-actions">
           <button
             type="button"
@@ -241,7 +244,7 @@ export function HomeDashboard({
             Recherche
           </button>
           <button type="button" onClick={() => onNavigate("monitoring")}>
-            Surveillance
+            Garder mon PC rangé
           </button>
           <button type="button" onClick={() => onNavigate("review")}>
             À revoir
