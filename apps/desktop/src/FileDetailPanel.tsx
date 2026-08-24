@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getErrorMessage,
   getFileDetail,
   storeSemanticCorrection,
 } from "./api";
 import type { LocalFileDetail, SemanticField } from "./types";
+import "./FileDetailPanelV2.css";
 
 interface FileDetailPanelProps {
   fileId: string;
@@ -79,12 +80,16 @@ export function FileDetailPanel({
     }
   }
 
+  const intelligence = useMemo(
+    () => (detail ? deriveFileIntelligence(detail) : null),
+    [detail],
+  );
+
   return (
     <section className="file-detail-panel" aria-labelledby="file-detail-title">
       <div className="surface-heading">
         <div>
-          <span className="step">File detail</span>
-          <h2 id="file-detail-title">{detail?.filename ?? "Chargement…"}</h2>
+          <span className="step">Ce que ZEMO sait</span>
         </div>
         <button type="button" onClick={onClose} aria-label="Fermer les détails du fichier">
           Fermer
@@ -101,152 +106,137 @@ export function FileDetailPanel({
           Chargement des informations locales…
         </p>
       ) : null}
-      {detail ? (
-        <>
-          <dl className="detail-grid">
-            <Detail label="Nom" value={detail.filename} />
-            <Detail label="Emplacement d’origine" value={detail.relativePath} mono />
-            <Detail
-              label="Type"
-              value={detail.detectedType ?? detail.extension ?? "Type inconnu"}
-            />
-            <Detail label="Taille" value={formatBytes(detail.byteSize)} />
-            <Detail label="Créé" value={formatTimestamp(detail.createdAt)} />
-            <Detail label="Modifié" value={formatTimestamp(detail.modifiedAt)} />
-            <Detail label="Empreinte BLAKE3" value={detail.hash ?? "Non disponible"} mono />
-            <Detail
-              label="Doublon exact"
-              value={detail.duplicate ? "Oui" : "Aucun doublon exact connu"}
-            />
-            <Detail
-              label="Extraction"
-              value={friendlyStatus(detail.extractionStatus)}
-            />
-            <Detail
-              label="Extracteur"
-              value={
-                detail.extractorType
-                  ? `${detail.extractorType}${detail.extractorVersion ? ` · ${detail.extractorVersion}` : ""}`
-                  : "Non disponible"
-              }
-            />
-            <Detail label="OCR" value={friendlyOcr(detail.ocrStatus)} />
-            <Detail
-              label="Texte extrait"
-              value={`${detail.characterCount.toLocaleString()} caractères`}
-            />
-          </dl>
 
-          <div className="detail-section semantic-understanding">
-            <div className="semantic-heading">
+      {detail && intelligence ? (
+        <>
+          <div className="file-intelligence-hero">
+            <div className="file-intelligence-hero-main">
+              <div className="file-intelligence-title-row">
+                <div className="file-intelligence-icon" aria-hidden="true">
+                  {fileIcon(intelligence.documentType, detail.extension)}
+                </div>
+                <div>
+                  <h2 id="file-detail-title">{detail.filename}</h2>
+                  <p className="file-intelligence-subtitle">
+                    {intelligence.documentTypeLabel}
+                    {intelligence.contextLabel ? ` · ${intelligence.contextLabel}` : ""}
+                    {intelligence.confidencePercent != null
+                      ? ` · ${intelligence.confidencePercent} % compris`
+                      : ""}
+                  </p>
+                </div>
+              </div>
+              <span
+                className={`file-intelligence-status file-intelligence-status--${intelligence.statusTone}`}
+              >
+                {intelligence.statusLabel}
+              </span>
+            </div>
+            <p className="file-intelligence-summary">{intelligence.summary}</p>
+            <div className="file-intelligence-quick-facts">
+              <span>{formatBytes(detail.byteSize)}</span>
+              <span>Modifié {formatTimestamp(detail.modifiedAt)}</span>
+              {detail.duplicate ? <span>Doublon exact connu</span> : null}
+              {detail.reviewItems.some((item) => item.status.toUpperCase() === "NEEDS_REVIEW") ? (
+                <span>À vérifier</span>
+              ) : null}
+            </div>
+          </div>
+
+          <section className="file-intelligence-section" aria-labelledby="file-understanding-title">
+            <div className="file-intelligence-section-heading">
               <div>
-                <h3>Compréhension</h3>
+                <h3 id="file-understanding-title">Ce que ZEMO a compris</h3>
                 <p>
-                  Analyse locale et explicable. Une confiance machine n’est pas une
+                  Informations locales et explicables. Une confiance machine n’est jamais une
                   confirmation humaine.
                 </p>
               </div>
-              {detail.semanticAnalysis ? (
-                <span
-                  className={`review-state review-state--${detail.semanticAnalysis.status.toLowerCase()}`}
-                >
-                  {friendlyStatus(detail.semanticAnalysis.status)}
-                </span>
-              ) : null}
             </div>
 
-            {detail.semanticAnalysis ? (
-              <>
-                <div className="semantic-summary">
-                  <span>
-                    Entrée {friendlyInputQuality(detail.semanticAnalysis.inputQualityStatus)}
-                  </span>
-                  <span>
-                    Langue {detail.semanticAnalysis.language?.toUpperCase() ?? "inconnue"}
-                  </span>
-                  <span>
-                    Analyseur {detail.semanticAnalysis.analyzerVersion}
-                  </span>
-                </div>
-                <div className="semantic-field-list">
-                  {detail.semanticAnalysis.fields.map((field) => (
-                    <SemanticFieldCard
-                      key={field.fieldId}
-                      field={field}
-                      editing={editingField === field.fieldKey}
-                      correctionValue={correctionValue}
-                      saving={savingField === field.fieldKey}
-                      onCorrectionValue={setCorrectionValue}
-                      onEdit={() => {
-                        setEditingField(field.fieldKey);
-                        setCorrectionValue(field.displayValue ?? "");
-                      }}
-                      onCancel={() => {
-                        setEditingField(null);
-                        setCorrectionValue("");
-                      }}
-                      onConfirm={() => void saveCorrection(field, "confirm")}
-                      onCorrect={() => void saveCorrection(field, "correct")}
-                    />
-                  ))}
-                </div>
-
-                {detail.semanticAnalysis.entities.length > 0 ? (
-                  <details className="semantic-entities">
-                    <summary>
-                      Entités détectées ({detail.semanticAnalysis.entities.length})
-                    </summary>
-                    <ul>
-                      {detail.semanticAnalysis.entities.map((entity) => (
-                        <li key={entity.entityId}>
-                          <strong>{friendlyFieldKey(entity.entityType)}</strong>
-                          <span>{entity.normalizedValue}</span>
-                          <small>{confidenceLabel(entity.confidence)}</small>
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
-                ) : null}
-              </>
+            {intelligence.visibleFields.length > 0 ? (
+              <div className="file-intelligence-field-grid">
+                {intelligence.visibleFields.map((field) => (
+                  <SemanticFieldCard
+                    key={field.fieldId}
+                    field={field}
+                    editing={editingField === field.fieldKey}
+                    correctionValue={correctionValue}
+                    saving={savingField === field.fieldKey}
+                    onCorrectionValue={setCorrectionValue}
+                    onEdit={() => {
+                      setEditingField(field.fieldKey);
+                      setCorrectionValue(field.displayValue ?? "");
+                    }}
+                    onCancel={() => {
+                      setEditingField(null);
+                      setCorrectionValue("");
+                    }}
+                    onConfirm={() => void saveCorrection(field, "confirm")}
+                    onCorrect={() => void saveCorrection(field, "correct")}
+                  />
+                ))}
+              </div>
             ) : (
-              <p className="view-note">
-                Aucune compréhension sémantique locale n’est encore disponible.
+              <p className="file-intelligence-empty">
+                ZEMO n’a pas encore suffisamment d’informations structurées sur ce fichier.
               </p>
             )}
-          </div>
 
-          <div className="detail-section file-relationships">
-            <div className="semantic-heading">
+            {detail.semanticAnalysis?.entities.length ? (
+              <details>
+                <summary>
+                  Autres entités détectées ({detail.semanticAnalysis.entities.length})
+                </summary>
+                <ul className="file-intelligence-entity-list">
+                  {detail.semanticAnalysis.entities.map((entity) => (
+                    <li key={entity.entityId}>
+                      {friendlyFieldKey(entity.entityType)} · {entity.normalizedValue} ·{" "}
+                      {Math.round(entity.confidence * 100)} %
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+          </section>
+
+          <section className="file-intelligence-section" aria-labelledby="file-relations-title">
+            <div className="file-intelligence-section-heading">
               <div>
-                <h3>Relations</h3>
-                <p>Liens sémantiques locaux ; le fichier source reste inchangé.</p>
+                <h3 id="file-relations-title">Relations</h3>
+                <p>Projets, personnes et organisations reliés à ce fichier par l’index local.</p>
               </div>
             </div>
-            {detail.relationships?.length > 0 ? (
-              <div className="file-relationship-list">
+            {detail.relationships.length > 0 ? (
+              <div className="file-intelligence-relations">
                 {detail.relationships.map((relationship) => (
-                  <article className="file-relationship" key={relationship.relationshipId}>
-                    <div>
-                      <span className="semantic-label">
-                        {friendlyRelationship(relationship.relationshipType)}
-                      </span>
-                      <strong>{relationship.displayName}</strong>
-                      <small>
-                        {friendlyStatus(relationship.status)} ·{" "}
-                        {Math.round(relationship.confidence * 100)} % (score de politique)
-                      </small>
+                  <article
+                    className="file-intelligence-relation"
+                    key={relationship.relationshipId}
+                  >
+                    <div className="file-intelligence-relation-head">
+                      <div>
+                        <span className="file-intelligence-relation-label">
+                          {friendlyRelationship(relationship.relationshipType)}
+                        </span>
+                        <strong>{relationship.displayName}</strong>
+                        <small>
+                          {friendlyStatus(relationship.status)} ·{" "}
+                          {Math.round(relationship.confidence * 100)} % de confiance
+                        </small>
+                      </div>
+                      {onOpenIdentity ? (
+                        <button
+                          type="button"
+                          onClick={() => onOpenIdentity(relationship.identityId)}
+                        >
+                          Voir l’identité
+                        </button>
+                      ) : null}
                     </div>
-                    {onOpenIdentity ? (
-                      <button
-                        type="button"
-                        onClick={() => onOpenIdentity(relationship.identityId)}
-                      >
-                        Voir l’identité et les preuves
-                      </button>
-                    ) : null}
                     {relationship.evidence.length > 0 ? (
                       <details>
-                        <summary>Pourquoi ?</summary>
+                        <summary>Pourquoi ZEMO relie ces éléments ?</summary>
                         <ul>
                           {relationship.evidence.map((evidence, index) => (
                             <li key={`${relationship.relationshipId}-${index}`}>{evidence}</li>
@@ -258,34 +248,41 @@ export function FileDetailPanel({
                 ))}
               </div>
             ) : (
-              <p className="view-note">Aucune relation inter-fichiers disponible.</p>
+              <p className="file-intelligence-empty">
+                Aucune relation inter-fichiers confirmée ou suffisamment fiable n’est disponible.
+              </p>
             )}
-          </div>
+          </section>
 
-          <div className="detail-section">
-            <h3>Aperçu du texte</h3>
-            <pre className="text-preview">
+          <section className="file-intelligence-section" aria-labelledby="file-preview-title">
+            <div className="file-intelligence-section-heading">
+              <div>
+                <h3 id="file-preview-title">Aperçu</h3>
+                <p>Texte extrait localement, limité à l’aperçu sûr déjà indexé par ZEMO.</p>
+              </div>
+            </div>
+            <pre className="file-intelligence-preview">
               {detail.textPreview || "Aucun texte exploitable n’a été extrait."}
             </pre>
-          </div>
+          </section>
 
-          <div className="detail-section">
-            <h3>État de vérification</h3>
+          <section className="file-intelligence-section" aria-labelledby="file-review-title">
+            <div className="file-intelligence-section-heading">
+              <div>
+                <h3 id="file-review-title">Vérification</h3>
+                <p>Points où ZEMO préfère demander un avis plutôt que d’inventer.</p>
+              </div>
+            </div>
             {detail.reviewItems.length === 0 ? (
               <p className="quiet-success">Aucun point ne demande votre attention.</p>
             ) : (
-              <div className="detail-review-list">
+              <div className="file-intelligence-review-list">
                 {detail.reviewItems.map((item) => (
-                  <article key={item.reviewId} className="detail-review">
-                    <div>
-                      <strong>{item.explanation}</strong>
-                      <span className={`review-state review-state--${item.status.toLowerCase()}`}>
-                        {friendlyStatus(item.status)}
-                      </span>
-                    </div>
+                  <article key={item.reviewId} className="file-intelligence-review-item">
+                    <strong>{item.explanation}</strong>
                     <p>
-                      Raison : {friendlyReason(item.reason)} · Extraction :{" "}
-                      {friendlyStatus(item.extractionStatus)}
+                      {friendlyReason(item.reason)} · extraction{" "}
+                      {friendlyStatus(item.extractionStatus)} · {friendlyStatus(item.status)}
                     </p>
                     {item.technicalDetails ? (
                       <details>
@@ -297,7 +294,60 @@ export function FileDetailPanel({
                 ))}
               </div>
             )}
-          </div>
+          </section>
+
+          <details className="file-intelligence-technical">
+            <summary>Informations techniques du fichier</summary>
+            <dl className="file-intelligence-technical-grid">
+              <Detail label="Nom" value={detail.filename} />
+              <Detail label="Emplacement relatif" value={detail.relativePath} mono />
+              <Detail label="Extension" value={detail.extension ?? "Non disponible"} />
+              <Detail
+                label="Type détecté"
+                value={detail.detectedType ?? "Non disponible"}
+              />
+              <Detail label="Taille" value={formatBytes(detail.byteSize)} />
+              <Detail label="Créé" value={formatTimestamp(detail.createdAt)} />
+              <Detail label="Modifié" value={formatTimestamp(detail.modifiedAt)} />
+              <Detail
+                label="Empreinte BLAKE3"
+                value={detail.hash ?? "Non disponible"}
+                mono
+              />
+              <Detail
+                label="Doublon exact"
+                value={detail.duplicate ? "Oui" : "Aucun doublon exact connu"}
+              />
+              <Detail label="Extraction" value={friendlyStatus(detail.extractionStatus)} />
+              <Detail
+                label="Extracteur"
+                value={
+                  detail.extractorType
+                    ? `${detail.extractorType}${
+                        detail.extractorVersion ? ` · ${detail.extractorVersion}` : ""
+                      }`
+                    : "Non disponible"
+                }
+              />
+              <Detail label="OCR" value={friendlyOcr(detail.ocrStatus)} />
+              <Detail
+                label="Texte extrait"
+                value={`${detail.characterCount.toLocaleString()} caractères`}
+              />
+              <Detail
+                label="Analyse sémantique"
+                value={
+                  detail.semanticAnalysis
+                    ? `${friendlyStatus(detail.semanticAnalysis.status)} · ${detail.semanticAnalysis.analyzerVersion}`
+                    : "Non disponible"
+                }
+              />
+              <Detail
+                label="Langue comprise"
+                value={detail.semanticAnalysis?.language?.toUpperCase() ?? "Non disponible"}
+              />
+            </dl>
+          </details>
         </>
       ) : null}
     </section>
@@ -326,61 +376,49 @@ function SemanticFieldCard({
   onCorrect: () => void;
 }) {
   const options = correctionOptions(field.fieldKey);
+  const human = isHumanField(field);
   const display = field.displayValue
     ? friendlySemanticValue(field.fieldKey, field.displayValue)
-    : field.status === "CONFLICTING"
+    : field.status.toUpperCase() === "CONFLICTING"
       ? "Valeurs contradictoires"
-      : "Inconnu";
+      : "Non déterminé";
+
   return (
-    <article className={`semantic-field semantic-field--${field.status.toLowerCase()}`}>
-      <div className="semantic-field-main">
+    <article className="file-intelligence-field">
+      <div className="file-intelligence-field-main">
         <div>
-          <span className="semantic-label">{friendlyFieldKey(field.fieldKey)}</span>
+          <span className="file-intelligence-field-label">
+            {friendlyFieldKey(field.fieldKey)}
+          </span>
           <strong>{display}</strong>
-          {field.valueSource === "USER" ? (
-            <small className="human-confirmation">
-              {field.userState === "USER_CORRECTED"
+          <small>
+            {human
+              ? field.userState?.toUpperCase().includes("CORRECT")
                 ? "Corrigé par vous"
-                : "Confirmé par vous"}
-            </small>
-          ) : (
-            <small>{confidenceLabel(field.confidence)}</small>
-          )}
+                : "Confirmé par vous"
+              : confidenceLabel(field.confidence)}
+          </small>
         </div>
-        <span className={`semantic-confidence semantic-confidence--${confidenceTone(field)}`}>
-          {field.valueSource === "USER"
-            ? "HUMAIN"
-            : `${Math.round(field.confidence * 100)} %`}
+        <span
+          className={`file-intelligence-confidence${human ? " file-intelligence-confidence--human" : ""}`}
+        >
+          {human ? "HUMAIN" : `${Math.round(field.confidence * 100)} %`}
         </span>
       </div>
 
-      {field.valueSource === "USER" && field.machineDisplayValue ? (
-        <p className="machine-value">
-          Valeur machine :{" "}
+      {human && field.machineDisplayValue ? (
+        <p className="file-intelligence-machine-value">
+          Valeur machine précédente :{" "}
           {friendlySemanticValue(field.fieldKey, field.machineDisplayValue)}
         </p>
       ) : null}
 
-      {field.candidates.length > 0 ? (
-        <details className="semantic-candidates">
-          <summary>Interprétations alternatives</summary>
-          <ul>
-            {field.candidates.map((candidate, index) => (
-              <li key={`${candidate.displayValue}-${index}`}>
-                <span>{friendlySemanticValue(field.fieldKey, candidate.displayValue)}</span>
-                <small>{Math.round(candidate.confidence * 100)} %</small>
-              </li>
-            ))}
-          </ul>
-        </details>
-      ) : null}
-
       {field.evidence.length > 0 ? (
-        <details className="semantic-why">
-          <summary>Pourquoi ?</summary>
+        <details>
+          <summary>Pourquoi ZEMO pense ça ?</summary>
           {field.evidence.map((evidence, index) => (
             <div
-              className="semantic-evidence"
+              className="file-intelligence-evidence"
               key={`${evidence.evidenceType}-${evidence.startOffset ?? index}`}
             >
               <q>{evidence.exactText}</q>
@@ -390,17 +428,27 @@ function SemanticFieldCard({
                 {evidence.sheetName ? ` · feuille ${evidence.sheetName}` : ""}
                 {evidence.slideNumber ? ` · diapositive ${evidence.slideNumber}` : ""}
               </p>
-              <small>
-                {friendlyReason(evidence.extractionMethod)} · analyseur{" "}
-                {evidence.analyzerVersion}
-              </small>
             </div>
           ))}
         </details>
       ) : null}
 
+      {field.candidates.length > 0 ? (
+        <details>
+          <summary>Autres interprétations</summary>
+          <ul>
+            {field.candidates.slice(0, 6).map((candidate, index) => (
+              <li key={`${candidate.displayValue}-${index}`}>
+                {friendlySemanticValue(field.fieldKey, candidate.displayValue)} ·{" "}
+                {Math.round(candidate.confidence * 100)} %
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+
       {editing ? (
-        <div className="semantic-correction-editor">
+        <div className="file-intelligence-editor">
           <label>
             Correction
             {options ? (
@@ -425,7 +473,7 @@ function SemanticFieldCard({
               />
             )}
           </label>
-          <div>
+          <div className="file-intelligence-actions">
             <button type="button" onClick={onCancel} disabled={saving}>
               Annuler
             </button>
@@ -440,8 +488,8 @@ function SemanticFieldCard({
           </div>
         </div>
       ) : (
-        <div className="semantic-field-actions">
-          {field.displayValue && field.valueSource !== "USER" ? (
+        <div className="file-intelligence-actions">
+          {field.displayValue && !human ? (
             <button type="button" onClick={onConfirm} disabled={saving}>
               Confirmer
             </button>
@@ -467,9 +515,190 @@ function Detail({
   return (
     <div>
       <dt>{label}</dt>
-      <dd className={mono ? "mono-value" : undefined}>{value}</dd>
+      <dd className={mono ? "is-mono" : undefined}>{value}</dd>
     </div>
   );
+}
+
+type FileIntelligence = {
+  documentType: string | null;
+  documentTypeLabel: string;
+  contextLabel: string | null;
+  confidencePercent: number | null;
+  statusLabel: string;
+  statusTone: "good" | "partial" | "review" | "unknown";
+  summary: string;
+  visibleFields: SemanticField[];
+};
+
+function deriveFileIntelligence(detail: LocalFileDetail): FileIntelligence {
+  const fields = detail.semanticAnalysis?.fields ?? [];
+  const visibleFields = fields.filter((field) => {
+    if (!field.displayValue?.trim()) {
+      return false;
+    }
+    const status = field.status.toUpperCase();
+    return !["UNKNOWN"].includes(status);
+  });
+  const documentType = fieldValue(fields, ["document_type"]);
+  const context = fieldValue(fields, ["context"]);
+  const confidences = visibleFields
+    .filter((field) => !isHumanField(field))
+    .map((field) => field.confidence)
+    .filter((confidence) => Number.isFinite(confidence));
+  const confidencePercent =
+    confidences.length > 0
+      ? Math.round(
+          (confidences.reduce((sum, confidence) => sum + confidence, 0) /
+            confidences.length) *
+            100,
+        )
+      : visibleFields.some(isHumanField)
+        ? 100
+        : null;
+  const needsReview = detail.reviewItems.some(
+    (item) => item.status.toUpperCase() === "NEEDS_REVIEW",
+  );
+  const semanticStatus = detail.semanticAnalysis?.status.toUpperCase();
+  const hasAmbiguous = visibleFields.some((field) =>
+    ["AMBIGUOUS", "CONFLICTING"].includes(field.status.toUpperCase()),
+  );
+
+  let statusLabel = "Non analysé";
+  let statusTone: FileIntelligence["statusTone"] = "unknown";
+  if (needsReview || hasAmbiguous) {
+    statusLabel = "À vérifier";
+    statusTone = "review";
+  } else if (!detail.semanticAnalysis) {
+    statusLabel = "Non analysé";
+    statusTone = "unknown";
+  } else if (
+    semanticStatus === "PARTIAL" ||
+    detail.extractionStatus?.toUpperCase() === "PARTIAL" ||
+    confidencePercent === null ||
+    confidencePercent < 80
+  ) {
+    statusLabel = "Partiellement compris";
+    statusTone = "partial";
+  } else {
+    statusLabel = "Compris";
+    statusTone = "good";
+  }
+
+  return {
+    documentType,
+    documentTypeLabel: documentType
+      ? friendlySemanticValue("document_type", documentType)
+      : humanDetectedType(detail.detectedType, detail.extension),
+    contextLabel: context ? friendlySemanticValue("context", context) : null,
+    confidencePercent,
+    statusLabel,
+    statusTone,
+    summary: buildLocalSummary(detail, fields),
+    visibleFields: prioritizeFields(visibleFields),
+  };
+}
+
+function buildLocalSummary(detail: LocalFileDetail, fields: SemanticField[]): string {
+  const documentType = fieldValue(fields, ["document_type"]);
+  const context = fieldValue(fields, ["context"]);
+  const supplier =
+    relatedName(detail, ["FILE_SUPPLIER", "SUPPLIER"]) ??
+    fieldValue(fields, ["supplier", "supplier_candidate", "issuer"]);
+  const customer =
+    relatedName(detail, ["FILE_CUSTOMER", "CUSTOMER", "PROJECT_CUSTOMER"]) ??
+    fieldValue(fields, ["customer", "customer_candidate"]);
+  const project =
+    relatedName(detail, ["FILE_PROJECT", "DOCUMENT_PROJECT", "PROJECT"]) ??
+    fieldValue(fields, ["project", "project_reference_candidate"]);
+  const date = fieldValue(fields, ["document_date", "issue_date", "date"]);
+  const amount = fieldValue(fields, ["total", "amount"]);
+  const currency = fieldValue(fields, ["currency"]);
+
+  const subject = documentType
+    ? friendlySemanticValue("document_type", documentType)
+    : humanDetectedType(detail.detectedType, detail.extension);
+  const pieces: string[] = [];
+  let first = subject;
+  if (context) {
+    first += ` ${friendlySemanticValue("context", context).toLowerCase()}`;
+  }
+  if (supplier) {
+    first += ` lié${subject.toLowerCase().startsWith("facture") ? "e" : ""} à ${supplier}`;
+  }
+  pieces.push(`${first}.`);
+  if (customer) {
+    pieces.push(`Client détecté : ${customer}.`);
+  }
+  if (project) {
+    pieces.push(`Projet : ${project}.`);
+  }
+  if (date) {
+    pieces.push(`Date détectée : ${date}.`);
+  }
+  if (amount) {
+    pieces.push(`Montant détecté : ${amount}${currency ? ` ${currency}` : ""}.`);
+  }
+  if (pieces.length === 1 && !documentType && !context && !supplier && !customer && !project) {
+    return detail.characterCount > 0
+      ? "ZEMO a extrait du contenu localement, mais n’a pas encore suffisamment d’informations structurées pour résumer ce fichier."
+      : "ZEMO n’a pas encore suffisamment d’informations pour résumer ce fichier.";
+  }
+  return pieces.join(" ");
+}
+
+function relatedName(detail: LocalFileDetail, relationshipTypes: string[]): string | null {
+  const accepted = new Set(relationshipTypes.map((value) => value.toUpperCase()));
+  return (
+    detail.relationships.find((relationship) =>
+      accepted.has(relationship.relationshipType.toUpperCase()),
+    )?.displayName ?? null
+  );
+}
+
+function prioritizeFields(fields: SemanticField[]): SemanticField[] {
+  const priority = [
+    "document_type",
+    "context",
+    "supplier",
+    "supplier_candidate",
+    "issuer",
+    "customer",
+    "customer_candidate",
+    "project",
+    "project_reference_candidate",
+    "invoice_number",
+    "quote_number",
+    "document_number",
+    "document_date",
+    "issue_date",
+    "due_date",
+    "total",
+    "amount",
+    "currency",
+    "address",
+    "person",
+    "organization",
+  ];
+  const rank = new Map(priority.map((key, index) => [key, index]));
+  return [...fields].sort((left, right) => {
+    const leftRank = rank.get(left.fieldKey.toLowerCase()) ?? priority.length;
+    const rightRank = rank.get(right.fieldKey.toLowerCase()) ?? priority.length;
+    return leftRank - rightRank || left.fieldKey.localeCompare(right.fieldKey);
+  });
+}
+
+function fieldValue(fields: SemanticField[], keys: string[]): string | null {
+  const accepted = new Set(keys.map((key) => key.toLowerCase()));
+  return (
+    fields.find(
+      (field) => accepted.has(field.fieldKey.toLowerCase()) && Boolean(field.displayValue?.trim()),
+    )?.displayValue?.trim() ?? null
+  );
+}
+
+function isHumanField(field: SemanticField): boolean {
+  return field.valueSource.toUpperCase().includes("USER");
 }
 
 function formatBytes(value: number): string {
@@ -511,6 +740,10 @@ function friendlyStatus(value?: string | null): string {
     CANCELLED: "Annulée",
     UNSUPPORTED: "Non pris en charge",
     SKIPPED: "Non analysé",
+    CONFIRMED: "Confirmé",
+    INFERRED: "Inféré",
+    AMBIGUOUS: "Ambigu",
+    CONFLICTING: "Contradictoire",
   };
   return labels[value.toUpperCase()] ?? value.replace(/_/g, " ").toLowerCase();
 }
@@ -539,23 +772,17 @@ function friendlyRelationship(value: string): string {
   return labels[value.toUpperCase()] ?? friendlyReason(value);
 }
 
-function friendlyInputQuality(value: string): string {
-  const labels: Record<string, string> = {
-    GOOD: "de bonne qualité",
-    DEGRADED: "dégradée",
-    POOR: "de faible qualité",
-    UNUSABLE: "insuffisante",
-  };
-  return labels[value.toUpperCase()] ?? friendlyReason(value);
-}
-
 function friendlyFieldKey(value: string): string {
   const labels: Record<string, string> = {
     DOCUMENT_TYPE: "Type de document",
     CONTEXT: "Contexte",
-    SUPPLIER_CANDIDATE: "Fournisseur candidat",
-    CUSTOMER_CANDIDATE: "Client candidat",
+    SUPPLIER: "Fournisseur",
+    SUPPLIER_CANDIDATE: "Fournisseur",
+    CUSTOMER: "Client",
+    CUSTOMER_CANDIDATE: "Client",
     ISSUER: "Émetteur",
+    PROJECT: "Projet",
+    PROJECT_REFERENCE_CANDIDATE: "Projet / référence",
     INVOICE_NUMBER: "Numéro de facture",
     QUOTE_NUMBER: "Numéro de devis",
     DOCUMENT_NUMBER: "Numéro de document",
@@ -569,7 +796,6 @@ function friendlyFieldKey(value: string): string {
     AMOUNT: "Montant",
     CURRENCY: "Devise",
     PURCHASE_ORDER_REFERENCE: "Référence de commande",
-    PROJECT_REFERENCE_CANDIDATE: "Projet ou référence candidat",
     CONTRACT_PARTIES: "Parties au contrat",
     CONTRACT_TITLE: "Titre du contrat",
     CONTRACT_TYPE: "Type de contrat",
@@ -580,6 +806,7 @@ function friendlyFieldKey(value: string): string {
     PHONE: "Téléphone",
     ADDRESS: "Adresse",
     DATE: "Date",
+    YEAR: "Année",
     SIRET_OR_COMPANY_ID: "Identifiant d’entreprise",
   };
   return labels[value.toUpperCase()] ?? friendlyReason(value);
@@ -618,6 +845,7 @@ function friendlySemanticValue(fieldKey: string, value: string): string {
     const labels: Record<string, string> = {
       personal: "Personnel",
       business: "Professionnel",
+      professional: "Professionnel",
       mixed: "Mixte",
       unknown: "Inconnu",
     };
@@ -637,19 +865,6 @@ function confidenceLabel(value: number): string {
     return "Confiance moyenne";
   }
   return "À vérifier";
-}
-
-function confidenceTone(field: SemanticField): "high" | "medium" | "review" | "human" {
-  if (field.valueSource === "USER") {
-    return "human";
-  }
-  if (["AMBIGUOUS", "CONFLICTING", "UNKNOWN"].includes(field.status)) {
-    return "review";
-  }
-  if (field.confidence >= 0.85) {
-    return "high";
-  }
-  return field.confidence >= 0.65 ? "medium" : "review";
 }
 
 function correctionOptions(
@@ -694,4 +909,42 @@ function correctionOptions(
     value,
     label: friendlySemanticValue("DOCUMENT_TYPE", value),
   }));
+}
+
+function humanDetectedType(detectedType?: string | null, extension?: string | null): string {
+  const raw = detectedType?.trim() || extension?.replace(/^\./, "").trim();
+  if (!raw) {
+    return "Type non déterminé";
+  }
+  const labels: Record<string, string> = {
+    pdf: "PDF",
+    document: "Document",
+    image: "Image",
+    video: "Vidéo",
+    audio: "Audio",
+    spreadsheet: "Tableur",
+    presentation: "Présentation",
+    archive: "Archive",
+  };
+  return labels[raw.toLowerCase()] ?? raw;
+}
+
+function fileIcon(documentType: string | null, extension?: string | null): string {
+  const value = (documentType ?? extension ?? "").toLowerCase();
+  if (value.includes("invoice") || value.includes("receipt")) {
+    return "€";
+  }
+  if (value.includes("photo") || /png|jpg|jpeg|heic|webp/.test(value)) {
+    return "▧";
+  }
+  if (value.includes("spreadsheet") || /xlsx|xls|csv/.test(value)) {
+    return "▦";
+  }
+  if (value.includes("presentation") || /pptx|ppt/.test(value)) {
+    return "▤";
+  }
+  if (value.includes("contract")) {
+    return "§";
+  }
+  return "▱";
 }
