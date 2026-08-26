@@ -80,7 +80,7 @@ vi.mock("./api", () => ({
   rebuildSemanticAnnIndex: vi.fn(),
   listReviewItems: vi.fn().mockResolvedValue({
     total: 0,
-    limit: 50,
+    limit: 500,
     offset: 0,
     hasMore: false,
     items: [],
@@ -411,7 +411,7 @@ describe("safe scanner desktop workflow", () => {
       "workspace-restored",
       "needs_review",
       "all",
-      50,
+      500,
       0,
     );
     expect(api.scanWorkspace).not.toHaveBeenCalled();
@@ -514,7 +514,7 @@ describe("safe scanner desktop workflow", () => {
     });
     vi.mocked(api.listReviewItems).mockResolvedValue({
       total: 1,
-      limit: 50,
+      limit: 500,
       offset: 0,
       hasMore: false,
       items: [
