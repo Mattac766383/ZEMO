@@ -156,7 +156,7 @@ export function SearchView({
   }
 
   const semanticReady =
-    modelStatus?.status === "ready" || result?.embeddings.productionReady === true;
+    modelStatus?.status === "ready" || result?.embeddings?.productionReady === true;
   const semanticInstalling =
     modelStatus?.status === "downloading" ||
     modelStatus?.status === "installing" ||
@@ -274,7 +274,7 @@ export function SearchView({
         <p className="notice-banner" role="status">{modelMessage}</p>
       ) : null}
 
-      {result?.interpretedQuery.length ? (
+      {result?.interpretedQuery?.length ? (
         <div className="search-v2__understood" aria-label="Requête interprétée">
           <span>ZEMO a compris :</span>
           {result.interpretedQuery.map((chip) => (

@@ -260,7 +260,9 @@ fn is_safe_user_content_target(path: &Path) -> bool {
     }
     // OneDrive redirected known folders often live outside the default profile tree
     // but are still user content (e.g. D:\OneDrive\Desktop).
-    normalized.contains("onedrive") || normalized.contains("/users/") || normalized.contains("/home/")
+    normalized.contains("onedrive")
+        || normalized.contains("/users/")
+        || normalized.contains("/home/")
 }
 
 fn normalize_path(path: &Path) -> String {
@@ -303,7 +305,7 @@ fn classify_os_code(code: Option<i32>) -> &'static str {
     }
     match code {
         Some(1 | 13) => ACCESS_AUTHORIZATION_REQUIRED, // EPERM / EACCES
-        Some(16 | 11) => ACCESS_LOCKED,                 // EBUSY / EAGAIN
+        Some(16 | 11) => ACCESS_LOCKED,                // EBUSY / EAGAIN
         Some(375 | 376 | 377) => ACCESS_TEMPORARILY_UNAVAILABLE,
         _ => ACCESS_UNEXPECTED,
     }
@@ -405,15 +407,9 @@ fn probe_resolved(kind: UserContentKind, resolved: Option<PathBuf>) -> FolderAcc
     }
 
     let read = fs::read_dir(&path);
-    let (readable, raw_os_error, platform_error, read_state, failed_stage, error_kind) = match read {
-        Ok(_) => (
-            true,
-            None,
-            None,
-            ACCESS_ACCESSIBLE,
-            None,
-            None,
-        ),
+    let (readable, raw_os_error, platform_error, read_state, failed_stage, error_kind) = match read
+    {
+        Ok(_) => (true, None, None, ACCESS_ACCESSIBLE, None, None),
         Err(error) => (
             false,
             error.raw_os_error(),
@@ -510,7 +506,9 @@ pub fn technical_details(
     format!(
         "Folder: {folder}\nPath: {path}\nCanonical: {canonical}\nStage: {}\nerrno: {}\nErrorKind: {}\nPlatformError: {}\nAccessState: {access_state}",
         stage.unwrap_or("ok"),
-        errno.map(|value| value.to_string()).unwrap_or_else(|| "none".to_owned()),
+        errno
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_owned()),
         error_kind.unwrap_or("none"),
         platform_error.unwrap_or("none"),
     )
@@ -549,7 +547,9 @@ pub fn with_inspect_outcome(
         &probe.access_state,
     );
     if let Some(inspect) = probe.inspect_result.as_ref() {
-        probe.technical_details.push_str(&format!("\nInspect: {inspect}"));
+        probe
+            .technical_details
+            .push_str(&format!("\nInspect: {inspect}"));
     }
     log_probe(&probe);
     probe

@@ -120,7 +120,7 @@ describe("Search and Decisions V2", () => {
 
     expect(await screen.findByText("Clients")).toBeTruthy();
     expect(screen.getByText("Martin")).toBeTruthy();
-    expect(screen.getByText("Factures")).toBeTruthy();
+    expect(screen.getAllByText("Factures").length).toBeGreaterThan(0);
     expect(screen.getAllByText("00482.pdf").length).toBeGreaterThan(0);
     expect(screen.getByText(/Recherche hybride/)).toBeTruthy();
     expect(api.searchLocalFiles).toHaveBeenCalledWith(

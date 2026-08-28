@@ -465,7 +465,7 @@ describe("Milestone 12.2 zero-friction UX + whole computer", () => {
     expect(within(nav).queryByRole("button", { name: "Exécution" })).toBeNull();
     fireEvent.click(within(nav).getByRole("button", { name: "Recherche" }));
     expect(
-      await screen.findByRole("heading", { name: "Retrouvez vos fichiers" }),
+      await screen.findByRole("heading", { name: "Décrivez simplement ce que vous cherchez" }),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Activer" })).toBeTruthy();
     expect(

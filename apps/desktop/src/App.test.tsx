@@ -558,6 +558,9 @@ describe("safe scanner desktop workflow", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Rechercher un fichier" }));
     expect(await screen.findByRole("heading", { name: "Décrivez simplement ce que vous cherchez" })).toBeTruthy();
+    fireEvent.change(screen.getByRole("searchbox", { name: "Recherche" }), {
+      target: { value: "Invoice 2026" },
+    });
     expect(await screen.findByText("Invoice 2026")).toBeTruthy();
 
     openAdvancedNav();
