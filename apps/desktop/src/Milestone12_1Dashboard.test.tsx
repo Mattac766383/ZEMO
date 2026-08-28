@@ -671,7 +671,7 @@ describe("Milestone 12.1 dashboard command center", () => {
       expect(api.searchLocalFiles).toHaveBeenCalled();
     });
     expect(
-      await screen.findByRole("heading", { name: "Retrouvez vos fichiers" }),
+      await screen.findByRole("heading", { name: "Décrivez simplement ce que vous cherchez" }),
     ).toBeTruthy();
   });
 

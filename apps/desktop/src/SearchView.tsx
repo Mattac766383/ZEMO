@@ -1,9 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   activateLocalEmbeddingModel,
   cancelLocalEmbeddingModelInstall,
   getEmbeddingModelStatus,
-  rebuildSemanticAnnIndex,
   removeLocalEmbeddingModel,
   retryLocalEmbeddingModel,
   searchLocalFiles,
@@ -15,15 +14,11 @@ import type {
   LocalSearchPage,
   SearchContext,
   SearchDocumentType,
-  SearchExtraction,
-  SearchFileType,
-  SearchModified,
-  SearchOcr,
-  SearchSemanticStatus,
   SearchSort,
 } from "./types";
+import "./SearchViewV2.css";
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 30;
 const INITIAL_FILTERS: LocalSearchFilters = {
   fileType: "all",
   modified: "any",
@@ -33,6 +28,12 @@ const INITIAL_FILTERS: LocalSearchFilters = {
   context: "any",
   semanticStatus: "any",
 };
+
+const SEARCH_EXAMPLES = [
+  "la facture Point P du chantier Martin autour de 1 400 €",
+  "le devis de Dupont de l'année dernière",
+  "la photo de la toiture prise cet été",
+];
 
 interface SearchViewProps {
   workspaceId: string;
@@ -53,9 +54,7 @@ export function SearchView({
   const [result, setResult] = useState<LocalSearchPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<UserFacingError | null>(null);
-  const [modelStatus, setModelStatus] = useState<EmbeddingModelStatus | null>(
-    null,
-  );
+  const [modelStatus, setModelStatus] = useState<EmbeddingModelStatus | null>(null);
   const [modelBusy, setModelBusy] = useState(false);
   const [modelMessage, setModelMessage] = useState<string | null>(null);
 
@@ -128,6 +127,12 @@ export function SearchView({
     setFilters((current) => ({ ...current, [key]: value }));
   }
 
+  function updateText(value: string) {
+    setPage(0);
+    setDisabledIntents([]);
+    setText(value);
+  }
+
   async function runModelAction(
     action: () => Promise<EmbeddingModelStatus>,
   ) {
@@ -136,9 +141,9 @@ export function SearchView({
     try {
       const status = await action();
       setModelStatus(status);
-      if (status.status === "not_installed" && !status.downloadImplemented) {
+      if (status.status === "ready") {
         setModelMessage(
-          "Installation différée : placez les artefacts locaux (~118 Mo) puis réessayez. Aucun téléchargement automatique.",
+          "L’intelligence sémantique locale est prête. ZEMO peut chercher par sens, contenu et contexte.",
         );
       } else if (status.lastError) {
         setModelMessage(status.lastError);
@@ -150,209 +155,128 @@ export function SearchView({
     }
   }
 
-  const modelStatusLabel = (() => {
-    switch (modelStatus?.status) {
-      case "ready":
-        return "Recherche améliorée active";
-      case "downloading":
-      case "installing":
-        return "Activation en cours…";
-      case "loading":
-        return "Chargement…";
-      case "corrupt":
-      case "failed":
-      case "incompatible_version":
-        return "Activation impossible";
-      case "unavailable":
-        return "Indisponible";
-      case "not_installed":
-      default:
-        return "Recherche améliorée non activée";
-    }
-  })();
-
-  const annStatusLabel = (() => {
-    switch (result?.embeddings.annIndexStatus) {
-      case "ready":
-        return "Prête";
-      case "building":
-        return "Préparation…";
-      case "degraded":
-        return "Indisponible";
-      case "rebuild_required":
-        return "À reconstruire";
-      case "failed":
-      case "not_available":
-      default:
-        return modelStatus?.status === "ready" ? "Préparation…" : "Indisponible";
-    }
-  })();
-
-  const semanticBusy =
+  const semanticReady =
+    modelStatus?.status === "ready" || result?.embeddings?.productionReady === true;
+  const semanticInstalling =
     modelStatus?.status === "downloading" ||
     modelStatus?.status === "installing" ||
-    modelStatus?.status === "loading" ||
-    result?.embeddings.annIndexStatus === "building";
+    modelStatus?.status === "loading";
+  const hasVisibleQuery =
+    text.trim().length > 0 || Boolean(result?.query?.trim().length);
+  const activeFilterCount = useMemo(
+    () => countActiveFilters(filters, sort),
+    [filters, sort],
+  );
 
   return (
-    <div className="search-surface">
-      <div className="surface-heading">
-        <div>
-          <span className="step">Recherche</span>
-          <h2>Retrouvez vos fichiers</h2>
-          <p>Retrouvez une facture, une photo, un devis…</p>
-        </div>
-        <span className="local-badge">Sur cet appareil</span>
-      </div>
-
-      <section className="embedding-model-panel" aria-label="Améliorer la recherche">
-        <div>
-          <strong>Recherche intelligente</strong>
-          <p>
-            {modelStatusLabel}
-            {modelStatus
-              ? ` · ~${(modelStatus.approximateDiskBytes / (1024 * 1024)).toFixed(0)} Mo · fonctionne localement`
-              : null}
-          </p>
-          <p>
-            Retrouvez vos fichiers même sans connaître leur nom exact.
-          </p>
-          <details className="search-advanced-details">
-            <summary>En savoir plus</summary>
-            <p>
-              État : {annStatusLabel}
-              {semanticBusy ? " · préparation en cours" : null}. La recherche
-              classique reste disponible pendant l’activation.
-            </p>
-          </details>
-          {modelMessage ? <p className="inline-error">{modelMessage}</p> : null}
-        </div>
-        <div className="embedding-model-actions">
-          {modelStatus?.status !== "ready" &&
-          modelStatus?.status !== "downloading" &&
-          modelStatus?.status !== "installing" ? (
-            <button
-              type="button"
-              disabled={modelBusy}
-              onClick={() => {
-                void runModelAction(activateLocalEmbeddingModel);
-              }}
-            >
-              Activer
-            </button>
-          ) : null}
-          {modelStatus?.status === "downloading" ||
-          modelStatus?.status === "installing" ? (
-            <button
-              type="button"
-              disabled={false}
-              onClick={() => {
-                void runModelAction(cancelLocalEmbeddingModelInstall);
-              }}
-            >
-              Annuler
-            </button>
-          ) : null}
-          {modelStatus?.status === "corrupt" ||
-          modelStatus?.status === "failed" ||
-          modelStatus?.status === "incompatible_version" ? (
-            <button
-              type="button"
-              disabled={modelBusy}
-              onClick={() => {
-                void runModelAction(retryLocalEmbeddingModel);
-              }}
-            >
-              Réessayer
-            </button>
-          ) : null}
-          {modelStatus?.status === "ready" ? (
-            <details className="search-advanced-details">
-              <summary>Options avancées</summary>
-              <div className="embedding-model-actions">
-                <button
-                  type="button"
-                  disabled={modelBusy}
-                  onClick={() => {
-                    setModelBusy(true);
-                    setModelMessage(null);
-                    void rebuildSemanticAnnIndex(workspaceId)
-                      .then((status) => {
-                        setModelMessage(
-                          status === "ready"
-                            ? "Recherche améliorée reconstruite."
-                            : `État : ${status}`,
-                        );
-                      })
-                      .catch((reason) => {
-                        setModelMessage(
-                          classifyUserError(reason, "semantic").message,
-                        );
-                      })
-                      .finally(() => {
-                        setModelBusy(false);
-                      });
-                  }}
-                >
-                  Reconstruire
-                </button>
-                <button
-                  type="button"
-                  disabled={modelBusy}
-                  onClick={() => {
-                    void runModelAction(removeLocalEmbeddingModel);
-                  }}
-                >
-                  Désactiver
-                </button>
-              </div>
-            </details>
-          ) : null}
-          {modelStatus &&
-          modelStatus.status !== "not_installed" &&
-          modelStatus.status !== "downloading" &&
-          modelStatus.status !== "installing" &&
-          modelStatus.status !== "ready" ? (
-            <button
-              type="button"
-              disabled={modelBusy}
-              onClick={() => {
-                void runModelAction(removeLocalEmbeddingModel);
-              }}
-            >
-              Désactiver
-            </button>
-          ) : null}
-        </div>
-      </section>
+    <main className="search-v2" aria-labelledby="search-v2-title">
+      <header className="search-v2__header">
+        <span className="step">Recherche</span>
+        <h2 id="search-v2-title">Décrivez simplement ce que vous cherchez</h2>
+        <p>
+          Pas besoin de connaître le nom du fichier. ZEMO cherche dans le nom, le
+          contenu, les dates, les montants, les personnes, les entreprises et les
+          projets compris localement.
+        </p>
+        <span className={semanticReady ? "search-v2__brain search-v2__brain--ready" : "search-v2__brain"}>
+          {semanticReady ? "Intelligence sémantique locale active" : "Recherche classique active"}
+        </span>
+      </header>
 
       <form
-        className="search-box"
+        className="search-v2__form"
         role="search"
         onSubmit={(event) => event.preventDefault()}
       >
         <label htmlFor="local-search-input">Recherche</label>
-        <div>
+        <div className="search-v2__input-wrap">
           <span aria-hidden="true">⌕</span>
           <input
             id="local-search-input"
             type="search"
             maxLength={512}
             autoComplete="off"
-            placeholder="Rechercher une facture, une photo, un devis…"
+            autoFocus
+            placeholder="Ex. la facture Point P du chantier Martin autour de 1 400 €"
             value={text}
-            onChange={(event) => {
-              setPage(0);
-              setDisabledIntents([]);
-              setText(event.target.value);
-            }}
+            onChange={(event) => updateText(event.target.value)}
           />
+          {text ? (
+            <button
+              type="button"
+              className="search-v2__clear"
+              aria-label="Effacer la recherche"
+              onClick={() => updateText("")}
+            >
+              ×
+            </button>
+          ) : null}
         </div>
       </form>
 
-      {result?.interpretedQuery.length ? (
-        <div className="interpreted-query" aria-label="Requête interprétée">
-          <span>Compris localement :</span>
+      {!text.trim() ? (
+        <div className="search-v2__examples" aria-label="Exemples de recherche">
+          <span>Essayez par exemple :</span>
+          {SEARCH_EXAMPLES.map((example) => (
+            <button type="button" key={example} onClick={() => updateText(example)}>
+              {example}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {!semanticReady ? (
+        <section className="search-v2__intelligence" aria-label="Améliorer la recherche">
+          <div>
+            <strong>Recherche intelligente</strong>
+            <p>
+              {semanticInstalling
+                ? "Activation de l’intelligence locale en cours…"
+                : "Recherche améliorée non activée. La recherche classique reste disponible."}
+            </p>
+            <small>
+              Le modèle fonctionne sur cet appareil. Environ {formatMegabytes(modelStatus?.approximateDiskBytes)} à télécharger une seule fois.
+            </small>
+            {modelMessage ? <p className="inline-error">{modelMessage}</p> : null}
+          </div>
+          <div className="search-v2__intelligence-actions">
+            {semanticInstalling ? (
+              <button
+                type="button"
+                disabled={modelBusy}
+                onClick={() => void runModelAction(cancelLocalEmbeddingModelInstall)}
+              >
+                Annuler
+              </button>
+            ) : modelStatus?.status === "failed" ||
+              modelStatus?.status === "corrupt" ||
+              modelStatus?.status === "incompatible_version" ? (
+              <button
+                type="button"
+                disabled={modelBusy}
+                onClick={() => void runModelAction(retryLocalEmbeddingModel)}
+              >
+                Réessayer
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="primary-action"
+                disabled={modelBusy}
+                onClick={() => void runModelAction(activateLocalEmbeddingModel)}
+              >
+                Activer
+              </button>
+            )}
+          </div>
+        </section>
+      ) : modelMessage ? (
+        <p className="notice-banner" role="status">{modelMessage}</p>
+      ) : null}
+
+      {result?.interpretedQuery?.length ? (
+        <div className="search-v2__understood" aria-label="Requête interprétée">
+          <span>ZEMO a compris :</span>
           {result.interpretedQuery.map((chip) => (
             <button
               key={chip.id}
@@ -369,61 +293,62 @@ export function SearchView({
               {chip.label} <span aria-hidden="true">×</span>
             </button>
           ))}
-          <small>Retirez une interprétation pour la rechercher comme texte libre.</small>
         </div>
       ) : null}
 
-      <div className="search-controls" aria-label="Filtres de recherche">
-        <Filter label="Type de document">
-          <select
-            value={filters.documentType}
-            onChange={(event) =>
-              updateFilter("documentType", event.target.value as SearchDocumentType)
-            }
-          >
-            <option value="all">Tous</option>
-            <option value="invoice">Factures</option>
-            <option value="quote">Devis</option>
-            <option value="contract">Contrats</option>
-            <option value="administrative_document">Administratif</option>
-            <option value="photo">Photos</option>
-            <option value="spreadsheet">Tableurs</option>
-          </select>
-        </Filter>
-        <Filter label="Contexte">
-          <select
-            value={filters.context}
-            onChange={(event) =>
-              updateFilter("context", event.target.value as SearchContext)
-            }
-          >
-            <option value="any">Tous</option>
-            <option value="personal">Personnel</option>
-            <option value="business">Professionnel</option>
-            <option value="mixed">Mixte</option>
-            <option value="unknown">À déterminer</option>
-          </select>
-        </Filter>
-        <Filter label="Trier">
-          <select
-            value={sort}
-            onChange={(event) => {
-              setPage(0);
-              setSort(event.target.value as SearchSort);
-            }}
-          >
-            <option value="relevance">Pertinence</option>
-            <option value="newest">Plus récents</option>
-            <option value="oldest">Plus anciens</option>
-            <option value="filename">Nom</option>
-            <option value="size">Taille</option>
-          </select>
-        </Filter>
-      </div>
-
-      <details className="advanced-search">
-        <summary>Filtres structurés</summary>
-        <div className="advanced-search-grid">
+      <details className="search-v2__filters">
+        <summary>
+          Filtres structurés{activeFilterCount > 0 ? ` · ${activeFilterCount} actif${activeFilterCount > 1 ? "s" : ""}` : ""}
+        </summary>
+        <p className="search-v2__filters-help">
+          Facultatif : la phrase de recherche suffit dans la majorité des cas.
+        </p>
+        <div className="search-v2__filters-grid">
+          <Filter label="Type de document">
+            <select
+              value={filters.documentType}
+              onChange={(event) =>
+                updateFilter("documentType", event.target.value as SearchDocumentType)
+              }
+            >
+              <option value="any">Tous</option>
+              <option value="invoice">Factures</option>
+              <option value="quote">Devis</option>
+              <option value="contract">Contrats</option>
+              <option value="administrative_document">Administratif</option>
+              <option value="photo">Photos</option>
+              <option value="spreadsheet">Tableurs</option>
+            </select>
+          </Filter>
+          <Filter label="Contexte">
+            <select
+              value={filters.context}
+              onChange={(event) =>
+                updateFilter("context", event.target.value as SearchContext)
+              }
+            >
+              <option value="any">Tous</option>
+              <option value="personal">Personnel</option>
+              <option value="business">Professionnel</option>
+              <option value="mixed">Mixte</option>
+              <option value="unknown">À déterminer</option>
+            </select>
+          </Filter>
+          <Filter label="Trier">
+            <select
+              value={sort}
+              onChange={(event) => {
+                setPage(0);
+                setSort(event.target.value as SearchSort);
+              }}
+            >
+              <option value="relevance">Pertinence</option>
+              <option value="newest">Plus récents</option>
+              <option value="oldest">Plus anciens</option>
+              <option value="filename">Nom</option>
+              <option value="size">Taille</option>
+            </select>
+          </Filter>
           <Filter label="Fournisseur">
             <input
               value={filters.supplier ?? ""}
@@ -481,276 +406,236 @@ export function SearchView({
               }
             />
           </Filter>
-          <Filter label="Devise">
-            <select
-              value={filters.currency ?? ""}
-              onChange={(event) => updateFilter("currency", event.target.value || null)}
+        </div>
+        <div className="search-v2__filter-actions">
+          <button
+            type="button"
+            onClick={() => {
+              setFilters(INITIAL_FILTERS);
+              setSort("relevance");
+              setPage(0);
+            }}
+          >
+            Réinitialiser les filtres
+          </button>
+          {semanticReady ? (
+            <button
+              type="button"
+              disabled={modelBusy}
+              onClick={() => void runModelAction(removeLocalEmbeddingModel)}
             >
-              <option value="">Toutes</option>
-              <option value="EUR">EUR</option>
-              <option value="USD">USD</option>
-              <option value="GBP">GBP</option>
-            </select>
-          </Filter>
-          <Filter label="État sémantique">
-            <select
-              value={filters.semanticStatus}
-              onChange={(event) =>
-                updateFilter("semanticStatus", event.target.value as SearchSemanticStatus)
-              }
-            >
-              <option value="any">Tous</option>
-              <option value="success">Analysé</option>
-              <option value="partial">Partiel</option>
-              <option value="unknown">Inconnu</option>
-              <option value="failed">Échec</option>
-              <option value="pending">En attente</option>
-            </select>
-          </Filter>
-          <Filter label="Confiance min.">
-            <select
-              value={filters.minimumConfidencePercent ?? ""}
-              onChange={(event) =>
-                updateFilter(
-                  "minimumConfidencePercent",
-                  event.target.value ? Number(event.target.value) : null,
-                )
-              }
-            >
-              <option value="">Toutes</option>
-              <option value="65">65 %</option>
-              <option value="85">85 %</option>
-              <option value="95">95 %</option>
-            </select>
-          </Filter>
-          <Filter label="Format">
-            <select
-              value={filters.fileType}
-              onChange={(event) =>
-                updateFilter("fileType", event.target.value as SearchFileType)
-              }
-            >
-              <option value="all">Tous</option>
-              <option value="pdf">PDF</option>
-              <option value="documents">Documents</option>
-              <option value="spreadsheets">Tableurs</option>
-              <option value="presentations">Présentations</option>
-              <option value="images">Images</option>
-              <option value="archives">Archives</option>
-              <option value="other">Autres</option>
-            </select>
-          </Filter>
-          <Filter label="Date de modification">
-            <select
-              value={filters.modified}
-              onChange={(event) =>
-                updateFilter("modified", event.target.value as SearchModified)
-              }
-            >
-              <option value="any">N’importe quand</option>
-              <option value="today">Aujourd’hui</option>
-              <option value="last_7_days">7 derniers jours</option>
-              <option value="last_30_days">30 derniers jours</option>
-              <option value="this_year">Cette année</option>
-            </select>
-          </Filter>
-          <Filter label="Extraction">
-            <select
-              value={filters.extraction}
-              onChange={(event) =>
-                updateFilter("extraction", event.target.value as SearchExtraction)
-              }
-            >
-              <option value="any">Tous les états</option>
-              <option value="success">Réussie</option>
-              <option value="partial">Partielle</option>
-              <option value="failed">Échec</option>
-              <option value="unsupported">Non prise en charge</option>
-            </select>
-          </Filter>
-          <Filter label="OCR">
-            <select
-              value={filters.ocr}
-              onChange={(event) => updateFilter("ocr", event.target.value as SearchOcr)}
-            >
-              <option value="any">Tous</option>
-              <option value="used">Utilisé</option>
-              <option value="not_used">Non utilisé</option>
-              <option value="unavailable">Indisponible</option>
-            </select>
-          </Filter>
+              Désactiver l’intelligence locale
+            </button>
+          ) : null}
         </div>
       </details>
 
-      <div className="results-count" aria-live="polite">
-        <strong>{result?.total.toLocaleString() ?? "—"}</strong>
-        <span>{result?.total === 1 ? "résultat" : "résultats"}</span>
-        {loading ? <span className="loading-label">Recherche…</span> : null}
-        {!loading && result ? (
-          <span className="search-mode">
-            {result.embeddings.availability === "available_production" ||
-            result.embeddings.availability === "available_development"
-              ? "Recherche intelligente active"
-              : "Recherche classique"}
-          </span>
-        ) : null}
-      </div>
-
       {error ? (
-        <div className="notice-banner notice-banner--warning" role="status">
-          <div>
-            <strong>{error.title}</strong>
-            <span>{error.message}</span>
-            <span className="notice-banner__impact">{error.impact}</span>
-            <span className="notice-banner__hint">{error.actionHint}</span>
+        <p className="inline-error" role="alert">{error.message}</p>
+      ) : null}
+
+      {loading ? (
+        <p className="search-v2__loading" role="status">ZEMO cherche sur cet appareil…</p>
+      ) : null}
+
+      {!loading && !error && hasVisibleQuery && result ? (
+        <section className="search-v2__results" aria-label="Résultats de recherche">
+          <div className="search-v2__results-heading">
+            <div>
+              <strong>
+                {result.total.toLocaleString()} résultat{result.total === 1 ? "" : "s"}
+              </strong>
+              <span>
+                {semanticReady
+                  ? "Recherche hybride : sens + contenu + contexte + nom"
+                  : "Recherche classique : nom + contenu + métadonnées"}
+              </span>
+            </div>
           </div>
-          <button type="button" onClick={() => setError(null)}>
-            Continuer
-          </button>
-        </div>
-      ) : null}
-      {!loading && !error && result?.results.length === 0 ? (
-        <div className="empty-state">
-          <strong>Aucun fichier trouvé</strong>
-          <p>
-            Commencez par analyser vos fichiers pour pouvoir les retrouver ici,
-            ou essayez d’autres mots.
-          </p>
-        </div>
-      ) : null}
 
-      <div className="search-results" aria-busy={loading}>
-        {result?.results.map((item) => (
-          <article className="search-result" key={item.fileId}>
-            <div className="file-kind" aria-hidden="true">
-              {fileIcon(item.extension)}
+          {result.results.length === 0 ? (
+            <div className="empty-state">
+              <strong>Aucun fichier trouvé</strong>
+              <p>Essayez de décrire le document autrement, avec une personne, une date, un projet ou un montant.</p>
             </div>
-            <div className="search-result-body">
-              <div className="search-result-title">
-                <div>
-                  <h3>{item.filename}</h3>
-                  <code>{item.relativePath}</code>
-                </div>
-                <button type="button" onClick={() => onOpenFile(item.fileId)}>
-                  Voir les détails
-                </button>
-              </div>
-              {item.snippet ? <p className="result-snippet">{item.snippet}</p> : null}
-              {item.whyMatched.length ? (
-                <div className="why-matched">
-                  <strong>Pourquoi ce résultat ?</strong>
-                  <ul>
-                    {item.whyMatched.map((reason) => (
-                      <li key={reason}>{reason}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-              <div className="result-meta">
-                <span>{item.detectedType ?? item.extension ?? "Type inconnu"}</span>
-                <span>{formatBytes(item.byteSize)}</span>
-                <span>{formatTimestamp(item.modifiedAt)}</span>
-                <span>{sourceLabel(item.matchSource)}</span>
-                {item.extractionStatus ? (
-                  <span className={`state-dot state-dot--${item.extractionStatus}`}>
-                    {statusLabel(item.extractionStatus)}
-                  </span>
-                ) : null}
-              </div>
+          ) : (
+            <div className="search-v2__result-list">
+              {result.results.map((item) => (
+                <article className="search-v2__result" key={item.fileId}>
+                  <div className="search-v2__result-top">
+                    <div className="search-v2__file-icon" aria-hidden="true">
+                      {fileIcon(item.extension, item.detectedType)}
+                    </div>
+                    <div className="search-v2__result-title">
+                      <h3>{item.filename}</h3>
+                      <div className="search-v2__meta">
+                        <span>{fileTypeLabel(item.extension, item.detectedType)}</span>
+                        <span>{formatBytes(item.byteSize)}</span>
+                        {item.modifiedAt ? <span>Modifié {formatTimestamp(item.modifiedAt)}</span> : null}
+                        <span>{sourceLabel(item.matchSource)}</span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="primary-action search-v2__details-button"
+                      onClick={() => onOpenFile(item.fileId)}
+                    >
+                      Voir les détails
+                    </button>
+                  </div>
+
+                  {item.snippet ? <p className="search-v2__snippet">{item.snippet}</p> : null}
+
+                  <PathTree relativePath={item.relativePath} filename={item.filename} />
+
+                  {item.whyMatched.length ? (
+                    <details className="search-v2__why">
+                      <summary>Pourquoi ce résultat ?</summary>
+                      <ul>
+                        {item.whyMatched.map((reason, index) => (
+                          <li key={`${item.fileId}-reason-${index}`}>{reason}</li>
+                        ))}
+                      </ul>
+                    </details>
+                  ) : null}
+                </article>
+              ))}
             </div>
-          </article>
-        ))}
+          )}
+
+          {result.total > PAGE_SIZE ? (
+            <nav className="pagination" aria-label="Pages des résultats">
+              <button
+                type="button"
+                disabled={page === 0 || loading}
+                onClick={() => setPage((value) => Math.max(0, value - 1))}
+              >
+                Précédent
+              </button>
+              <span>Page {page + 1}</span>
+              <button
+                type="button"
+                disabled={!result.hasMore || loading}
+                onClick={() => setPage((value) => value + 1)}
+              >
+                Suivant
+              </button>
+            </nav>
+          ) : null}
+        </section>
+      ) : null}
+    </main>
+  );
+}
+
+function PathTree({ relativePath, filename }: { relativePath: string; filename: string }) {
+  const parts = splitPath(relativePath);
+  const visibleParts = parts.length > 0 ? parts : [filename];
+  return (
+    <div className="search-v2__path" aria-label={`Emplacement de ${filename}`}>
+      <span className="search-v2__path-label">Emplacement</span>
+      <div className="search-v2__path-tree">
+        {visibleParts.map((part, index) => {
+          const isFile = index === visibleParts.length - 1;
+          return (
+            <div
+              key={`${part}-${index}`}
+              className={isFile ? "search-v2__path-part search-v2__path-part--file" : "search-v2__path-part"}
+              style={{ paddingInlineStart: `${index * 18}px` }}
+            >
+              <span aria-hidden="true">{index === 0 ? "" : "└─"}</span>
+              <span aria-hidden="true">{isFile ? "▧" : "▸"}</span>
+              <span>{part}</span>
+            </div>
+          );
+        })}
       </div>
-
-      {result && (page > 0 || result.hasMore) ? (
-        <nav className="pagination" aria-label="Pages de résultats">
-          <button
-            type="button"
-            disabled={page === 0 || loading}
-            onClick={() => setPage((current) => Math.max(0, current - 1))}
-          >
-            Précédent
-          </button>
-          <span>Page {page + 1}</span>
-          <button
-            type="button"
-            disabled={!result.hasMore || loading}
-            onClick={() => setPage((current) => current + 1)}
-          >
-            Suivant
-          </button>
-        </nav>
-      ) : null}
+      <code>{relativePath || filename}</code>
     </div>
   );
 }
 
 function Filter({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label>
+    <label className="search-v2__filter">
       <span>{label}</span>
       {children}
     </label>
   );
 }
 
-function fileIcon(extension?: string | null): string {
-  const value = extension?.toLowerCase();
-  if (value === "pdf") return "PDF";
-  if (["png", "jpg", "jpeg", "webp", "tiff", "bmp"].includes(value ?? "")) return "IMG";
-  if (["xls", "xlsx", "csv"].includes(value ?? "")) return "XLS";
-  if (["ppt", "pptx"].includes(value ?? "")) return "PPT";
-  return "DOC";
+function splitPath(value: string): string[] {
+  return value
+    .split(/[\\/]+/g)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function countActiveFilters(filters: LocalSearchFilters, sort: SearchSort): number {
+  let count = sort === "relevance" ? 0 : 1;
+  if (filters.documentType !== "any") count += 1;
+  if (filters.context !== "any") count += 1;
+  if (filters.supplier) count += 1;
+  if (filters.customer) count += 1;
+  if (filters.project) count += 1;
+  if (filters.year) count += 1;
+  if (filters.amountMinimumMinor != null) count += 1;
+  if (filters.amountMaximumMinor != null) count += 1;
+  return count;
+}
+
+function amountToMinor(value: string): number | null {
+  if (!value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.round(parsed * 100) : null;
+}
+
+function minorToInput(value?: number | null): string {
+  return value == null ? "" : String(value / 100);
+}
+
+function formatMegabytes(bytes?: number | null): string {
+  if (!bytes || bytes <= 0) return "118 Mo";
+  return `${Math.round(bytes / (1024 * 1024))} Mo`;
+}
+
+function fileIcon(extension?: string | null, detectedType?: string | null): string {
+  const ext = extension?.toLowerCase();
+  if (detectedType?.startsWith("image/") || ["jpg", "jpeg", "png", "heic", "webp"].includes(ext ?? "")) return "▧";
+  if (ext === "pdf") return "PDF";
+  if (["xls", "xlsx", "csv", "ods"].includes(ext ?? "")) return "▦";
+  if (["doc", "docx", "odt", "rtf"].includes(ext ?? "")) return "▤";
+  return "▣";
+}
+
+function fileTypeLabel(extension?: string | null, detectedType?: string | null): string {
+  if (extension) return extension.toUpperCase();
+  if (detectedType) return detectedType;
+  return "Fichier";
 }
 
 function formatBytes(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
   const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
-  return `${(value / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+  const amount = value / 1024 ** index;
+  return `${amount.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
 }
 
-function formatTimestamp(value?: string | null): string {
-  if (!value) return "Date inconnue";
-  try {
-    const date = /^\d+$/.test(value)
-      ? new Date(Number(BigInt(value) / 1_000_000n))
-      : new Date(value);
-    return Number.isNaN(date.getTime()) ? "Date inconnue" : date.toLocaleDateString();
-  } catch {
-    return "Date inconnue";
-  }
-}
-
-function amountToMinor(value: string): number | null {
-  if (!value.trim()) return null;
-  const amount = Number(value);
-  return Number.isFinite(amount) && amount >= 0 ? Math.round(amount * 100) : null;
-}
-
-function minorToInput(value?: number | null): string {
-  return typeof value === "number" && Number.isFinite(value) ? String(value / 100) : "";
+function formatTimestamp(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
 }
 
 function sourceLabel(source: string): string {
   const labels: Record<string, string> = {
     filename: "Nom correspondant",
     path: "Emplacement correspondant",
-    content: "Dans le contenu",
-    metadata: "Type correspondant",
-    structured: "Données structurées",
-    relationship: "Relation confirmée ou probable",
-    semantic: "Similarité locale",
+    content: "Contenu correspondant",
+    metadata: "Métadonnées correspondantes",
+    structured: "Informations comprises",
+    relationship: "Contexte relié",
+    semantic: "Sens correspondant",
   };
-  return labels[source] ?? "Correspondance locale";
-}
-
-function statusLabel(status: string): string {
-  const labels: Record<string, string> = {
-    success: "Texte extrait",
-    partial: "Extraction partielle",
-    failed: "Extraction impossible",
-    unsupported: "Format non pris en charge",
-  };
-  return labels[status] ?? status;
+  return labels[source] ?? "Correspondance";
 }

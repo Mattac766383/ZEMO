@@ -80,7 +80,7 @@ vi.mock("./api", () => ({
   rebuildSemanticAnnIndex: vi.fn(),
   listReviewItems: vi.fn().mockResolvedValue({
     total: 0,
-    limit: 50,
+    limit: 500,
     offset: 0,
     hasMore: false,
     items: [],
@@ -397,7 +397,7 @@ describe("safe scanner desktop workflow", () => {
     );
     expect(
       await screen.findByRole("heading", {
-        name: "Les fichiers qui demandent votre attention",
+        name: "ZEMO a presque terminé",
       }),
     ).toBeTruthy();
     openAdvancedNav();
@@ -411,7 +411,7 @@ describe("safe scanner desktop workflow", () => {
       "workspace-restored",
       "needs_review",
       "all",
-      50,
+      500,
       0,
     );
     expect(api.scanWorkspace).not.toHaveBeenCalled();
@@ -514,7 +514,7 @@ describe("safe scanner desktop workflow", () => {
     });
     vi.mocked(api.listReviewItems).mockResolvedValue({
       total: 1,
-      limit: 50,
+      limit: 500,
       offset: 0,
       hasMore: false,
       items: [
@@ -557,7 +557,10 @@ describe("safe scanner desktop workflow", () => {
     expect(screen.getByRole("button", { name: "Rechercher un fichier" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Rechercher un fichier" }));
-    expect(await screen.findByRole("heading", { name: "Retrouvez vos fichiers" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Décrivez simplement ce que vous cherchez" })).toBeTruthy();
+    fireEvent.change(screen.getByRole("searchbox", { name: "Recherche" }), {
+      target: { value: "Invoice 2026" },
+    });
     expect(await screen.findByText("Invoice 2026")).toBeTruthy();
 
     openAdvancedNav();

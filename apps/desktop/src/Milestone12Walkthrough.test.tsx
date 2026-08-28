@@ -409,7 +409,7 @@ describe("Milestone 12 non-technical user walkthrough", () => {
     await waitFor(() => {
       expect(api.searchLocalFiles).toHaveBeenCalled();
     });
-    expect(await screen.findByText("facture-point-p.pdf")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "facture-point-p.pdf" })).toBeTruthy();
 
     fireEvent.click(within(nav).getByRole("button", { name: "Surveillance" }));
     expect(

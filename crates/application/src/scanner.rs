@@ -36,13 +36,8 @@ const DEFAULT_MONITORING_STARTUP_ENTRY_LIMIT: u32 = 100_000;
 /// Generated dependency/cache folders are not useful user documents and can
 /// explode an otherwise small personal-folder scan. Hidden folders are already
 /// skipped separately.
-const DEEP_INDEX_EXCLUDED_DIRECTORY_NAMES: &[&str] = &[
-    "node_modules",
-    "__pycache__",
-    ".git",
-    ".svn",
-    ".hg",
-];
+const DEEP_INDEX_EXCLUDED_DIRECTORY_NAMES: &[&str] =
+    &["node_modules", "__pycache__", ".git", ".svn", ".hg"];
 
 /// Scanner-only application boundary. It deliberately owns no filesystem
 /// mutation capability, parser, model gateway, or network client.
@@ -495,8 +490,8 @@ impl ScannerApplicationService {
                 &mut persisted_files,
                 &mut issue_count,
             )?;
-            progress.files_indexed = persisted_files
-                .saturating_add(u64::try_from(files.len()).unwrap_or(u64::MAX));
+            progress.files_indexed =
+                persisted_files.saturating_add(u64::try_from(files.len()).unwrap_or(u64::MAX));
             if progress.files_discovered % CONSUMER_PROGRESS_EMIT_EVERY == 0 {
                 on_progress(progress);
             }
@@ -665,8 +660,9 @@ impl ScannerApplicationService {
                     issues.push(ScanIssueInput {
                         relative_path: display_relative_path(&relative_path),
                         code: "reparse_point".to_owned(),
-                        message: "symbolic links, aliases and junctions are intentionally not followed"
-                            .to_owned(),
+                        message:
+                            "symbolic links, aliases and junctions are intentionally not followed"
+                                .to_owned(),
                         is_directory: false,
                         is_error: false,
                         skipped: true,
@@ -679,8 +675,9 @@ impl ScannerApplicationService {
                         issues.push(ScanIssueInput {
                             relative_path: display_relative_path(&relative_path),
                             code: "generated_directory_excluded".to_owned(),
-                            message: "generated dependency/cache directory excluded from deep indexing"
-                                .to_owned(),
+                            message:
+                                "generated dependency/cache directory excluded from deep indexing"
+                                    .to_owned(),
                             is_directory: true,
                             is_error: false,
                             skipped: true,
@@ -714,8 +711,8 @@ impl ScannerApplicationService {
                     &mut persisted_files,
                     &mut issue_count,
                 )?;
-                progress.files_indexed = persisted_files
-                    .saturating_add(u64::try_from(files.len()).unwrap_or(u64::MAX));
+                progress.files_indexed =
+                    persisted_files.saturating_add(u64::try_from(files.len()).unwrap_or(u64::MAX));
                 if entries_seen % CONSUMER_PROGRESS_EMIT_EVERY == 0 {
                     on_progress(progress);
                 }
@@ -1221,8 +1218,8 @@ fn metadata_mime_from_extension(path: &Path) -> Option<String> {
         "html" | "htm" => "text/html",
         "css" => "text/css",
         "js" | "mjs" | "cjs" => "text/javascript",
-        "ts" | "tsx" | "jsx" | "py" | "java" | "rs" | "go" | "swift" | "sql" | "c"
-        | "h" | "cpp" | "hpp" | "cs" | "sh" | "ps1" => "text/plain",
+        "ts" | "tsx" | "jsx" | "py" | "java" | "rs" | "go" | "swift" | "sql" | "c" | "h"
+        | "cpp" | "hpp" | "cs" | "sh" | "ps1" => "text/plain",
         "pdf" => "application/pdf",
         "doc" => "application/msword",
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

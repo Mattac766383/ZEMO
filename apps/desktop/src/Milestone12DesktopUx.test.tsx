@@ -246,7 +246,7 @@ describe("Milestone 12 main desktop UX", () => {
     });
     fireEvent.click(within(nav).getByRole("button", { name: "Recherche" }));
     expect(
-      await screen.findByRole("heading", { name: "Retrouvez vos fichiers" }),
+      await screen.findByRole("heading", { name: "Décrivez simplement ce que vous cherchez" }),
     ).toBeTruthy();
 
     fireEvent.click(within(nav).getByRole("button", { name: "Surveillance" }));
