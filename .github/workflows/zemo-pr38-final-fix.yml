@@ -1,0 +1,58 @@
+name: ZEMO PR38 Final Test Fix
+
+on:
+  push:
+    branches:
+      - feat/search-decisions-ux-v2
+
+permissions:
+  contents: write
+
+jobs:
+  fix-final-stale-search-copy-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/search-decisions-ux-v2
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Patch the single stale assertion
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('apps/desktop/src/Milestone12_2Ux.test.tsx')
+          text = path.read_text(encoding='utf-8')
+          old = 'screen.getByText(/même sans connaître leur nom exact/i),'
+          new = 'screen.getByText(/Pas besoin de connaître le nom du fichier/i),'
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'Expected exactly one stale assertion, found {count}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+          git diff --check
+
+      - name: Validate frontend
+        shell: bash
+        run: |
+          npm ci
+          npm run typecheck
+          npm test -- --run
+
+      - name: Commit fix and remove temporary workflow
+        shell: bash
+        run: |
+          rm .github/workflows/zemo-pr38-final-fix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/desktop/src/Milestone12_2Ux.test.tsx .github/workflows/zemo-pr38-final-fix.yml
+          git diff --cached --check
+          git commit -m "fix: align milestone 12 search copy assertion"
+          git push origin HEAD:feat/search-decisions-ux-v2
