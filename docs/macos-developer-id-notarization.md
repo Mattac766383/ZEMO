@@ -52,3 +52,7 @@ For `workflow_dispatch` releases, `.github/workflows/zemo-macos-private-beta.yml
 7. Packaged-sidecar authentication and physical Apply/Undo tests pass.
 
 If any of these checks fail, no external-user beta artifact is uploaded.
+
+## Trusted private testing without Apple credentials
+
+For a small trusted test group, the pull-request validation path may produce a macOS artifact without Developer ID notarization. This is only for private testing, must not be presented as a public release, and testers may need to explicitly approve the app in macOS security settings before first launch.
