@@ -6,7 +6,8 @@ import type {
   ScanResult,
   SystemStatus,
 } from "./types";
-import { buildBetaDiagnosticText, recordBetaMetric } from "./betaMetrics";
+import { recordBetaMetric } from "./betaMetrics";
+import { BetaSupportPanel } from "./BetaSupportPanel";
 
 const LazyKnowledgeMapView = lazy(() =>
   import("./KnowledgeMapView").then((module) => ({
@@ -179,21 +180,9 @@ type HomeDashboardProps = {
   onChooseFolders?: () => void;
 };
 
-function BetaDiagnosticPanel() {
-  return (
-    <details>
-      <summary>Diagnostic bêta local</summary>
-      <p>
-        Ce résumé contient uniquement des compteurs de parcours. Aucun nom,
-        chemin, contenu de fichier ou texte de recherche n’y apparaît.
-      </p>
-      <pre>{buildBetaDiagnosticText()}</pre>
-    </details>
-  );
-}
-
 export function HomeDashboard({
   loading,
+  system,
   workspaceId,
   organized = false,
   organizedCount = null,
@@ -285,7 +274,7 @@ export function HomeDashboard({
             Décisions
           </button>
         </div>
-        <BetaDiagnosticPanel />
+        <BetaSupportPanel system={system} />
       </section>
     );
   }
@@ -325,7 +314,7 @@ export function HomeDashboard({
           Explorer ma carte
         </button>
       ) : null}
-      <BetaDiagnosticPanel />
+      <BetaSupportPanel system={system} />
     </section>
   );
 }
