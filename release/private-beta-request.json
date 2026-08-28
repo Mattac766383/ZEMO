@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "channel": "private-beta",
-  "request_id": 4,
-  "macos_dist_tag": "0.1.0-beta.9",
+  "request_id": 5,
+  "macos_dist_tag": "0.1.0-beta.10",
   "windows_dist_tag": "0.1.0-beta.6",
-  "notes": "Trigger the first macOS private beta release that requires Developer ID signing, Apple notarization, stapling, and Gatekeeper qualification after merging PR #32."
+  "notes": "Trigger the first 5-user private beta build from main after PR #38 Search V2/grouped Decisions and PR #39 privacy-safe beta support/test protocol. No new feature work: package the current validated main for real-user testing. Windows remains on the current workflow tag 0.1.0-beta.6 until the release version input is wired separately."
 }
