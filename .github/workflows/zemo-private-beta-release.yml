@@ -6,11 +6,13 @@ on:
     paths:
       - "release/private-beta-request.json"
       - ".github/workflows/zemo-private-beta-release.yml"
+      - ".github/workflows/zemo-windows-private-beta.yml"
   pull_request:
     branches: [main]
     paths:
       - "release/private-beta-request.json"
       - ".github/workflows/zemo-private-beta-release.yml"
+      - ".github/workflows/zemo-windows-private-beta.yml"
   workflow_dispatch:
 
 permissions:
@@ -19,42 +21,64 @@ permissions:
   issues: write
 
 jobs:
-  dispatch-private-beta:
-    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/private-beta-request')
+  validate-private-beta-request:
     runs-on: ubuntu-latest
+    outputs:
+      mac_tag: ${{ steps.request.outputs.mac_tag }}
+      win_tag: ${{ steps.request.outputs.win_tag }}
+      requested_at: ${{ steps.request.outputs.requested_at }}
     steps:
       - name: Checkout release request
         uses: actions/checkout@v4
 
-      - name: Read release request
+      - name: Validate release request
         id: request
         shell: bash
         run: |
           set -euo pipefail
-          TAG="$(jq -r '.macos_dist_tag' release/private-beta-request.json)"
-          if [[ ! "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
-            echo "Invalid macOS private beta tag: $TAG" >&2
+          MAC_TAG="$(jq -r '.macos_dist_tag' release/private-beta-request.json)"
+          WIN_TAG="$(jq -r '.windows_dist_tag' release/private-beta-request.json)"
+          TAG_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$'
+
+          if [[ ! "$MAC_TAG" =~ $TAG_PATTERN ]]; then
+            echo "Invalid macOS private beta tag: $MAC_TAG" >&2
             exit 2
           fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if [[ ! "$WIN_TAG" =~ $TAG_PATTERN ]]; then
+            echo "Invalid Windows private beta tag: $WIN_TAG" >&2
+            exit 3
+          fi
+
+          echo "mac_tag=$MAC_TAG" >> "$GITHUB_OUTPUT"
+          echo "win_tag=$WIN_TAG" >> "$GITHUB_OUTPUT"
           echo "requested_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
+          echo "Validated macOS tag: $MAC_TAG"
+          echo "Validated Windows tag: $WIN_TAG"
+
+  dispatch-private-beta:
+    needs: validate-private-beta-request
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
       - name: Dispatch macOS private beta from main
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.request.outputs.tag }}
-        run: gh workflow run zemo-macos-private-beta.yml --repo "$GITHUB_REPOSITORY" --ref main -f dist_tag="$TAG"
+          MAC_TAG: ${{ needs.validate-private-beta-request.outputs.mac_tag }}
+        run: gh workflow run zemo-macos-private-beta.yml --repo "$GITHUB_REPOSITORY" --ref main -f dist_tag="$MAC_TAG"
 
       - name: Dispatch Windows private beta from main
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run zemo-windows-private-beta.yml --repo "$GITHUB_REPOSITORY" --ref main
+          WIN_TAG: ${{ needs.validate-private-beta-request.outputs.win_tag }}
+        run: gh workflow run zemo-windows-private-beta.yml --repo "$GITHUB_REPOSITORY" --ref main -f dist_tag="$WIN_TAG"
 
       - name: Record dispatched workflow runs
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.request.outputs.tag }}
-          REQUESTED_AT: ${{ steps.request.outputs.requested_at }}
+          MAC_TAG: ${{ needs.validate-private-beta-request.outputs.mac_tag }}
+          WIN_TAG: ${{ needs.validate-private-beta-request.outputs.win_tag }}
+          REQUESTED_AT: ${{ needs.validate-private-beta-request.outputs.requested_at }}
         shell: bash
         run: |
           set -euo pipefail
@@ -68,23 +92,24 @@ jobs:
             fi
             sleep 3
           done
+
           BODY="$(cat <<EOF
-Private-beta release request dispatched from \`main\`.
+          Private-beta release request dispatched from \`main\`.
 
-Request commit: \`$GITHUB_SHA\`
-Requested at: \`$REQUESTED_AT\`
+          Request commit: \`$GITHUB_SHA\`
+          Requested at: \`$REQUESTED_AT\`
 
-macOS tag: \`$TAG\`
+          macOS tag: \`$MAC_TAG\`
 
-\`\`\`json
-$MAC
-\`\`\`
+          \`\`\`json
+          $MAC
+          \`\`\`
 
-Windows tag: \`0.1.0-beta.6\` (current Windows workflow default)
+          Windows tag: \`$WIN_TAG\`
 
-\`\`\`json
-$WIN
-\`\`\`
-EOF
-)"
+          \`\`\`json
+          $WIN
+          \`\`\`
+          EOF
+          )"
           gh issue edit 18 --repo "$GITHUB_REPOSITORY" --body "$BODY"
