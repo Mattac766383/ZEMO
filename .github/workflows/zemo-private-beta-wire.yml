@@ -1,0 +1,77 @@
+name: ZEMO Private Beta Support Wiring
+
+on:
+  push:
+    branches:
+      - feat/private-beta-support
+
+permissions:
+  contents: write
+
+jobs:
+  wire-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: feat/private-beta-support
+          fetch-depth: 0
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Wire support panel into HomeDashboard
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('apps/desktop/src/HomeDashboard.tsx')
+          text = path.read_text()
+
+          old_import = 'import { buildBetaDiagnosticText, recordBetaMetric } from "./betaMetrics";'
+          new_import = 'import { recordBetaMetric } from "./betaMetrics";\nimport { BetaSupportPanel } from "./BetaSupportPanel";'
+          assert text.count(old_import) == 1, 'expected betaMetrics import exactly once'
+          text = text.replace(old_import, new_import)
+
+          start = text.index('function BetaDiagnosticPanel() {')
+          end = text.index('\n\nexport function HomeDashboard', start)
+          text = text[:start] + text[end + 2:]
+
+          marker = 'export function HomeDashboard({\n  loading,\n  workspaceId,'
+          replacement = 'export function HomeDashboard({\n  loading,\n  system,\n  workspaceId,'
+          assert text.count(marker) == 1, 'expected HomeDashboard destructuring marker exactly once'
+          text = text.replace(marker, replacement)
+
+          assert text.count('<BetaDiagnosticPanel />') == 2, 'expected two legacy beta diagnostic panels'
+          text = text.replace('<BetaDiagnosticPanel />', '<BetaSupportPanel system={system} />')
+
+          assert 'buildBetaDiagnosticText' not in text
+          assert 'function BetaDiagnosticPanel()' not in text
+          assert text.count('<BetaSupportPanel system={system} />') == 2
+          path.write_text(text)
+          PY
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Frontend tests
+        run: npm run test:ui -- --run
+
+      - name: Commit validated support wiring and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/zemo-private-beta-wire.yml
+          git add apps/desktop/src/HomeDashboard.tsx
+          git commit -m "feat: wire private beta support panel"
+          git push origin HEAD:feat/private-beta-support
