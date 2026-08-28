@@ -469,7 +469,7 @@ describe("Milestone 12.2 zero-friction UX + whole computer", () => {
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Activer" })).toBeTruthy();
     expect(
-      screen.getByText(/même sans connaître leur nom exact/i),
+      screen.getByText(/Pas besoin de connaître le nom du fichier/i),
     ).toBeTruthy();
 
     fireEvent.click(within(nav).getByRole("button", { name: "Surveillance" }));
