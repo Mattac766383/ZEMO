@@ -1,4 +1,3 @@
-import { lazy, Suspense, useState } from "react";
 import type {
   MonitoringDashboard,
   OrganizationOperation,
@@ -7,13 +6,7 @@ import type {
   SystemStatus,
 } from "./types";
 import { recordBetaMetric } from "./betaMetrics";
-import { BetaSupportPanel } from "./BetaSupportPanel";
-
-const LazyKnowledgeMapView = lazy(() =>
-  import("./KnowledgeMapView").then((module) => ({
-    default: module.KnowledgeMapView,
-  })),
-);
+import "./SimpleBetaUx.css";
 
 export type AppDestination =
   | "home"
@@ -182,15 +175,12 @@ type HomeDashboardProps = {
 
 export function HomeDashboard({
   loading,
-  system,
   workspaceId,
   organized = false,
   organizedCount = null,
   onPrimaryAction,
   onNavigate,
-  onChooseFolders,
 }: HomeDashboardProps) {
-  const [showKnowledgeMap, setShowKnowledgeMap] = useState(false);
   const action = resolvePrimaryAction({
     root: null,
     scan: null,
@@ -204,21 +194,9 @@ export function HomeDashboard({
     onPrimaryAction(action);
   }
 
-  if (showKnowledgeMap && workspaceId) {
-    return (
-      <Suspense
-        fallback={
-          <section className="home-dashboard home-dashboard--simple" aria-label="Chargement de la carte ZEMO">
-            <p className="home-loading">Chargement de la carte locale…</p>
-          </section>
-        }
-      >
-        <LazyKnowledgeMapView
-          workspaceId={workspaceId}
-          onClose={() => setShowKnowledgeMap(false)}
-        />
-      </Suspense>
-    );
+  function openSearch() {
+    recordBetaMetric("search_opened");
+    onNavigate("search");
   }
 
   if (loading) {
@@ -231,90 +209,62 @@ export function HomeDashboard({
 
   if (organized) {
     return (
-      <section className="home-dashboard home-dashboard--simple" aria-labelledby="home-title">
+      <section className="home-dashboard home-dashboard--simple home-dashboard--minimal" aria-labelledby="home-title">
         <h2 id="home-title">Votre ordinateur est rangé.</h2>
         <p className="home-promise">
           {organizedCount != null
             ? `${organizedCount.toLocaleString()} fichiers ont été organisés.`
-            : "Vos fichiers personnels ont été organisés."}
+            : "Vos fichiers ont été organisés."}
         </p>
-        <button
-          type="button"
-          className="primary home-primary-cta"
-          onClick={startOrganization}
-        >
-          Relancer le rangement
-        </button>
-        <p className="home-promise">
-          Option : ZEMO peut ensuite surveiller les nouveaux fichiers pour garder votre PC rangé.
-        </p>
-        <div className="home-secondary-actions">
+        <div className="home-main-actions">
+          <button
+            type="button"
+            className="primary home-primary-cta"
+            onClick={startOrganization}
+          >
+            Relancer le rangement
+          </button>
           {workspaceId ? (
-            <button type="button" onClick={() => setShowKnowledgeMap(true)}>
-              Explorer ma carte
+            <button
+              type="button"
+              className="home-search-cta"
+              onClick={openSearch}
+            >
+              Rechercher un fichier
             </button>
           ) : null}
-          <button
-            type="button"
-            onClick={() => {
-              recordBetaMetric("search_opened");
-              onNavigate("search");
-            }}
-          >
-            Recherche
-          </button>
-          <button type="button" onClick={() => onNavigate("monitoring")}>
-            Garder mon PC rangé
-          </button>
-          <button
-            type="button"
-            aria-label="Décisions (anciennement À revoir)"
-            onClick={() => onNavigate("review")}
-          >
-            Décisions
-          </button>
         </div>
-        <BetaSupportPanel system={system} />
       </section>
     );
   }
 
   return (
-    <section className="home-dashboard home-dashboard--simple" aria-labelledby="home-title">
+    <section className="home-dashboard home-dashboard--simple home-dashboard--minimal" aria-labelledby="home-title">
       <h2 id="home-title">Votre ordinateur est en bazar ?</h2>
       <p className="home-promise">
         ZEMO range vos fichiers personnels sans toucher à vos applications.
       </p>
-      <button
-        type="button"
-        className="primary home-primary-cta"
-        onClick={startOrganization}
-      >
-        Ranger mon ordinateur
-      </button>
-      <button
-        type="button"
-        className="home-secondary-cta"
-        onClick={() => {
-          if (onChooseFolders) {
-            onChooseFolders();
-            return;
-          }
-          onPrimaryAction({ label: "Choisir les dossiers", run: "selectFolder" });
-        }}
-      >
-        Choisir les dossiers
-      </button>
-      {workspaceId ? (
+      <p className="home-preview-promise">
+        Avant tout changement, ZEMO vous montre seulement les dossiers qu’il veut créer.
+      </p>
+      <div className="home-main-actions">
         <button
           type="button"
-          className="home-secondary-cta"
-          onClick={() => setShowKnowledgeMap(true)}
+          className="primary home-primary-cta"
+          onClick={startOrganization}
         >
-          Explorer ma carte
+          Ranger mon ordinateur
         </button>
-      ) : null}
-      <BetaSupportPanel system={system} />
+        {workspaceId ? (
+          <button
+            type="button"
+            className="home-search-cta"
+            onClick={openSearch}
+          >
+            Rechercher un fichier
+          </button>
+        ) : null}
+      </div>
     </section>
   );
 }
