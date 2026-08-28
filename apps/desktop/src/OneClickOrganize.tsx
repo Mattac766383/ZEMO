@@ -1,8 +1,6 @@
+import { useState } from "react";
 import type { FolderAccessProbe, RegisterUserContentRootResult } from "./types";
-import {
-  PREVIEW_CATEGORY_ORDER,
-  type CategoryCounts,
-} from "./oneClickSummary";
+import type { CategoryCounts, FolderTreeNode } from "./oneClickSummary";
 
 export type OneClickFolderPhase =
   | "pending"
@@ -206,6 +204,71 @@ export type OneClickPreviewViewProps = {
   onChooseAnother?: () => void;
 };
 
+function FolderTreeNodeView({
+  node,
+  depth,
+}: {
+  node: FolderTreeNode;
+  depth: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const hasChildren = node.children.length > 0;
+  const fileLabel = `${node.count.toLocaleString()} fichier${node.count === 1 ? "" : "s"}`;
+
+  return (
+    <li className="folder-tree-node">
+      {hasChildren ? (
+        <button
+          type="button"
+          className="folder-tree-row folder-tree-row--expandable"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <span className="folder-tree-row__main">
+            <span className="folder-tree-chevron" aria-hidden="true">
+              {expanded ? "▾" : "›"}
+            </span>
+            <span aria-hidden="true">📁</span>
+            <span className="folder-tree-name">{node.name}</span>
+          </span>
+          <span className="folder-tree-count">{fileLabel}</span>
+        </button>
+      ) : (
+        <div className="folder-tree-row folder-tree-row--leaf">
+          <span className="folder-tree-row__main">
+            <span className="folder-tree-chevron folder-tree-chevron--empty" aria-hidden="true" />
+            <span aria-hidden="true">📁</span>
+            <span className="folder-tree-name">{node.name}</span>
+          </span>
+          <span className="folder-tree-count">{fileLabel}</span>
+        </div>
+      )}
+
+      {hasChildren && expanded ? (
+        <ul className="folder-tree-children" aria-label={`Sous-dossiers de ${node.name}`}>
+          {node.children.map((child) => (
+            <FolderTreeNodeView
+              key={`${depth}-${node.name}-${child.name}`}
+              node={child}
+              depth={depth + 1}
+            />
+          ))}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
+
+function FolderTree({ nodes }: { nodes: FolderTreeNode[] }) {
+  return (
+    <ul className="folder-tree" aria-label="Arborescence des dossiers proposés">
+      {nodes.map((node) => (
+        <FolderTreeNodeView key={node.name} node={node} depth={0} />
+      ))}
+    </ul>
+  );
+}
+
 export function OneClickPreviewView({
   filesToOrganize,
   counts,
@@ -219,35 +282,25 @@ export function OneClickPreviewView({
   onChooseAnother,
 }: OneClickPreviewViewProps) {
   const filesAnalyzed = Math.max(filesToOrganize, counts.filesAnalyzed ?? filesToOrganize);
-  const visibleCategories = PREVIEW_CATEGORY_ORDER.filter(
-    (category) => counts[category] > 0,
-  );
+  const folderTree = counts.folderTree ?? [];
 
   return (
     <section className="one-click-panel one-click-panel--preview-simple" aria-labelledby="one-click-preview-title">
       <div className="one-click-preview-heading">
-        <span className="eyebrow">Aperçu</span>
+        <span className="eyebrow">Aperçu du rangement</span>
         <h2 id="one-click-preview-title">
-          ZEMO peut ranger {filesToOrganize.toLocaleString()} fichier
-          {filesToOrganize === 1 ? "" : "s"}.
+          {filesToOrganize.toLocaleString()} fichier{filesToOrganize === 1 ? "" : "s"} à ranger
         </h2>
         <p>
-          {filesAnalyzed.toLocaleString()} fichier{filesAnalyzed === 1 ? "" : "s"} analysé
-          {filesAnalyzed === 1 ? "" : "s"}. Voici uniquement les dossiers que ZEMO va utiliser.
+          ZEMO a analysé {filesAnalyzed.toLocaleString()} fichier
+          {filesAnalyzed === 1 ? "" : "s"}. Ouvrez un dossier pour voir ses sous-dossiers.
         </p>
       </div>
 
-      {visibleCategories.length > 0 ? (
+      {folderTree.length > 0 ? (
         <div className="one-click-folder-preview" aria-label="Dossiers proposés">
-          <p className="one-click-folder-preview__title">Dossiers proposés</p>
-          <ul className="one-click-category-list one-click-category-list--folders">
-            {visibleCategories.map((category) => (
-              <li key={category}>
-                <span className="one-click-folder-name">📁 {category}</span>
-                <strong>{counts[category].toLocaleString()}</strong>
-              </li>
-            ))}
-          </ul>
+          <p className="one-click-folder-preview__title">Dossiers que ZEMO va utiliser</p>
+          <FolderTree nodes={folderTree} />
         </div>
       ) : (
         <p className="one-click-note">Aucun nouveau rangement n’est nécessaire.</p>
@@ -320,7 +373,7 @@ export function OneClickDoneView({
 }: OneClickDoneViewProps) {
   return (
     <section className="one-click-panel one-click-panel--minimal" aria-labelledby="one-click-done-title">
-      <h2 id="one-click-done-title">Rangement appliqué.</h2>
+      <h2 id="one-click-done-title">Rangement terminé.</h2>
       <p className="one-click-count">
         {filesMoved.toLocaleString()} fichier{filesMoved === 1 ? "" : "s"} rangé
         {filesMoved === 1 ? "" : "s"}
