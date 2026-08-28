@@ -94,22 +94,22 @@ jobs:
           done
 
           BODY="$(cat <<EOF
-Private-beta release request dispatched from \`main\`.
+          Private-beta release request dispatched from \`main\`.
 
-Request commit: \`$GITHUB_SHA\`
-Requested at: \`$REQUESTED_AT\`
+          Request commit: \`$GITHUB_SHA\`
+          Requested at: \`$REQUESTED_AT\`
 
-macOS tag: \`$MAC_TAG\`
+          macOS tag: \`$MAC_TAG\`
 
-\`\`\`json
-$MAC
-\`\`\`
+          \`\`\`json
+          $MAC
+          \`\`\`
 
-Windows tag: \`$WIN_TAG\`
+          Windows tag: \`$WIN_TAG\`
 
-\`\`\`json
-$WIN
-\`\`\`
-EOF
-)"
+          \`\`\`json
+          $WIN
+          \`\`\`
+          EOF
+          )"
           gh issue edit 18 --repo "$GITHUB_REPOSITORY" --body "$BODY"
