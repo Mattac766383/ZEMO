@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "channel": "private-beta",
-  "request_id": 4,
-  "macos_dist_tag": "0.1.0-beta.9",
-  "windows_dist_tag": "0.1.0-beta.6",
-  "notes": "Trigger the first macOS private beta release that requires Developer ID signing, Apple notarization, stapling, and Gatekeeper qualification after merging PR #32."
+  "request_id": 5,
+  "macos_dist_tag": "0.1.0-beta.10",
+  "windows_dist_tag": "0.1.0-beta.7",
+  "notes": "Prepare the first 5-user private beta after PR #39. Windows beta.7 must be versioned from the request file; macOS beta.10 remains fail-closed until Developer ID and App Store Connect secrets are configured."
 }
