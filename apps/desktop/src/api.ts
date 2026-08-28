@@ -97,7 +97,6 @@ function classifyLoose(error: unknown): { message: string } {
   if (human) {
     return { message: human };
   }
-  // Never surface the old catastrophic generic engine wording as-is.
   const normalized = raw.toLocaleLowerCase();
   if (normalized.includes("moteur local")) {
     return {
@@ -244,8 +243,19 @@ export function authorizeUserContentFolder(
   return invoke<FolderAccessProbe>("authorize_user_content_folder", { kind });
 }
 
-export function scanWorkspace(workspaceId: string): Promise<ScanResult> {
-  return invoke<ScanResult>("scan_workspace", { workspaceId });
+export async function scanWorkspace(workspaceId: string): Promise<ScanResult> {
+  const scan = await invoke<ScanResult>("scan_workspace", { workspaceId });
+  if (!["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(scan.status)) {
+    return scan;
+  }
+
+  // A normal ZEMO scan is also the preparation step for organization and search.
+  // Keep the UX simple: users do not need a second "analyze documents" action.
+  const content = await invoke<ContentAnalysis>("analyze_content", { scanId: scan.id });
+  if (!["CANCELLED", "FAILED"].includes(content.status.toUpperCase())) {
+    await invoke<SemanticAnalysis>("analyze_semantics", { scanId: scan.id });
+  }
+  return scan;
 }
 
 export function cancelScan(workspaceId: string): Promise<boolean> {
