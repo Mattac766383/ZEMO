@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "channel": "private-beta",
-  "request_id": 5,
+  "request_id": 6,
   "macos_dist_tag": "0.1.0-beta.10",
-  "windows_dist_tag": "0.1.0-beta.7",
-  "notes": "Prepare the first 5-user private beta after PR #39. Windows beta.7 must be versioned from the request file; macOS beta.10 remains fail-closed until Developer ID and App Store Connect secrets are configured."
+  "windows_dist_tag": "0.1.0-beta.8",
+  "notes": "Prepare the simplified ZEMO UX from PR #43 for the 5-user private beta. Windows beta.8 is built from current main; macOS official external release remains fail-closed until Apple Developer ID and notarization secrets are configured."
 }
