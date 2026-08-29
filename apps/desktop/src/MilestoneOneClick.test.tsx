@@ -545,7 +545,7 @@ AccessState: unexpected_error",
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Autoriser l’accès" })).toBeTruthy();
     expect(screen.queryByText(/Aucun dossier n’a pu être analysé/i)).toBeNull();
-    fireEvent.click(screen.getByText("Détails techniques"));
+    fireEvent.click(screen.getByText("Diagnostic"));
     expect(screen.getByText(/inspect_volume/)).toBeTruthy();
   });
 
