@@ -326,8 +326,8 @@ describe("Milestone 12.1 dashboard command center", () => {
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Ranger mon ordinateur" })).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Choisir les dossiers" }),
-    ).toBeTruthy();
+      screen.queryByRole("button", { name: "Choisir les dossiers" }),
+    ).toBeNull();
     expect(screen.queryByRole("heading", { name: "État de l’organisation" })).toBeNull();
     expect(screen.queryByText("0")).toBeNull();
   });

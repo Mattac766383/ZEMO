@@ -415,7 +415,7 @@ describe("Milestone 12.2 zero-friction UX + whole computer", () => {
     });
     expect(
       await screen.findByRole("heading", {
-        name: /ZEMO peut ranger 0 fichier/i,
+        name: /0 fichiers? à ranger/i,
       }),
     ).toBeTruthy();
     expect(api.prepareExecution).not.toHaveBeenCalled();

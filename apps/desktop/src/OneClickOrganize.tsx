@@ -1,8 +1,6 @@
+import { useState } from "react";
 import type { FolderAccessProbe, RegisterUserContentRootResult } from "./types";
-import {
-  PREVIEW_CATEGORY_ORDER,
-  type CategoryCounts,
-} from "./oneClickSummary";
+import type { CategoryCounts, FolderTreeNode } from "./oneClickSummary";
 
 export type OneClickFolderPhase =
   | "pending"
@@ -37,13 +35,13 @@ export function OneClickScanView({
   progress,
 }: OneClickScanViewProps) {
   return (
-    <section className="one-click-panel" aria-labelledby="one-click-scan-title">
-      <h2 id="one-click-scan-title">Analyse de vos fichiers…</h2>
+    <section className="one-click-panel one-click-panel--minimal" aria-labelledby="one-click-scan-title">
+      <h2 id="one-click-scan-title">ZEMO analyse vos fichiers…</h2>
       {progress ? <p className="one-click-progress">{progress}</p> : null}
       <p className="one-click-count" aria-live="polite">
         {filesAnalyzed.toLocaleString()} fichiers analysés
       </p>
-      <ul className="one-click-folder-list">
+      <ul className="one-click-folder-list one-click-folder-list--compact">
         {folders.map((folder) => (
           <li key={folder.kind}>
             <span>{folder.label}</span>
@@ -82,10 +80,6 @@ export function OneClickAccessView({
   onRetry,
   onChooseAnother,
 }: OneClickAccessViewProps) {
-  // FolderAccessProbe is the authoritative result of the latest native probe.
-  // `folders` is UI/progress state and can briefly lag after an NSOpenPanel grant.
-  // Using the stale progress state here caused the exact contradictory UI where
-  // every row displayed "✓" while the heading still claimed 5 grants were needed.
   const probeStates = (probes ?? []).map((probe) => probe.accessState);
   const hasProbeState = probeStates.length > 0;
   const needsGrant = hasProbeState
@@ -113,7 +107,7 @@ export function OneClickAccessView({
   const accessResolved = hasProbeState && authCount === 0 && accessibleCount > 0;
 
   return (
-    <section className="one-click-panel" aria-labelledby="one-click-access-title">
+    <section className="one-click-panel one-click-panel--minimal" aria-labelledby="one-click-access-title">
       <h2 id="one-click-access-title">
         {accessResolved
           ? "Accès autorisé."
@@ -132,7 +126,7 @@ export function OneClickAccessView({
             : `${authCount} dossiers nécessitent votre autorisation.`}
         </p>
       ) : null}
-      <ul className="one-click-folder-list">
+      <ul className="one-click-folder-list one-click-folder-list--compact">
         {(probes ?? []).length > 0
           ? probes!.map((probe) => (
               <li key={probe.kind}>
@@ -145,7 +139,7 @@ export function OneClickAccessView({
               </li>
             ))}
       </ul>
-      <div className="one-click-actions">
+      <div className="one-click-actions one-click-actions--minimal">
         {needsGrant ? (
           <button className="primary" type="button" disabled={busy} onClick={onAuthorize}>
             {busy ? "Autorisation…" : "Autoriser l’accès"}
@@ -157,7 +151,7 @@ export function OneClickAccessView({
         ) : null}
         {denied ? (
           <>
-            <button className="primary" type="button" disabled={busy} onClick={onChooseAnother}>
+            <button type="button" disabled={busy} onClick={onChooseAnother}>
               Choisir un autre dossier
             </button>
             <button type="button" disabled={busy} onClick={onRetry}>
@@ -171,8 +165,8 @@ export function OneClickAccessView({
         ) : null}
       </div>
       {probes && probes.length > 0 ? (
-        <details className="one-click-technical">
-          <summary>Détails techniques</summary>
+        <details className="one-click-technical one-click-technical--hidden-by-default">
+          <summary>Diagnostic</summary>
           {probes.map((probe) => (
             <pre key={probe.kind}>
               {probe.technicalDetails ??
@@ -210,50 +204,110 @@ export type OneClickPreviewViewProps = {
   onChooseAnother?: () => void;
 };
 
+function FolderTreeNodeView({
+  node,
+  depth,
+}: {
+  node: FolderTreeNode;
+  depth: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const hasChildren = node.children.length > 0;
+  const fileLabel = `${node.count.toLocaleString()} fichier${node.count === 1 ? "" : "s"}`;
+
+  return (
+    <li className="folder-tree-node">
+      {hasChildren ? (
+        <button
+          type="button"
+          className="folder-tree-row folder-tree-row--expandable"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <span className="folder-tree-row__main">
+            <span className="folder-tree-chevron" aria-hidden="true">
+              {expanded ? "▾" : "›"}
+            </span>
+            <span aria-hidden="true">📁</span>
+            <span className="folder-tree-name">{node.name}</span>
+          </span>
+          <span className="folder-tree-count">{fileLabel}</span>
+        </button>
+      ) : (
+        <div className="folder-tree-row folder-tree-row--leaf">
+          <span className="folder-tree-row__main">
+            <span className="folder-tree-chevron folder-tree-chevron--empty" aria-hidden="true" />
+            <span aria-hidden="true">📁</span>
+            <span className="folder-tree-name">{node.name}</span>
+          </span>
+          <span className="folder-tree-count">{fileLabel}</span>
+        </div>
+      )}
+
+      {hasChildren && expanded ? (
+        <ul className="folder-tree-children" aria-label={`Sous-dossiers de ${node.name}`}>
+          {node.children.map((child) => (
+            <FolderTreeNodeView
+              key={`${depth}-${node.name}-${child.name}`}
+              node={child}
+              depth={depth + 1}
+            />
+          ))}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
+
+function FolderTree({ nodes }: { nodes: FolderTreeNode[] }) {
+  return (
+    <ul className="folder-tree" aria-label="Arborescence des dossiers proposés">
+      {nodes.map((node) => (
+        <FolderTreeNodeView key={node.name} node={node} depth={0} />
+      ))}
+    </ul>
+  );
+}
+
 export function OneClickPreviewView({
   filesToOrganize,
   counts,
   applyBusy,
   applyEnabled,
-  applyGateReason,
   authorizationCount = 0,
   denied = false,
   onApply,
-  onSeeDetails,
   onAuthorize,
   onRetry,
   onChooseAnother,
 }: OneClickPreviewViewProps) {
   const filesAnalyzed = Math.max(filesToOrganize, counts.filesAnalyzed ?? filesToOrganize);
-  const filesLeftInPlace = Math.max(0, filesAnalyzed - filesToOrganize);
-  const visibleCategories = PREVIEW_CATEGORY_ORDER.filter(
-    (category) => counts[category] > 0,
-  );
+  const folderTree = counts.folderTree ?? [];
 
   return (
-    <section className="one-click-panel" aria-labelledby="one-click-preview-title">
-      <h2 id="one-click-preview-title">
-        ZEMO peut ranger {filesToOrganize.toLocaleString()} fichier
-        {filesToOrganize === 1 ? "" : "s"} sur {filesAnalyzed.toLocaleString()} analysé
-        {filesAnalyzed === 1 ? "" : "s"}.
-      </h2>
-      {filesLeftInPlace > 0 ? (
-        <p className="one-click-note" role="status">
-          {filesLeftInPlace.toLocaleString()} fichier{filesLeftInPlace === 1 ? "" : "s"} déjà bien placé
-          {filesLeftInPlace === 1 ? "" : "s"}, protégé{filesLeftInPlace === 1 ? "" : "s"} ou laissé
-          {filesLeftInPlace === 1 ? "" : "s"} en place par prudence.
+    <section className="one-click-panel one-click-panel--preview-simple" aria-labelledby="one-click-preview-title">
+      <div className="one-click-preview-heading">
+        <span className="eyebrow">Aperçu du rangement</span>
+        <h2 id="one-click-preview-title">
+          {filesToOrganize.toLocaleString()} fichier{filesToOrganize === 1 ? "" : "s"} à ranger
+        </h2>
+        <p>
+          ZEMO a analysé {filesAnalyzed.toLocaleString()} fichier
+          {filesAnalyzed === 1 ? "" : "s"}. Ouvrez un dossier pour voir ses sous-dossiers.
         </p>
-      ) : null}
-      {visibleCategories.length > 0 ? (
-        <ul className="one-click-category-list">
-          {visibleCategories.map((category) => (
-            <li key={category}>
-              <span>{category}</span>
-              <strong>{counts[category].toLocaleString()}</strong>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+      </div>
+
+      {folderTree.length > 0 ? (
+        <div className="one-click-folder-preview" aria-label="Dossiers proposés">
+          <p className="one-click-folder-preview__title">Dossiers que ZEMO va utiliser</p>
+          <FolderTree nodes={folderTree} />
+        </div>
+      ) : (
+        <p className="one-click-note">Aucun nouveau rangement n’est nécessaire.</p>
+      )}
+
+      <p className="one-click-safety-line">0 fichier supprimé · 0 fichier écrasé</p>
+
       {authorizationCount > 0 ? (
         <div className="one-click-local-error" role="status">
           <p>
@@ -261,12 +315,7 @@ export function OneClickPreviewView({
               ? "1 dossier nécessite votre autorisation."
               : `${authorizationCount} dossiers nécessitent votre autorisation.`}
           </p>
-          {denied ? (
-            <p>ZEMO n’a pas accès à ce dossier.</p>
-          ) : (
-            <p>ZEMO a besoin d’accéder à vos fichiers pour les ranger.</p>
-          )}
-          <div className="one-click-actions">
+          <div className="one-click-actions one-click-actions--minimal">
             {denied ? (
               <>
                 {onChooseAnother ? (
@@ -288,23 +337,21 @@ export function OneClickPreviewView({
           </div>
         </div>
       ) : null}
+
       {!applyEnabled ? (
         <p className="one-click-note" role="status">
-          {applyGateReason ??
-            "Le déplacement réel n’est pas disponible dans cette version. L’aperçu reste consultable."}
+          ZEMO doit revérifier le rangement avant de pouvoir l’appliquer. Aucun fichier n’a été modifié.
         </p>
       ) : null}
-      <div className="one-click-actions">
+
+      <div className="one-click-actions one-click-actions--minimal one-click-actions--centered">
         <button
-          className="primary"
+          className="primary one-click-apply-button"
           type="button"
           disabled={!applyEnabled || applyBusy || filesToOrganize === 0}
           onClick={onApply}
         >
           {applyBusy ? "Rangement…" : "Appliquer le rangement"}
-        </button>
-        <button type="button" onClick={onSeeDetails}>
-          Voir les détails
         </button>
       </div>
     </section>
@@ -325,19 +372,14 @@ export function OneClickDoneView({
   onFinish,
 }: OneClickDoneViewProps) {
   return (
-    <section className="one-click-panel" aria-labelledby="one-click-done-title">
-      <h2 id="one-click-done-title">Rangement appliqué.</h2>
-      <p>
+    <section className="one-click-panel one-click-panel--minimal" aria-labelledby="one-click-done-title">
+      <h2 id="one-click-done-title">Rangement terminé.</h2>
+      <p className="one-click-count">
         {filesMoved.toLocaleString()} fichier{filesMoved === 1 ? "" : "s"} rangé
         {filesMoved === 1 ? "" : "s"}
       </p>
-      <p>0 fichier supprimé</p>
-      <p>0 fichier écrasé</p>
-      <p className="one-click-note">Les applications, raccourcis et dossiers existants protégés sont laissés en place.</p>
-      <p className="one-click-note">
-        Option disponible depuis l’accueil : « Garder mon PC rangé » surveille ensuite les nouveaux fichiers.
-      </p>
-      <div className="one-click-actions">
+      <p className="one-click-safety-line">0 fichier supprimé · 0 fichier écrasé</p>
+      <div className="one-click-actions one-click-actions--minimal">
         <button type="button" disabled={undoBusy} onClick={onUndo}>
           {undoBusy ? "Annulation…" : "Annuler le rangement"}
         </button>

@@ -466,7 +466,7 @@ describe("ZEMO one-click organize", () => {
 
     expect(
       await screen.findByRole("heading", {
-        name: /ZEMO peut ranger 7 fichiers/i,
+        name: /7 fichiers à ranger/i,
       }),
     ).toBeTruthy();
     expect(screen.getByText("Documents")).toBeTruthy();
@@ -475,7 +475,7 @@ describe("ZEMO one-click organize", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Appliquer le rangement" }));
     expect(
-      await screen.findByRole("heading", { name: "Rangement appliqué." }),
+      await screen.findByRole("heading", { name: "Rangement terminé." }),
     ).toBeTruthy();
     expect(screen.getByText(/7 fichiers rangés/i)).toBeTruthy();
     expect(screen.getByText(/0 fichier supprimé/i)).toBeTruthy();
@@ -529,7 +529,9 @@ describe("ZEMO one-click organize", () => {
         humanStatus: "Bureau — Impossible à analyser",
         failedStage: "inspect_volume",
         errorKind: "Other",
-        technicalDetails: "Folder: desktop\nStage: inspect_volume\nAccessState: unexpected_error",
+        technicalDetails: "Folder: desktop\
+Stage: inspect_volume\
+AccessState: unexpected_error",
       },
     ]);
     render(<App />);
@@ -543,7 +545,7 @@ describe("ZEMO one-click organize", () => {
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Autoriser l’accès" })).toBeTruthy();
     expect(screen.queryByText(/Aucun dossier n’a pu être analysé/i)).toBeNull();
-    fireEvent.click(screen.getByText("Détails techniques"));
+    fireEvent.click(screen.getByText("Diagnostic"));
     expect(screen.getByText(/inspect_volume/)).toBeTruthy();
   });
 
@@ -564,7 +566,7 @@ describe("ZEMO one-click organize", () => {
       await screen.findByRole("button", { name: "Ranger mon ordinateur" }),
     );
     expect(
-      await screen.findByRole("heading", { name: /ZEMO peut ranger 7 fichiers/i }),
+      await screen.findByRole("heading", { name: /7 fichiers à ranger/i }),
     ).toBeTruthy();
     expect(screen.getByText(/1 dossier nécessite votre autorisation/i)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Autoriser" })).toBeTruthy();
