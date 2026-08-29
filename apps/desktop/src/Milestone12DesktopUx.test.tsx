@@ -229,8 +229,8 @@ describe("Milestone 12 main desktop UX", () => {
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Ranger mon ordinateur" })).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Choisir les dossiers" }),
-    ).toBeTruthy();
+      screen.queryByRole("button", { name: "Choisir les dossiers" }),
+    ).toBeNull();
     expect(screen.queryByRole("heading", { name: "À vérifier" })).toBeNull();
     expect(
       screen.queryByPlaceholderText(/Rechercher une facture, une photo, un devis/i),
@@ -382,6 +382,9 @@ describe("Milestone 12 main desktop UX", () => {
     expect(
       await screen.findByRole("heading", { name: "Votre ordinateur est en bazar ?" }),
     ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Choisir les dossiers" }),
+    ).toBeNull();
 
     vi.mocked(api.createWorkspace).mockResolvedValue({
       id: "workspace-1",
@@ -392,7 +395,9 @@ describe("Milestone 12 main desktop UX", () => {
       displayLabel: "Documents",
       selectedPath: "/Users/local/Documents",
     });
-    fireEvent.click(screen.getByRole("button", { name: "Choisir les dossiers" }));
+    fireEvent.click(screen.getByText("Options avancées"));
+    fireEvent.click(screen.getByRole("button", { name: "Inventaire" }));
+    fireEvent.click(screen.getByRole("button", { name: "Choisir un dossier" }));
     await waitFor(() => {
       expect(api.selectAndRegisterRoot).toHaveBeenCalled();
     });
