@@ -1,6 +1,6 @@
 //! Consumer one-click organization policy.
 //!
-//! Classifies personal files into a shallow, understandable folder tree.
+//! Recursively classifies supported personal files into a clear, understandable folder tree.
 //! Programs, system components, and desktop shortcuts stay in place.
 
 use std::path::{Component, Path};
@@ -118,7 +118,12 @@ pub fn decide_consumer_organization(
     document_type: Option<&str>,
 ) -> ConsumerDecision {
     let extension = extension_of(source_name);
-    let name_lower = source_name.to_ascii_lowercase();
+    let name_lower = source_name.to_lowercase();
+    // Existing folder names often contain useful context (client, chantier, travail, etc.).
+    // Use that context to classify nested files, but do not preserve an old folder merely
+    // because its top-level name looks plausible.
+    let path_context = source_relative_path.replace('\\', "/").to_lowercase();
+    let classification_context = format!("{path_context} {name_lower}");
 
     if is_program_or_system(source_relative_path, source_name, extension.as_deref()) {
         return leave_in_place(
@@ -159,14 +164,17 @@ pub fn decide_consumer_organization(
         );
     }
 
-    if let Some(decision) =
-        classify_media_or_archive(root_kind, extension.as_deref(), &name_lower, document_type)
-    {
+    if let Some(decision) = classify_media_or_archive(
+        root_kind,
+        extension.as_deref(),
+        &classification_context,
+        document_type,
+    ) {
         return maybe_preserve_existing(source_relative_path, decision);
     }
 
     if is_document_extension(extension.as_deref()) || is_document_type(document_type) {
-        let destination = document_destination(root_kind, &name_lower, document_type);
+        let destination = document_destination(root_kind, &classification_context, document_type);
         return maybe_preserve_existing(
             source_relative_path,
             ConsumerDecision {
@@ -195,7 +203,7 @@ pub fn decide_consumer_organization(
 
     leave_in_place(
         "uncertain_nested",
-        "Fichier déjà dans un dossier, laissé en place par prudence.",
+        "Type de fichier imbriqué incertain : laissé en place par prudence.",
     )
 }
 
@@ -492,46 +500,25 @@ fn maybe_preserve_existing(
     if decision.leave_in_place || decision.destination.is_empty() {
         return decision;
     }
-    if is_loose_file(source_relative_path) {
-        return decision;
-    }
     let current = source_parent_components(source_relative_path);
-    if current.is_empty() {
-        return decision;
-    }
-    if current
-        .first()
-        .is_some_and(|head| destination_compatible(head, &decision.destination))
-    {
+    if exact_destination(&current, &decision.destination) {
         return ConsumerDecision {
             leave_in_place: true,
             destination: current,
             reason_code: "already_organized",
-            explanation: "Le fichier est déjà dans un dossier compréhensible.",
+            explanation: "Le fichier est déjà exactement dans le bon dossier.",
             ..decision
         };
     }
     decision
 }
 
-fn destination_compatible(current_head: &str, destination: &[String]) -> bool {
-    destination
-        .first()
-        .is_some_and(|expected| expected.eq_ignore_ascii_case(current_head))
-        || matches!(
-            current_head,
-            DOCUMENTS_FOLDER
-                | IMAGES_FOLDER
-                | VIDEOS_FOLDER
-                | ARCHIVES_FOLDER
-                | INSTALLERS_FOLDER
-                | REVIEW_FOLDER
-                | "Travail"
-                | "Administratif"
-                | "Études"
-                | "Personnel"
-                | "Photos"
-        )
+fn exact_destination(current: &[String], destination: &[String]) -> bool {
+    current.len() == destination.len()
+        && current
+            .iter()
+            .zip(destination.iter())
+            .all(|(current, expected)| current.eq_ignore_ascii_case(expected))
 }
 
 fn leave_in_place(reason_code: &'static str, explanation: &'static str) -> ConsumerDecision {
@@ -702,9 +689,57 @@ mod tests {
     }
 
     #[test]
-    fn already_organized_files_stay() {
-        let nested = decide(ConsumerRootKind::Documents, "Travail/notes.txt");
+    fn nested_supported_files_are_reclassified() {
+        let nested_text = decide(
+            ConsumerRootKind::Desktop,
+            "Ancien dossier/Sous dossier/notes.txt",
+        );
+        assert_eq!(nested_text.destination, ["Documents", "Personnel"]);
+        assert!(!nested_text.leave_in_place);
+
+        let nested_invoice = decide(
+            ConsumerRootKind::Desktop,
+            "Divers/Archives anciennes/facture_2026.pdf",
+        );
+        assert_eq!(
+            nested_invoice.destination,
+            ["Documents", "Administratif", "Factures"]
+        );
+        assert!(!nested_invoice.leave_in_place);
+
+        let nested_photo = decide(
+            ConsumerRootKind::Desktop,
+            "Ancien dossier/Sous dossier/holiday.jpg",
+        );
+        assert_eq!(nested_photo.destination, ["Images", "Photos"]);
+        assert!(!nested_photo.leave_in_place);
+    }
+
+    #[test]
+    fn nested_path_context_helps_classify_text_documents() {
+        let chantier_notes = decide(
+            ConsumerRootKind::Desktop,
+            "Clients/Martin/Chantier Bordeaux/notes.txt",
+        );
+        assert_eq!(chantier_notes.destination, ["Documents", "Travail"]);
+        assert!(!chantier_notes.leave_in_place);
+    }
+
+    #[test]
+    fn files_already_at_exact_destination_stay() {
+        let nested = decide(
+            ConsumerRootKind::Desktop,
+            "Documents/Personnel/notes.txt",
+        );
         assert!(nested.leave_in_place);
+        assert_eq!(nested.destination, ["Documents", "Personnel"]);
+    }
+
+    #[test]
+    fn unknown_nested_files_remain_protected() {
+        let unknown = decide(ConsumerRootKind::Desktop, "Dev/source/main.rs");
+        assert!(unknown.leave_in_place);
+        assert_eq!(unknown.reason_code, "uncertain_nested");
     }
 
     #[test]
