@@ -5,6 +5,8 @@
 
 use std::path::{Component, Path};
 
+const CONSUMER_MAX_DESTINATION_DEPTH: usize = 6;
+
 /// Well-known user-content root for destination shaping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConsumerRootKind {
@@ -119,9 +121,6 @@ pub fn decide_consumer_organization(
 ) -> ConsumerDecision {
     let extension = extension_of(source_name);
     let name_lower = source_name.to_lowercase();
-    // Existing folder names often contain useful context (client, chantier, travail, etc.).
-    // Use that context to classify nested files, but do not preserve an old folder merely
-    // because its top-level name looks plausible.
     let path_context = source_relative_path.replace('\\', "/").to_lowercase();
     let classification_context = format!("{path_context} {name_lower}");
 
@@ -164,17 +163,27 @@ pub fn decide_consumer_organization(
         );
     }
 
-    if let Some(decision) = classify_media_or_archive(
+    if let Some(mut decision) = classify_media_or_archive(
         root_kind,
         extension.as_deref(),
         &classification_context,
         document_type,
     ) {
+        decision.destination = with_meaningful_folder_context(
+            decision.destination,
+            source_relative_path,
+            CONSUMER_MAX_DESTINATION_DEPTH,
+        );
         return maybe_preserve_existing(source_relative_path, decision);
     }
 
     if is_document_extension(extension.as_deref()) || is_document_type(document_type) {
         let destination = document_destination(root_kind, &classification_context, document_type);
+        let destination = with_meaningful_folder_context(
+            destination,
+            source_relative_path,
+            CONSUMER_MAX_DESTINATION_DEPTH,
+        );
         return maybe_preserve_existing(
             source_relative_path,
             ConsumerDecision {
@@ -183,7 +192,7 @@ pub fn decide_consumer_organization(
                 leave_in_place: false,
                 needs_review: false,
                 reason_code: "document",
-                explanation: "Document personnel classé dans un dossier simple.",
+                explanation: "Document personnel classé dans une arborescence compréhensible.",
             },
         );
     }
@@ -193,8 +202,6 @@ pub fn decide_consumer_organization(
             category: ConsumerCategory::Review,
             destination: vec![REVIEW_FOLDER.to_owned()],
             leave_in_place: false,
-            // Apply must still move the file so Desktop becomes visibly cleaner.
-            // Uncertainty is expressed by the destination folder, not by blocking apply.
             needs_review: false,
             reason_code: "uncertain",
             explanation: "Type incertain : proposé dans À vérifier plutôt que deviné.",
@@ -493,6 +500,79 @@ fn archive_destination(_root_kind: ConsumerRootKind) -> Vec<String> {
     vec![ARCHIVES_FOLDER.to_owned()]
 }
 
+fn with_meaningful_folder_context(
+    mut destination: Vec<String>,
+    source_relative_path: &str,
+    maximum_depth: usize,
+) -> Vec<String> {
+    if destination.len() >= maximum_depth {
+        destination.truncate(maximum_depth);
+        return destination;
+    }
+
+    let parents = source_parent_components(source_relative_path);
+    let Some(anchor) = parents
+        .iter()
+        .position(|component| is_meaningful_folder_anchor(component))
+    else {
+        return destination;
+    };
+
+    for component in parents.into_iter().skip(anchor) {
+        if destination.len() >= maximum_depth {
+            break;
+        }
+        let trimmed = component.trim();
+        if trimmed.is_empty()
+            || destination
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(trimmed))
+        {
+            continue;
+        }
+        destination.push(trimmed.to_owned());
+    }
+    destination
+}
+
+fn is_meaningful_folder_anchor(component: &str) -> bool {
+    let normalized = component.trim().to_lowercase();
+    contains_any(
+        &normalized,
+        &[
+            "client",
+            "customer",
+            "chantier",
+            "projet",
+            "project",
+            "travail",
+            "work",
+            "fournisseur",
+            "supplier",
+            "administratif",
+            "facture",
+            "invoice",
+            "banque",
+            "bank",
+            "assurance",
+            "insurance",
+            "impôt",
+            "impot",
+            "tax",
+            "étude",
+            "etude",
+            "cours",
+            "school",
+            "personnel",
+            "personal",
+            "photos",
+            "images",
+            "vidéo",
+            "video",
+        ],
+    )
+}
+
 fn maybe_preserve_existing(
     source_relative_path: &str,
     decision: ConsumerDecision,
@@ -716,23 +796,54 @@ mod tests {
     }
 
     #[test]
-    fn nested_path_context_helps_classify_text_documents() {
+    fn meaningful_nested_folder_tree_is_preserved_under_category() {
         let chantier_notes = decide(
             ConsumerRootKind::Desktop,
             "Clients/Martin/Chantier Bordeaux/notes.txt",
         );
-        assert_eq!(chantier_notes.destination, ["Documents", "Travail"]);
+        assert_eq!(
+            chantier_notes.destination,
+            [
+                "Documents",
+                "Travail",
+                "Clients",
+                "Martin",
+                "Chantier Bordeaux"
+            ]
+        );
         assert!(!chantier_notes.leave_in_place);
     }
 
     #[test]
-    fn files_already_at_exact_destination_stay() {
+    fn deep_folder_context_is_bounded() {
+        let deep = decide(
+            ConsumerRootKind::Desktop,
+            "Clients/Martin/Chantier Bordeaux/2026/Phase 1/Plans/Final/notes.txt",
+        );
+        assert_eq!(deep.destination.len(), CONSUMER_MAX_DESTINATION_DEPTH);
+        assert_eq!(deep.destination[0], "Documents");
+        assert_eq!(deep.destination[1], "Travail");
+        assert_eq!(deep.destination[2], "Clients");
+        assert_eq!(deep.destination[3], "Martin");
+    }
+
+    #[test]
+    fn files_already_at_exact_deep_destination_stay() {
         let nested = decide(
             ConsumerRootKind::Desktop,
-            "Documents/Personnel/notes.txt",
+            "Documents/Travail/Clients/Martin/Chantier Bordeaux/notes.txt",
         );
         assert!(nested.leave_in_place);
-        assert_eq!(nested.destination, ["Documents", "Personnel"]);
+        assert_eq!(
+            nested.destination,
+            [
+                "Documents",
+                "Travail",
+                "Clients",
+                "Martin",
+                "Chantier Bordeaux"
+            ]
+        );
     }
 
     #[test]
