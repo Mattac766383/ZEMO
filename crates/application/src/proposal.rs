@@ -387,7 +387,7 @@ impl ScannerApplicationService {
             .organization_source_for_root(workspace_id, root_id)?;
         let mut preferences = self.database.organization_preferences(workspace_id)?;
         if consumer_mode {
-            preferences.maximum_depth = 3;
+            preferences.maximum_depth = 6;
             preferences.include_year_folders = false;
             preferences.naming_language = "fr".to_owned();
         }
