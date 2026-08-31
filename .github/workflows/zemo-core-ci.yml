@@ -141,6 +141,9 @@ jobs:
       - name: One-click native Apply Undo test
         run: cargo test -p application --test one_click_organize -- --nocapture
 
+      - name: Real dirty-folder One-Click pipeline
+        run: cargo test -p application --test one_click_real_user_pipeline -- --nocapture
+
       - name: Frontend tests
         run: npm test
 
@@ -199,6 +202,9 @@ jobs:
 
       - name: One-click native Apply Undo test
         run: cargo test -p application --test one_click_organize -- --nocapture
+
+      - name: Real dirty-folder One-Click pipeline
+        run: cargo test -p application --test one_click_real_user_pipeline -- --nocapture
 
       - name: Frontend tests
         run: npm test

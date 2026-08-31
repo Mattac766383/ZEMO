@@ -33,6 +33,8 @@ jobs:
         run: cargo test -p application --test one_click_organize consumer_scan_has_no_arbitrary_file_count_cap -- --nocapture
       - name: Physical Apply and exact Undo
         run: cargo test -p application --test one_click_organize one_click_consumer_proposal_moves_personal_files_and_undo_restores -- --nocapture
+      - name: Real dirty-folder One-Click pipeline
+        run: cargo test -p application --test one_click_real_user_pipeline -- --nocapture
       - name: Typecheck and UI tests
         run: |
           npm run typecheck
