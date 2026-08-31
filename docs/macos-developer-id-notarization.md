@@ -57,4 +57,4 @@ If any of these checks fail, no external-user beta artifact is uploaded.
 
 For a very small trusted tester group, the pull-request validation path may build and upload a macOS artifact without Developer ID notarization. This route still runs bundle inspection plus packaged-sidecar authentication and physical Apply/Undo tests. It is only for private testing: the official external release path above remains fail-closed and must not be weakened.
 
-Private-test build marker: simplified UX after PR #43.
+Private-test build marker: real One-Click Ranger pipeline after PR #45.
