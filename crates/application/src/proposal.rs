@@ -76,6 +76,19 @@ impl ScannerApplicationService {
         is_cancelled: &(dyn Fn() -> bool + Sync),
         on_progress: &mut dyn FnMut(ProposalBuildProgress),
     ) -> Result<OrganizationProposal, ApplicationError> {
+        // One-Click must not bypass the intelligence pipeline. The private-beta path
+        // previously jumped directly from scan metadata to a consumer proposal, which
+        // meant content extraction and semantic understanding were absent from the
+        // primary "Ranger" experience. Resolve the scan bound to this root, enrich it
+        // locally, then build the proposal from the refreshed semantic source.
+        let source = self
+            .database
+            .organization_source_for_root(workspace_id, root_id)?;
+        let scan_id = source.scan_id;
+        drop(source);
+        self.analyze_scan_content(scan_id, is_cancelled, &mut |_| {})?;
+        self.analyze_scan_semantics(scan_id, is_cancelled, &mut |_| {})?;
+
         let current_id = self
             .database
             .current_organization_proposal_id_for_root(workspace_id, root_id)?;
