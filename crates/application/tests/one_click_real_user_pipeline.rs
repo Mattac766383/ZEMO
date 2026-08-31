@@ -39,8 +39,9 @@ fn one_click_real_dirty_desktop_is_analyzed_moved_and_exactly_undoable() {
     );
 
     let initial = sandbox.snapshot();
-    let desktop = sandbox.path().join("Desktop");
-    assert_is_test_sandbox(sandbox.path(), &desktop);
+    let mutation_root = sandbox.path();
+    let desktop = mutation_root.join("Desktop");
+    assert_is_test_sandbox(mutation_root, &desktop);
     assert!(desktop.is_dir());
 
     let database = Arc::new(
@@ -52,13 +53,17 @@ fn one_click_real_dirty_desktop_is_analyzed_moved_and_exactly_undoable() {
     let workspace = scanner
         .create_workspace("One-Click real user acceptance")
         .unwrap_or_else(|error| panic!("workspace should be created: {error}"));
+
+    // The execution sandbox itself stays the registered root so every physical mutation
+    // remains protected by the same fail-closed guard used by the qualification suite.
+    // `Desktop/` is intentionally a real nested dirty tree to prove recursive discovery.
     let root = scanner
-        .register_root(workspace.id, &desktop)
-        .unwrap_or_else(|error| panic!("Desktop sandbox should register: {error}"));
+        .register_root(workspace.id, mutation_root)
+        .unwrap_or_else(|error| panic!("guarded sandbox root should register: {error}"));
 
     let scan = scanner
         .scan_workspace(workspace.id, &|| false, &mut |_| {})
-        .unwrap_or_else(|error| panic!("recursive Desktop scan should succeed: {error}"));
+        .unwrap_or_else(|error| panic!("recursive dirty-tree scan should succeed: {error}"));
     assert_eq!(scan.indexed_count, 3, "all nested fixture files must be indexed");
 
     let proposal = scanner
@@ -84,20 +89,20 @@ fn one_click_real_dirty_desktop_is_analyzed_moved_and_exactly_undoable() {
     );
     assert!(proposal.operations.iter().any(|operation| {
         operation.source.relative_path.replace('\\', "/")
-            == "Clients/Martin/Chantier Bordeaux/notes.txt"
+            == "Desktop/Clients/Martin/Chantier Bordeaux/notes.txt"
             && operation.operation_kind == ProposalOperationKind::MoveProposal
             && operation.proposed_destination
                 == ["Documents", "Travail", "Clients", "Martin", "Chantier Bordeaux"]
     }));
     assert!(proposal.operations.iter().any(|operation| {
-        operation.source.relative_path.replace('\\', "/") == "Divers/facture_2026.txt"
+        operation.source.relative_path.replace('\\', "/") == "Desktop/Divers/facture_2026.txt"
             && operation.operation_kind == ProposalOperationKind::MoveProposal
             && operation.proposed_destination
                 == ["Documents", "Administratif", "Factures"]
     }));
     assert!(proposal.operations.iter().any(|operation| {
         operation.source.relative_path.replace('\\', "/")
-            == "Ancien dossier/Sous dossier/photo.jpg"
+            == "Desktop/Ancien dossier/Sous dossier/photo.jpg"
             && operation.operation_kind == ProposalOperationKind::MoveProposal
             && operation.proposed_destination == ["Images", "Photos"]
     }));
@@ -110,7 +115,7 @@ fn one_click_real_dirty_desktop_is_analyzed_moved_and_exactly_undoable() {
         .unwrap_or_else(|error| panic!("proposal should be approved: {error}"));
 
     let executor: Arc<dyn ApprovedExecutorClient> = Arc::new(
-        SandboxApprovedExecutorClient::new(&desktop, platform.clone()),
+        SandboxApprovedExecutorClient::new(mutation_root, platform.clone()),
     );
     let execution = ExecutionApplicationService::new(
         database,
@@ -144,21 +149,21 @@ fn one_click_real_dirty_desktop_is_analyzed_moved_and_exactly_undoable() {
     assert_eq!(completed.session.summary.skipped, 0);
     assert!(completed.session.summary.applied >= 3);
 
-    let notes_destination = desktop
+    let notes_destination = mutation_root
         .join("Documents")
         .join("Travail")
         .join("Clients")
         .join("Martin")
         .join("Chantier Bordeaux")
         .join("notes.txt");
-    let invoice_destination = desktop
+    let invoice_destination = mutation_root
         .join("Documents")
         .join("Administratif")
         .join("Factures")
         .join("facture_2026.txt");
-    let photo_destination = desktop.join("Images").join("Photos").join("photo.jpg");
+    let photo_destination = mutation_root.join("Images").join("Photos").join("photo.jpg");
     for path in [&notes_destination, &invoice_destination, &photo_destination] {
-        assert_is_test_sandbox(sandbox.path(), path);
+        assert_is_test_sandbox(mutation_root, path);
         assert!(path.is_file(), "expected physical destination missing: {}", path.display());
     }
     assert!(!desktop.join("Clients/Martin/Chantier Bordeaux/notes.txt").exists());
