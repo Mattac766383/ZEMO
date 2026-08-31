@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "channel": "private-beta",
-  "request_id": 6,
-  "macos_dist_tag": "0.1.0-beta.10",
-  "windows_dist_tag": "0.1.0-beta.8",
-  "notes": "Prepare the simplified ZEMO UX from PR #43 for the 5-user private beta. Windows beta.8 is built from current main; macOS official external release remains fail-closed until Apple Developer ID and notarization secrets are configured."
+  "request_id": 7,
+  "macos_dist_tag": "0.1.0-beta.11",
+  "windows_dist_tag": "0.1.0-beta.9",
+  "notes": "Prepare fresh tester builds after PR #45. Windows beta.9 contains the real Ranger end-to-end fix: recursive scan, semantic analysis before proposal generation, physical Apply and exact Undo validation. macOS official external release remains fail-closed until Apple Developer ID and notarization secrets are configured."
 }
