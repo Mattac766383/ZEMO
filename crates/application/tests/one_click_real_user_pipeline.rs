@@ -37,6 +37,24 @@ fn one_click_real_dirty_desktop_is_analyzed_moved_and_exactly_undoable() {
         "Desktop/Ancien dossier/Sous dossier/photo.jpg",
         b"fake-jpeg-private-beta-fixture",
     );
+    sandbox.write(
+        "Desktop/portfolio/package.json",
+        br#"{"name":"portfolio","scripts":{"dev":"vite"}}"#,
+    );
+    sandbox.write(
+        "Desktop/portfolio/src/index.js",
+        b"console.log('portfolio');",
+    );
+    sandbox.write("Desktop/lodash/package.json", br#"{"name":"lodash-local"}"#);
+    sandbox.write("Desktop/lodash/fp/map.js", b"export const map = () => {};");
+    sandbox.write(
+        "Desktop/maquette-experience-esport/index.html",
+        b"<html><body>maquette esport</body></html>",
+    );
+    sandbox.write(
+        "Desktop/maquette-experience-esport/assets/app.css",
+        b"body { margin: 0; }",
+    );
 
     let initial = sandbox.snapshot();
     let mutation_root = sandbox.path();
@@ -64,7 +82,10 @@ fn one_click_real_dirty_desktop_is_analyzed_moved_and_exactly_undoable() {
     let scan = scanner
         .scan_workspace(workspace.id, &|| false, &mut |_| {})
         .unwrap_or_else(|error| panic!("recursive dirty-tree scan should succeed: {error}"));
-    assert_eq!(scan.indexed_count, 3, "all nested fixture files must be indexed");
+    assert_eq!(
+        scan.indexed_count, 9,
+        "all nested fixture files must be indexed"
+    );
 
     let proposal = scanner
         .generate_consumer_organization_proposal_for_root(
@@ -81,9 +102,9 @@ fn one_click_real_dirty_desktop_is_analyzed_moved_and_exactly_undoable() {
         proposal.source_semantic_version.is_some(),
         "One-Click generated a proposal without first running semantic analysis"
     );
-    assert_eq!(proposal.summary.files_analyzed, 3);
+    assert_eq!(proposal.summary.files_analyzed, 9);
     assert!(
-        proposal.summary.proposed_moves >= 3,
+        proposal.summary.proposed_moves >= 9,
         "dirty nested files produced no real moves: {:#?}",
         proposal.summary
     );
@@ -92,13 +113,18 @@ fn one_click_real_dirty_desktop_is_analyzed_moved_and_exactly_undoable() {
             == "Desktop/Clients/Martin/Chantier Bordeaux/notes.txt"
             && operation.operation_kind == ProposalOperationKind::MoveProposal
             && operation.proposed_destination
-                == ["Documents", "Travail", "Clients", "Martin", "Chantier Bordeaux"]
+                == [
+                    "Documents",
+                    "Travail",
+                    "Clients",
+                    "Martin",
+                    "Chantier Bordeaux",
+                ]
     }));
     assert!(proposal.operations.iter().any(|operation| {
         operation.source.relative_path.replace('\\', "/") == "Desktop/Divers/facture_2026.txt"
             && operation.operation_kind == ProposalOperationKind::MoveProposal
-            && operation.proposed_destination
-                == ["Documents", "Administratif", "Factures"]
+            && operation.proposed_destination == ["Documents", "Administratif", "Factures"]
     }));
     assert!(proposal.operations.iter().any(|operation| {
         operation.source.relative_path.replace('\\', "/")
@@ -114,9 +140,10 @@ fn one_click_real_dirty_desktop_is_analyzed_moved_and_exactly_undoable() {
         )
         .unwrap_or_else(|error| panic!("proposal should be approved: {error}"));
 
-    let executor: Arc<dyn ApprovedExecutorClient> = Arc::new(
-        SandboxApprovedExecutorClient::new(mutation_root, platform.clone()),
-    );
+    let executor: Arc<dyn ApprovedExecutorClient> = Arc::new(SandboxApprovedExecutorClient::new(
+        mutation_root,
+        platform.clone(),
+    ));
     let execution = ExecutionApplicationService::new(
         database,
         platform,
@@ -143,7 +170,10 @@ fn one_click_real_dirty_desktop_is_analyzed_moved_and_exactly_undoable() {
     let completed = execution
         .start_execution(approved.session.id, &mut |_| {})
         .unwrap_or_else(|error| panic!("physical One-Click Apply should succeed: {error}"));
-    assert_eq!(completed.session.status, OrganizationExecutionStatus::Completed);
+    assert_eq!(
+        completed.session.status,
+        OrganizationExecutionStatus::Completed
+    );
     assert_eq!(completed.session.summary.failed, 0);
     assert_eq!(completed.session.summary.blocked, 0);
     assert_eq!(completed.session.summary.skipped, 0);
@@ -161,14 +191,58 @@ fn one_click_real_dirty_desktop_is_analyzed_moved_and_exactly_undoable() {
         .join("Administratif")
         .join("Factures")
         .join("facture_2026.txt");
-    let photo_destination = mutation_root.join("Images").join("Photos").join("photo.jpg");
+    let photo_destination = mutation_root
+        .join("Images")
+        .join("Photos")
+        .join("photo.jpg");
     for path in [&notes_destination, &invoice_destination, &photo_destination] {
         assert_is_test_sandbox(mutation_root, path);
-        assert!(path.is_file(), "expected physical destination missing: {}", path.display());
+        assert!(
+            path.is_file(),
+            "expected physical destination missing: {}",
+            path.display()
+        );
     }
-    assert!(!desktop.join("Clients/Martin/Chantier Bordeaux/notes.txt").exists());
+    assert!(
+        !desktop
+            .join("Clients/Martin/Chantier Bordeaux/notes.txt")
+            .exists()
+    );
     assert!(!desktop.join("Divers/facture_2026.txt").exists());
-    assert!(!desktop.join("Ancien dossier/Sous dossier/photo.jpg").exists());
+    assert!(
+        !desktop
+            .join("Ancien dossier/Sous dossier/photo.jpg")
+            .exists()
+    );
+
+    let portfolio_destination = desktop
+        .join("Développement")
+        .join("Projets")
+        .join("portfolio");
+    let lodash_destination = desktop.join("Développement").join("Projets").join("lodash");
+    let maquette_destination = desktop
+        .join("Développement")
+        .join("Projets")
+        .join("maquette-experience-esport");
+    assert!(portfolio_destination.join("package.json").is_file());
+    assert!(portfolio_destination.join("src/index.js").is_file());
+    assert!(lodash_destination.join("package.json").is_file());
+    assert!(lodash_destination.join("fp/map.js").is_file());
+    assert!(maquette_destination.join("index.html").is_file());
+    assert!(maquette_destination.join("assets/app.css").is_file());
+    assert!(
+        !desktop.join("portfolio").exists(),
+        "the old top-level project folder must be removed once empty"
+    );
+    assert!(
+        !desktop.join("lodash").exists(),
+        "package-like clutter must no longer remain on the Desktop"
+    );
+    assert!(
+        !desktop.join("maquette-experience-esport").exists(),
+        "work/project folder must move as one preserved tree"
+    );
+
     assert_eq!(
         fs::read(&invoice_destination)
             .unwrap_or_else(|error| panic!("moved invoice should remain readable: {error}")),
@@ -178,6 +252,13 @@ fn one_click_real_dirty_desktop_is_analyzed_moved_and_exactly_undoable() {
     let rolled_back = execution
         .rollback_execution(completed.session.id, &mut |_| {})
         .unwrap_or_else(|error| panic!("One-Click Undo should succeed: {error}"));
-    assert_eq!(rolled_back.session.status, OrganizationExecutionStatus::RolledBack);
-    assert_eq!(initial, sandbox.snapshot(), "Undo must restore the exact original tree and bytes");
+    assert_eq!(
+        rolled_back.session.status,
+        OrganizationExecutionStatus::RolledBack
+    );
+    assert_eq!(
+        initial,
+        sandbox.snapshot(),
+        "Undo must restore the exact original tree and bytes"
+    );
 }

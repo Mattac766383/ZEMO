@@ -71,6 +71,7 @@ impl OrganizationExecutionStatus {
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionOperationKind {
     CreateDirectory,
+    RemoveDirectoryIfEmpty,
     Move,
     Rename,
     MoveAndRename,
@@ -82,6 +83,7 @@ impl ExecutionOperationKind {
     pub const fn database_name(self) -> &'static str {
         match self {
             Self::CreateDirectory => "create_directory",
+            Self::RemoveDirectoryIfEmpty => "remove_directory_if_empty",
             Self::Move => "move",
             Self::Rename => "rename",
             Self::MoveAndRename => "move_and_rename",

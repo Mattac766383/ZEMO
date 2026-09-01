@@ -162,6 +162,18 @@ where
                 OperationDirection::Rollback,
             ) => self.remove_directory(&root, destination_relative_path),
             (
+                OperationPrimitiveManifest::RemoveDirectoryIfEmpty {
+                    source_relative_path,
+                },
+                OperationDirection::Forward,
+            ) => self.remove_directory(&root, source_relative_path),
+            (
+                OperationPrimitiveManifest::RemoveDirectoryIfEmpty {
+                    source_relative_path,
+                },
+                OperationDirection::Rollback,
+            ) => self.create_directory(&root, source_relative_path),
+            (
                 OperationPrimitiveManifest::SameVolumeMove {
                     source_relative_path,
                     destination_relative_path,

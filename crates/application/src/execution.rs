@@ -519,7 +519,14 @@ impl ExecutionApplicationService {
             &all_destinations,
             &user_destinations,
         )?;
+        let source_cleanup = self.plan_source_directory_cleanup(
+            execution_id,
+            &canonical_root,
+            &executable,
+            &user_destinations,
+        )?;
         directories.extend(executable);
+        directories.extend(source_cleanup);
         directories.extend(
             candidates
                 .iter()
@@ -2804,6 +2811,98 @@ impl ExecutionApplicationService {
         Ok((operations, user_count))
     }
 
+    fn plan_source_directory_cleanup(
+        &self,
+        execution_id: ExecutionId,
+        root: &Path,
+        executable: &[ExecutionOperation],
+        user_destinations: &[String],
+    ) -> Result<Vec<ExecutionOperation>, ApplicationError> {
+        let planned_sources = executable
+            .iter()
+            .filter(|operation| {
+                operation.proposal_operation_id.is_some()
+                    && operation.kind != ExecutionOperationKind::InternalStage
+            })
+            .filter_map(|operation| {
+                operation
+                    .original_source_relative_path
+                    .as_deref()
+                    .or(operation.source_relative_path.as_deref())
+            })
+            .map(normalize_relative_string)
+            .collect::<HashSet<_>>();
+        if planned_sources.is_empty() {
+            return Ok(Vec::new());
+        }
+        let destination_paths = user_destinations
+            .iter()
+            .map(|value| normalize_relative_string(value))
+            .collect::<Vec<_>>();
+        let mut top_levels = planned_sources
+            .iter()
+            .filter_map(|source| source.split('/').next())
+            .filter(|top| !top.is_empty() && !source_cleanup_top_level_is_protected(top))
+            .map(ToOwned::to_owned)
+            .collect::<BTreeSet<_>>();
+        let mut removable = Vec::<String>::new();
+        top_levels.retain(|top| {
+            let mut discovered = Vec::new();
+            let safe = collect_fully_planned_directory_tree(
+                root,
+                top,
+                &planned_sources,
+                &destination_paths,
+                &mut discovered,
+            )
+            .unwrap_or(false);
+            if safe {
+                removable.extend(discovered);
+            }
+            safe
+        });
+        removable.sort_by(|left, right| {
+            let left_depth = left.split('/').count();
+            let right_depth = right.split('/').count();
+            right_depth.cmp(&left_depth).then_with(|| left.cmp(right))
+        });
+        removable.dedup();
+        Ok(removable
+            .into_iter()
+            .map(|relative| ExecutionOperation {
+                id: OperationStepId::new(),
+                execution_id,
+                proposal_operation_id: None,
+                kind: ExecutionOperationKind::RemoveDirectoryIfEmpty,
+                source_relative_path: Some(relative.clone()),
+                destination_relative_path: relative.clone(),
+                original_source_relative_path: Some(relative),
+                expected_source_hash: None,
+                expected_source_size: None,
+                expected_source_modified_at: None,
+                live_fingerprint: None,
+                post_fingerprint: None,
+                preconditions: vec![
+                    "source_directory_is_unlinked".to_owned(),
+                    "source_directory_is_empty_after_planned_moves".to_owned(),
+                ],
+                dependencies: Vec::new(),
+                sequence: 0,
+                status: ExecutionOperationStatus::PreflightOk,
+                directory_existed_before: Some(true),
+                reason: Some(
+                    "Remove an emptied source folder so Ranger cleans the visible folder tree."
+                        .to_owned(),
+                ),
+                error_code: None,
+                error_message: None,
+                started_at: None,
+                completed_at: None,
+                rolled_back_at: None,
+            })
+            .collect())
+    }
+
     fn unique_staging_path(
         &self,
         root: &Path,
@@ -2844,6 +2943,28 @@ impl ExecutionApplicationService {
         root: &Path,
         operation: &ExecutionOperation,
     ) -> Result<Option<FileFingerprint>, ApplicationError> {
+        if operation.kind == ExecutionOperationKind::RemoveDirectoryIfEmpty {
+            let source_relative = relative_path(
+                operation
+                    .source_relative_path
+                    .as_deref()
+                    .ok_or(ApplicationError::InvalidExecution)?,
+            )?;
+            let source = root.join(source_relative);
+            let metadata = fs::symlink_metadata(&source)?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(ApplicationError::InvalidExecution);
+            }
+            let mut entries = fs::read_dir(&source)?;
+            if entries.next().transpose()?.is_some() {
+                return Err(ApplicationError::Operations(OperationsError::Platform(
+                    PlatformError::Precondition(
+                        "source directory is not empty after its planned moves".to_owned(),
+                    ),
+                )));
+            }
+            return Ok(None);
+        }
         let destination_relative = relative_path(&operation.destination_relative_path)?;
         let internal = operation
             .destination_relative_path
@@ -2886,6 +3007,18 @@ impl ExecutionApplicationService {
         root: &Path,
         operation: &ExecutionOperation,
     ) -> Result<Option<FileFingerprint>, ApplicationError> {
+        if operation.kind == ExecutionOperationKind::RemoveDirectoryIfEmpty {
+            let source = root.join(relative_path(
+                operation
+                    .source_relative_path
+                    .as_deref()
+                    .ok_or(ApplicationError::InvalidExecution)?,
+            )?);
+            return match fs::symlink_metadata(source) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                _ => Err(ApplicationError::InvalidExecution),
+            };
+        }
         let destination = root.join(relative_path(&operation.destination_relative_path)?);
         if operation.kind == ExecutionOperationKind::CreateDirectory {
             let metadata = fs::symlink_metadata(destination)?;
@@ -2923,6 +3056,17 @@ impl ExecutionApplicationService {
         root: &Path,
         operation: &ExecutionOperation,
     ) -> Result<Option<FileFingerprint>, ApplicationError> {
+        if operation.kind == ExecutionOperationKind::RemoveDirectoryIfEmpty {
+            let restore_relative = relative_path(
+                operation
+                    .source_relative_path
+                    .as_deref()
+                    .ok_or(ApplicationError::InvalidExecution)?,
+            )?;
+            self.policy
+                .resolve_absent_destination(root, &restore_relative, false)?;
+            return Ok(None);
+        }
         let current_relative = relative_path(&operation.destination_relative_path)?;
         let current = root.join(&current_relative);
         if operation.kind == ExecutionOperationKind::CreateDirectory {
@@ -2982,6 +3126,19 @@ impl ExecutionApplicationService {
         root: &Path,
         operation: &ExecutionOperation,
     ) -> Result<(), ApplicationError> {
+        if operation.kind == ExecutionOperationKind::RemoveDirectoryIfEmpty {
+            let restored = root.join(relative_path(
+                operation
+                    .source_relative_path
+                    .as_deref()
+                    .ok_or(ApplicationError::InvalidExecution)?,
+            )?);
+            let metadata = fs::symlink_metadata(restored)?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(ApplicationError::InvalidExecution);
+            }
+            return Ok(());
+        }
         let prior_destination = root.join(relative_path(&operation.destination_relative_path)?);
         if operation.kind == ExecutionOperationKind::CreateDirectory {
             if fs::symlink_metadata(prior_destination).is_ok() {
@@ -3021,6 +3178,26 @@ impl ExecutionApplicationService {
         root: &Path,
         operation: &ExecutionOperation,
     ) -> Result<RecoveryObservation, ApplicationError> {
+        if operation.kind == ExecutionOperationKind::RemoveDirectoryIfEmpty {
+            let source = root.join(relative_path(
+                operation
+                    .source_relative_path
+                    .as_deref()
+                    .ok_or(ApplicationError::InvalidExecution)?,
+            )?);
+            return match fs::symlink_metadata(source) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    Ok(RecoveryObservation::Applied(None))
+                }
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                    Ok(RecoveryObservation::NotStarted)
+                }
+                Ok(_) => Ok(RecoveryObservation::Ambiguous(
+                    "Cleanup source path contains an unexpected entry.".to_owned(),
+                )),
+                Err(error) => Err(error.into()),
+            };
+        }
         let destination = root.join(relative_path(&operation.destination_relative_path)?);
         if operation.kind == ExecutionOperationKind::CreateDirectory {
             return match fs::symlink_metadata(destination) {
@@ -3081,6 +3258,26 @@ impl ExecutionApplicationService {
         root: &Path,
         operation: &ExecutionOperation,
     ) -> Result<RecoveryObservation, ApplicationError> {
+        if operation.kind == ExecutionOperationKind::RemoveDirectoryIfEmpty {
+            let restored = root.join(relative_path(
+                operation
+                    .source_relative_path
+                    .as_deref()
+                    .ok_or(ApplicationError::InvalidExecution)?,
+            )?);
+            return match fs::symlink_metadata(restored) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                    Ok(RecoveryObservation::Applied(None))
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    Ok(RecoveryObservation::NotStarted)
+                }
+                Ok(_) => Ok(RecoveryObservation::Ambiguous(
+                    "Rollback cleanup path contains an unexpected entry.".to_owned(),
+                )),
+                Err(error) => Err(error.into()),
+            };
+        }
         let current = root.join(relative_path(&operation.destination_relative_path)?);
         if operation.kind == ExecutionOperationKind::CreateDirectory {
             return match fs::symlink_metadata(current) {
@@ -3143,8 +3340,11 @@ impl ExecutionApplicationService {
         let events = self.database.execution_journal_events(detail.session.id)?;
         let mut eligible_operations = Vec::with_capacity(rollback.len());
         for operation in rollback {
-            if operation.kind != ExecutionOperationKind::CreateDirectory
-                && operation.post_fingerprint.is_none()
+            if !matches!(
+                operation.kind,
+                ExecutionOperationKind::CreateDirectory
+                    | ExecutionOperationKind::RemoveDirectoryIfEmpty
+            ) && operation.post_fingerprint.is_none()
             {
                 return Err(ApplicationError::InvalidExecution);
             }
@@ -3964,6 +4164,86 @@ fn dependency_order(candidates: &[PlannedCandidate]) -> (Vec<usize>, Vec<usize>)
         )
     });
     (ordered, cyclic)
+}
+
+fn source_cleanup_top_level_is_protected(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    value.starts_with('.')
+        || matches!(
+            lower.as_str(),
+            "documents"
+                | "images"
+                | "pictures"
+                | "photos"
+                | "vidéos"
+                | "videos"
+                | "archives"
+                | "installateurs"
+                | "à vérifier"
+                | "a verifier"
+                | "développement"
+                | "developpement"
+                | "applications"
+                | "library"
+                | "system"
+                | "windows"
+                | "program files"
+                | "program files (x86)"
+        )
+}
+
+fn collect_fully_planned_directory_tree(
+    root: &Path,
+    relative_directory: &str,
+    planned_sources: &HashSet<String>,
+    destination_paths: &[String],
+    removable: &mut Vec<String>,
+) -> Result<bool, ApplicationError> {
+    let normalized_directory = normalize_relative_string(relative_directory);
+    if destination_paths.iter().any(|destination| {
+        destination == &normalized_directory
+            || destination.starts_with(&(normalized_directory.clone() + "/"))
+    }) {
+        return Ok(false);
+    }
+    let absolute = root.join(relative_path(&normalized_directory)?);
+    let metadata = fs::symlink_metadata(&absolute)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Ok(false);
+    }
+    let mut children = fs::read_dir(&absolute)?.collect::<Result<Vec<_>, _>>()?;
+    children.sort_by_key(|entry| entry.file_name());
+    for entry in children {
+        let entry_path = entry.path();
+        let entry_metadata = fs::symlink_metadata(&entry_path)?;
+        if entry_metadata.file_type().is_symlink() {
+            return Ok(false);
+        }
+        let child_relative = entry_path
+            .strip_prefix(root)
+            .map_err(|_| ApplicationError::InvalidExecution)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if entry_metadata.is_dir() {
+            if !collect_fully_planned_directory_tree(
+                root,
+                &child_relative,
+                planned_sources,
+                destination_paths,
+                removable,
+            )? {
+                return Ok(false);
+            }
+        } else if entry_metadata.is_file() {
+            if !planned_sources.contains(&normalize_relative_string(&child_relative)) {
+                return Ok(false);
+            }
+        } else {
+            return Ok(false);
+        }
+    }
+    removable.push(normalized_directory);
+    Ok(true)
 }
 
 fn execution_summary(

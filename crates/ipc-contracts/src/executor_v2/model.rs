@@ -271,6 +271,9 @@ pub enum OperationPrimitiveManifest {
     CreateDirectory {
         destination_relative_path: String,
     },
+    RemoveDirectoryIfEmpty {
+        source_relative_path: String,
+    },
     SameVolumeMove {
         source_relative_path: String,
         destination_relative_path: String,
@@ -303,6 +306,9 @@ impl OperationPrimitiveManifest {
             Self::CreateDirectory {
                 destination_relative_path,
             } => validate_relative_path(destination_relative_path),
+            Self::RemoveDirectoryIfEmpty {
+                source_relative_path,
+            } => validate_relative_path(source_relative_path),
             Self::SameVolumeMove {
                 source_relative_path,
                 destination_relative_path,
@@ -1069,6 +1075,22 @@ fn operation_from_live(
                 destination_relative_path: operation.destination_relative_path.clone(),
             }
         }
+        domain::ExecutionOperationKind::RemoveDirectoryIfEmpty => {
+            let source_relative_path = operation
+                .source_relative_path
+                .clone()
+                .ok_or(ValidationError::InvalidField("cleanup source directory"))?;
+            if operation.live_fingerprint.is_some()
+                || operation.directory_existed_before != Some(true)
+            {
+                return Err(ValidationError::InvalidField(
+                    "remove-empty-directory manifest",
+                ));
+            }
+            OperationPrimitiveManifest::RemoveDirectoryIfEmpty {
+                source_relative_path,
+            }
+        }
         kind => {
             let source_relative_path = operation
                 .source_relative_path
@@ -1123,7 +1145,8 @@ fn operation_from_live(
                         expected_source,
                     }
                 }
-                domain::ExecutionOperationKind::CreateDirectory => unreachable!(),
+                domain::ExecutionOperationKind::CreateDirectory
+                | domain::ExecutionOperationKind::RemoveDirectoryIfEmpty => unreachable!(),
             }
         }
     };

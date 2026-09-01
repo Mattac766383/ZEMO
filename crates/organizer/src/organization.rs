@@ -276,10 +276,14 @@ impl LocalOrganizationProposalEngine {
         }
 
         let mut policy = VirtualPathPolicy {
-            maximum_depth: request.base.preferences.maximum_depth.clamp(2, 8),
+            maximum_depth: if request.base.consumer_mode {
+                32
+            } else {
+                request.base.preferences.maximum_depth.clamp(2, 8)
+            },
             ..VirtualPathPolicy::default()
         };
-        policy.maximum_depth = policy.maximum_depth.min(8);
+        policy.maximum_depth = policy.maximum_depth.min(32);
         let overrides = request
             .base
             .overrides
@@ -432,6 +436,14 @@ impl LocalOrganizationProposalEngine {
             &mut drafts,
             request.base.preferences.minimum_group_size.clamp(1, 20),
         );
+        if request.base.consumer_mode {
+            apply_consumer_folder_bundle_policy(
+                &mut drafts,
+                &request.base.inputs,
+                request.base.consumer_root_kind,
+                policy,
+            );
+        }
 
         progress.phase = ProposalBuildPhase::DetectingConflicts;
         // Reset auto-resolved collision names in the affected collision neighborhood
@@ -523,10 +535,14 @@ impl LocalOrganizationProposalEngine {
         };
         on_progress(progress.clone());
         let mut policy = VirtualPathPolicy {
-            maximum_depth: request.preferences.maximum_depth.clamp(2, 8),
+            maximum_depth: if request.consumer_mode {
+                32
+            } else {
+                request.preferences.maximum_depth.clamp(2, 8)
+            },
             ..VirtualPathPolicy::default()
         };
-        policy.maximum_depth = policy.maximum_depth.min(8);
+        policy.maximum_depth = policy.maximum_depth.min(32);
         let overrides = request
             .overrides
             .iter()
@@ -572,6 +588,14 @@ impl LocalOrganizationProposalEngine {
                 &mut drafts,
                 request.preferences.minimum_group_size.clamp(1, 20),
             );
+            if request.consumer_mode {
+                apply_consumer_folder_bundle_policy(
+                    &mut drafts,
+                    &request.inputs,
+                    request.consumer_root_kind,
+                    policy,
+                );
+            }
 
             progress.phase = ProposalBuildPhase::DetectingConflicts;
             resolve_collisions(&mut drafts, policy);
@@ -753,6 +777,341 @@ fn expand_invalidation_neighborhood(
         }
     }
     affected
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConsumerFolderBundleKind {
+    Development,
+    Work,
+    Images,
+    Videos,
+    General,
+}
+
+#[derive(Debug, Default)]
+struct ConsumerFolderBundleStats {
+    files: usize,
+    manifests: usize,
+    code_files: usize,
+    images: usize,
+    videos: usize,
+    work_signals: usize,
+}
+
+fn apply_consumer_folder_bundle_policy(
+    drafts: &mut [DraftOperation],
+    inputs: &[OrganizationSourceInput],
+    root_kind: ConsumerRootKind,
+    policy: VirtualPathPolicy,
+) {
+    let mut stats = HashMap::<String, ConsumerFolderBundleStats>::new();
+    let mut canonical_names = HashMap::<String, String>::new();
+    let by_file = inputs
+        .iter()
+        .map(|input| (input.file_id, input))
+        .collect::<HashMap<_, _>>();
+
+    for input in inputs {
+        let components = normalized_source_components(&input.source_relative_path);
+        if components.len() < 2 {
+            continue;
+        }
+        let top = &components[0];
+        if consumer_bundle_top_level_is_protected(top) {
+            continue;
+        }
+        let key = top.to_ascii_lowercase();
+        canonical_names
+            .entry(key.clone())
+            .or_insert_with(|| top.clone());
+        let entry = stats.entry(key).or_default();
+        entry.files = entry.files.saturating_add(1);
+        let lower_name = input.source_name.to_ascii_lowercase();
+        if is_bundle_project_manifest(&lower_name) {
+            entry.manifests = entry.manifests.saturating_add(1);
+        }
+        if bundle_extension_is_code(&lower_name) {
+            entry.code_files = entry.code_files.saturating_add(1);
+        }
+        if bundle_extension_is_image(&lower_name) {
+            entry.images = entry.images.saturating_add(1);
+        }
+        if bundle_extension_is_video(&lower_name) {
+            entry.videos = entry.videos.saturating_add(1);
+        }
+        if folder_name_looks_like_work(top)
+            || input
+                .context
+                .as_ref()
+                .is_some_and(|signal| signal.value.to_ascii_lowercase().contains("work"))
+            || lower_name.contains("devis")
+            || lower_name.contains("chantier")
+            || lower_name.contains("client")
+        {
+            entry.work_signals = entry.work_signals.saturating_add(1);
+        }
+    }
+
+    let kinds = stats
+        .iter()
+        .map(|(key, value)| {
+            let kind = if value.manifests > 0 || value.code_files >= 2 {
+                ConsumerFolderBundleKind::Development
+            } else if value.images > 0
+                && value.images.saturating_mul(100) >= value.files.saturating_mul(70)
+            {
+                ConsumerFolderBundleKind::Images
+            } else if value.videos > 0
+                && value.videos.saturating_mul(100) >= value.files.saturating_mul(70)
+            {
+                ConsumerFolderBundleKind::Videos
+            } else if value.work_signals > 0 {
+                ConsumerFolderBundleKind::Work
+            } else {
+                ConsumerFolderBundleKind::General
+            };
+            (key.clone(), kind)
+        })
+        .collect::<HashMap<_, _>>();
+
+    for draft in drafts {
+        if draft.operation.user_override || draft.operation.stale {
+            continue;
+        }
+        let Some(input) = by_file.get(&draft.operation.file_id).copied() else {
+            continue;
+        };
+        let components = normalized_source_components(&input.source_relative_path);
+        if components.len() < 2 {
+            continue;
+        }
+        let top_key = components[0].to_ascii_lowercase();
+        let Some(kind) = kinds.get(&top_key).copied() else {
+            continue;
+        };
+        let top = canonical_names
+            .get(&top_key)
+            .cloned()
+            .unwrap_or_else(|| components[0].clone());
+        let mut destination = consumer_bundle_base(root_kind, kind, &top);
+        // Preserve the complete parent subtree below the top-level folder.
+        // The filename itself is kept separately, exactly as today.
+        destination.extend(components[1..components.len() - 1].iter().cloned());
+        if destination.len() > policy.maximum_depth {
+            // Deep developer trees remain safe and deterministic instead of
+            // being flattened into collisions. The path-length gate below is
+            // still authoritative.
+            destination.truncate(policy.maximum_depth);
+        }
+        let (machine_destination, machine_name, changed, valid) =
+            policy.fit_machine_path(&destination, &input.source_name);
+        if !valid {
+            draft.operation.conflict_state = ProposalConflictState::PathTooLong;
+            draft.operation.needs_review = true;
+            continue;
+        }
+        draft.operation.proposed_destination = destination;
+        draft.operation.machine_destination = machine_destination;
+        draft.operation.proposed_name = input.source_name.clone();
+        draft.operation.machine_name = machine_name;
+        draft.operation.operation_kind = ProposalOperationKind::MoveProposal;
+        draft.operation.confidence_score = match kind {
+            ConsumerFolderBundleKind::Development | ConsumerFolderBundleKind::Work => 0.98,
+            ConsumerFolderBundleKind::Images | ConsumerFolderBundleKind::Videos => 0.97,
+            ConsumerFolderBundleKind::General => 0.90,
+        };
+        draft.operation.confidence_level = ProposalConfidenceLevel::High;
+        // Ambiguous folders are deliberately moved under À vérifier, so this
+        // relocation itself is safe to apply without silently guessing a final taxonomy.
+        draft.operation.needs_review = false;
+        draft.operation.conflict_state = ProposalConflictState::None;
+        draft.operation.semantic_context = "consumer_folder_bundle".to_owned();
+        draft.operation.reasons.push(OrganizationReason {
+            code: "consumer_folder_bundle".to_owned(),
+            explanation: "Le dossier est conservé comme un bloc cohérent et rangé avec toute son arborescence.".to_owned(),
+            evidence_references: vec![format!("folder:{top}")],
+        });
+        draft.operation.disruption_score = if changed { 0.12 } else { 0.08 };
+        draft.operation.proposed_path_length = policy.path_length_utf16(
+            &draft.operation.proposed_destination,
+            &draft.operation.proposed_name,
+        );
+        draft.operation.proposed_depth = draft.operation.proposed_destination.len();
+        draft.optional_tail = vec![false; draft.operation.proposed_destination.len()];
+    }
+}
+
+fn normalized_source_components(path: &str) -> Vec<String> {
+    path.replace('\\', "/")
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn consumer_bundle_top_level_is_protected(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    value.starts_with('.')
+        || matches!(
+            lower.as_str(),
+            "documents"
+                | "images"
+                | "pictures"
+                | "photos"
+                | "vidéos"
+                | "videos"
+                | "archives"
+                | "installateurs"
+                | "à vérifier"
+                | "a verifier"
+                | "développement"
+                | "developpement"
+                | "node_modules"
+                | "applications"
+                | "library"
+                | "system"
+                | "windows"
+                | "program files"
+                | "program files (x86)"
+        )
+}
+
+fn is_bundle_project_manifest(name: &str) -> bool {
+    matches!(
+        name,
+        "package.json"
+            | "package-lock.json"
+            | "pnpm-lock.yaml"
+            | "yarn.lock"
+            | "cargo.toml"
+            | "cargo.lock"
+            | "pyproject.toml"
+            | "requirements.txt"
+            | "poetry.lock"
+            | "go.mod"
+            | "go.sum"
+            | "pom.xml"
+            | "composer.json"
+            | "composer.lock"
+    )
+}
+
+fn bundle_extension_is_code(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(_, ext)| {
+        matches!(
+            ext,
+            "js" | "jsx"
+                | "ts"
+                | "tsx"
+                | "mjs"
+                | "cjs"
+                | "rs"
+                | "py"
+                | "go"
+                | "java"
+                | "c"
+                | "h"
+                | "cpp"
+                | "hpp"
+                | "cs"
+                | "php"
+                | "rb"
+                | "swift"
+                | "kt"
+                | "kts"
+                | "vue"
+                | "svelte"
+                | "html"
+                | "css"
+                | "scss"
+        )
+    })
+}
+
+fn bundle_extension_is_image(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(_, ext)| {
+        matches!(
+            ext,
+            "jpg" | "jpeg" | "png" | "gif" | "webp" | "heic" | "avif" | "svg"
+        )
+    })
+}
+
+fn bundle_extension_is_video(name: &str) -> bool {
+    name.rsplit_once('.')
+        .is_some_and(|(_, ext)| matches!(ext, "mp4" | "mov" | "m4v" | "mkv" | "avi" | "webm"))
+}
+
+fn folder_name_looks_like_work(name: &str) -> bool {
+    let value = name.to_lowercase();
+    [
+        "maquette",
+        "portfolio",
+        "projet",
+        "project",
+        "client",
+        "chantier",
+        "site",
+        "web",
+        "coaching",
+        "lea",
+        "témoignage",
+        "temoignage",
+        "etanche",
+        "psps",
+    ]
+    .iter()
+    .any(|needle| value.contains(needle))
+}
+
+fn consumer_bundle_base(
+    root_kind: ConsumerRootKind,
+    kind: ConsumerFolderBundleKind,
+    top: &str,
+) -> Vec<String> {
+    match kind {
+        ConsumerFolderBundleKind::Development => vec![
+            "Développement".to_owned(),
+            "Projets".to_owned(),
+            top.to_owned(),
+        ],
+        ConsumerFolderBundleKind::Work => {
+            let mut value = if root_kind == ConsumerRootKind::Documents {
+                vec!["Travail".to_owned(), "Projets".to_owned()]
+            } else {
+                vec![
+                    "Documents".to_owned(),
+                    "Travail".to_owned(),
+                    "Projets".to_owned(),
+                ]
+            };
+            value.push(top.to_owned());
+            value
+        }
+        ConsumerFolderBundleKind::Images => {
+            let mut value = if root_kind == ConsumerRootKind::Pictures {
+                vec!["Albums".to_owned()]
+            } else {
+                vec!["Images".to_owned(), "Albums".to_owned()]
+            };
+            value.push(top.to_owned());
+            value
+        }
+        ConsumerFolderBundleKind::Videos => {
+            let mut value = if root_kind == ConsumerRootKind::Videos {
+                vec!["Collections".to_owned()]
+            } else {
+                vec!["Vidéos".to_owned(), "Collections".to_owned()]
+            };
+            value.push(top.to_owned());
+            value
+        }
+        ConsumerFolderBundleKind::General => vec![
+            "À vérifier".to_owned(),
+            "Dossiers".to_owned(),
+            top.to_owned(),
+        ],
+    }
 }
 
 fn draft_from_previous_operation(operation: &OrganizationProposalOperation) -> DraftOperation {

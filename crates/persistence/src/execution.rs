@@ -1767,7 +1767,7 @@ fn refresh_execution_counts(
          SET applied_count = (
                 SELECT COUNT(*) FROM local_execution_operations
                 WHERE execution_id = ?1 AND status IN ('applied', 'recovered')
-                  AND operation_kind NOT IN ('create_directory', 'internal_stage')
+                  AND operation_kind NOT IN ('create_directory', 'remove_directory_if_empty', 'internal_stage')
              ),
              blocked_count = (
                 SELECT COUNT(*) FROM local_execution_operations
@@ -1784,7 +1784,7 @@ fn refresh_execution_counts(
              rolled_back_count = (
                 SELECT COUNT(*) FROM local_execution_operations
                 WHERE execution_id = ?1 AND status = 'rolled_back'
-                  AND operation_kind NOT IN ('create_directory', 'internal_stage')
+                  AND operation_kind NOT IN ('create_directory', 'remove_directory_if_empty', 'internal_stage')
              ),
              rollback_blocked_count = (
                 SELECT COUNT(*) FROM local_execution_operations
@@ -2580,6 +2580,7 @@ fn parse_consent_state(value: &str) -> Result<ExecutionConsentState, Persistence
 fn parse_operation_kind(value: &str) -> Result<ExecutionOperationKind, PersistenceError> {
     match value {
         "create_directory" => Ok(ExecutionOperationKind::CreateDirectory),
+        "remove_directory_if_empty" => Ok(ExecutionOperationKind::RemoveDirectoryIfEmpty),
         "move" => Ok(ExecutionOperationKind::Move),
         "rename" => Ok(ExecutionOperationKind::Rename),
         "move_and_rename" => Ok(ExecutionOperationKind::MoveAndRename),
