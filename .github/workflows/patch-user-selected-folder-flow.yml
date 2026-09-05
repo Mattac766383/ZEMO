@@ -1,0 +1,74 @@
+name: Patch User-Selected Folder Flow
+
+on:
+  push:
+    branches: [fix/whole-user-folder-organization]
+    paths:
+      - scripts/patch_user_selected_folder_flow.py
+      - .github/workflows/patch-user-selected-folder-flow.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    runs-on: macos-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: fix/whole-user-folder-organization
+          fetch-depth: 0
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup Rust
+        run: |
+          rustup default stable
+          rustup component add rustfmt
+
+      - name: Apply selected-folder UX
+        run: python3 scripts/patch_user_selected_folder_flow.py
+
+      - name: Format Rust
+        run: cargo fmt --all
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Frontend tests
+        run: npm test
+
+      - name: Frontend production build
+        run: npm run build
+
+      - name: Compile core without desktop sidecar
+        run: |
+          cargo check -p platform-macos
+          cargo check -p catalog
+          cargo check -p organizer
+          cargo check -p application
+
+      - name: Organizer tests
+        run: cargo test -p organizer --lib -- --nocapture
+
+      - name: Real selected-folder One-Click pipeline
+        run: cargo test -p application --test one_click_real_user_pipeline -- --nocapture
+
+      - name: Commit validated implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/desktop/src crates workers schemas
+          if git diff --cached --quiet; then
+            echo "No generated source changes to commit."
+            exit 0
+          fi
+          git commit -m "Implement user-selected folder organization"
+          git push origin HEAD:fix/whole-user-folder-organization
