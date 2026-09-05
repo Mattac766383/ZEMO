@@ -7,6 +7,7 @@ on:
       - scripts/patch_user_selected_folder_flow.py
       - scripts/normalize_selected_folder_test_names.py
       - scripts/patch_selected_folder_followup.py
+      - scripts/patch_selected_folder_keyboard_test.py
       - .github/workflows/patch-user-selected-folder-flow.yml
 
 permissions:
@@ -40,6 +41,7 @@ jobs:
           python3 scripts/patch_user_selected_folder_flow.py
           python3 scripts/normalize_selected_folder_test_names.py
           python3 scripts/patch_selected_folder_followup.py
+          python3 scripts/patch_selected_folder_keyboard_test.py
 
       - name: Format Rust
         run: cargo fmt --all
