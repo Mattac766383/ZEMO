@@ -1022,8 +1022,11 @@ fn primitive_destination(primitive: &OperationPrimitiveManifest) -> &str {
     match primitive {
         OperationPrimitiveManifest::CreateDirectory {
             destination_relative_path,
-        }
-        | OperationPrimitiveManifest::SameVolumeMove {
+        } => destination_relative_path,
+        OperationPrimitiveManifest::RemoveDirectoryIfEmpty {
+            source_relative_path,
+        } => source_relative_path,
+        OperationPrimitiveManifest::SameVolumeMove {
             destination_relative_path,
             ..
         }
