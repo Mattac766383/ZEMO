@@ -8,6 +8,7 @@ on:
       - scripts/normalize_selected_folder_test_names.py
       - scripts/patch_selected_folder_followup.py
       - scripts/patch_selected_folder_keyboard_test.py
+      - scripts/patch_selected_folder_runtime_fix.py
       - .github/workflows/patch-user-selected-folder-flow.yml
 
 permissions:
@@ -42,6 +43,7 @@ jobs:
           python3 scripts/normalize_selected_folder_test_names.py
           python3 scripts/patch_selected_folder_followup.py
           python3 scripts/patch_selected_folder_keyboard_test.py
+          python3 scripts/patch_selected_folder_runtime_fix.py
 
       - name: Format Rust
         run: cargo fmt --all
@@ -64,6 +66,9 @@ jobs:
 
       - name: Organizer tests
         run: cargo test -p organizer --lib -- --nocapture
+
+      - name: Monitoring tests
+        run: cargo test -p application --lib monitoring -- --nocapture
 
       - name: Real selected-folder One-Click pipeline
         run: cargo test -p application --test one_click_real_user_pipeline -- --nocapture
