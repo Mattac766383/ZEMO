@@ -9,6 +9,7 @@ on:
       - scripts/patch_selected_folder_followup.py
       - scripts/patch_selected_folder_keyboard_test.py
       - scripts/patch_selected_folder_runtime_fix.py
+      - crates/application/tests/one_click_real_user_pipeline.rs
       - .github/workflows/patch-user-selected-folder-flow.yml
 
 permissions:
