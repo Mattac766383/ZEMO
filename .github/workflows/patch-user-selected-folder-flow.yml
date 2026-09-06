@@ -1,0 +1,91 @@
+name: Patch User-Selected Folder Flow
+
+on:
+  push:
+    branches: [fix/whole-user-folder-organization]
+    paths:
+      - scripts/patch_user_selected_folder_flow.py
+      - scripts/normalize_selected_folder_test_names.py
+      - scripts/patch_selected_folder_followup.py
+      - scripts/patch_selected_folder_keyboard_test.py
+      - scripts/patch_selected_folder_runtime_fix.py
+      - scripts/patch_selected_folder_execution_schema.py
+      - crates/application/tests/one_click_real_user_pipeline.rs
+      - migrations/0018_execution_empty_directory_cleanup.sql
+      - .github/workflows/patch-user-selected-folder-flow.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    runs-on: macos-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: fix/whole-user-folder-organization
+          fetch-depth: 0
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup Rust
+        run: |
+          rustup default stable
+          rustup component add rustfmt
+
+      - name: Apply selected-folder UX
+        run: |
+          python3 scripts/patch_user_selected_folder_flow.py
+          python3 scripts/normalize_selected_folder_test_names.py
+          python3 scripts/patch_selected_folder_followup.py
+          python3 scripts/patch_selected_folder_keyboard_test.py
+          python3 scripts/patch_selected_folder_runtime_fix.py
+          python3 scripts/patch_selected_folder_execution_schema.py
+
+      - name: Format Rust
+        run: cargo fmt --all
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Frontend tests
+        run: npm test
+
+      - name: Frontend production build
+        run: npm run build
+
+      - name: Compile core without desktop sidecar
+        run: |
+          cargo check -p platform-macos
+          cargo check -p catalog
+          cargo check -p organizer
+          cargo check -p persistence
+          cargo check -p application
+
+      - name: Organizer tests
+        run: cargo test -p organizer --lib -- --nocapture
+
+      - name: Monitoring tests
+        run: cargo test -p application --lib monitoring -- --nocapture
+
+      - name: Real selected-folder One-Click pipeline
+        run: cargo test -p application --test one_click_real_user_pipeline -- --nocapture
+
+      - name: Commit validated implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/desktop/src crates workers schemas migrations
+          if git diff --cached --quiet; then
+            echo "No generated source changes to commit."
+            exit 0
+          fi
+          git commit -m "Implement user-selected folder organization"
+          git push origin HEAD:fix/whole-user-folder-organization

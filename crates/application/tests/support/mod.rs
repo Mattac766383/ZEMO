@@ -288,6 +288,18 @@ impl ApprovedExecutorSession for SandboxApprovedExecutorSession {
                 },
                 OperationDirection::Rollback,
             ) => operations.remove_directory_if_empty(&self.root.join(destination_relative_path)),
+            (
+                OperationPrimitiveManifest::RemoveDirectoryIfEmpty {
+                    source_relative_path,
+                },
+                OperationDirection::Forward,
+            ) => operations.remove_directory_if_empty(&self.root.join(source_relative_path)),
+            (
+                OperationPrimitiveManifest::RemoveDirectoryIfEmpty {
+                    source_relative_path,
+                },
+                OperationDirection::Rollback,
+            ) => operations.create_directory_no_replace(&self.root.join(source_relative_path)),
             (primitive, OperationDirection::Forward) => {
                 let (source, destination, original, expected) = file_primitive(primitive)?;
                 match live_rename_request(
@@ -400,7 +412,8 @@ fn file_primitive(
             original_source_relative_path,
             expected_source,
         )),
-        OperationPrimitiveManifest::CreateDirectory { .. } => Err(
+        OperationPrimitiveManifest::CreateDirectory { .. }
+        | OperationPrimitiveManifest::RemoveDirectoryIfEmpty { .. } => Err(
             ApprovedExecutorError::Ambiguous("expected a file primitive".to_owned()),
         ),
     }

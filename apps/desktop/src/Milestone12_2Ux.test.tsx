@@ -107,7 +107,11 @@ vi.mock("./api", () => ({
     id: "workspace-1",
     name: "Inventaire local",
   }),
-  selectAndRegisterRoot: vi.fn(),
+  selectAndRegisterRoot: vi.fn().mockResolvedValue({
+    id: "root-selected",
+    displayLabel: "Dossier test",
+    selectedPath: "/Users/local/Dossier-test",
+  }),
   listUserContentLocations: vi.fn(),
   probeUserContentAccess: vi.fn(),
   authorizeUserContentFolder: vi.fn(),
@@ -205,7 +209,42 @@ vi.mock("./api", () => ({
     items: [],
   }),
   getLatestOrganizationProposal: vi.fn().mockRejectedValue(new Error("none")),
-  generateOrganizationProposal: vi.fn(),
+  generateOrganizationProposal: vi.fn().mockResolvedValue({
+    id: "proposal-selected",
+    revisionId: "revision-selected",
+    workspaceId: "workspace-1",
+    rootId: "root-selected",
+    sourceScanId: "scan-1",
+    revision: 1,
+    status: "READY_FOR_REVIEW",
+    engineVersion: "test",
+    policyVersion: "test",
+    createdAt: "2026-09-05T20:00:00Z",
+    updatedAt: "2026-09-05T20:00:00Z",
+    summary: {
+      filesAnalyzed: 0,
+      proposedMoves: 0,
+      proposedRenames: 0,
+      unchanged: 0,
+      needsReview: 0,
+      unresolved: 0,
+      conflicts: 0,
+      highConfidence: 0,
+      mediumConfidence: 0,
+      lowConfidence: 0,
+      duplicateNoAction: 0,
+      averageDepth: 0,
+      maximumDepth: 0,
+    },
+    change: {
+      destinationsChanged: 0,
+      filesAdded: 0,
+      conflictsResolved: 0,
+      movedToReview: 0,
+    },
+    nodes: [],
+    operations: [],
+  }),
   cancelOrganizationProposal: vi.fn(),
   subscribeOrganizationProposalProgress: vi.fn().mockResolvedValue(() => undefined),
   getOrganizationProposal: vi.fn(),
@@ -283,7 +322,7 @@ vi.mock("./api", () => ({
     typeof error === "string" ? error : "raw",
 }));
 
-describe("Milestone 12.2 zero-friction UX + whole computer", () => {
+describe("Milestone 12.2 zero-friction UX + user-selected folders", () => {
   afterEach(cleanup);
 
   beforeEach(() => {
@@ -324,31 +363,32 @@ describe("Milestone 12.2 zero-friction UX + whole computer", () => {
     );
   });
 
-  it("shows Ranger mon ordinateur and Choisir les dossiers on first run", async () => {
+  it("shows one explicit selected-folder action on first run", async () => {
     render(<App />);
     expect(
       await screen.findByRole("heading", {
-        name: "ZEMO range vos fichiers, pas vos applications.",
+        name: "Vous choisissez ce que ZEMO peut ranger.",
       }),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
+    expect(screen.getByRole("heading", { name: "Une sélection suffit." })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
+    expect(screen.getByRole("heading", { name: "Vous gardez le contrôle." })).toBeTruthy();
     expect(
       within(screen.getByRole("dialog")).getByRole("button", {
-        name: "Ranger mon ordinateur",
+        name: "Choisir un dossier à ranger",
       }),
     ).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: "Choisir les dossiers" }),
-    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Ranger mon ordinateur" })).toBeNull();
     expect(screen.queryByText(/embedding|Granite/i)).toBeNull();
   });
 
-  it("starts one-click organize with the default personal folders", async () => {
+  it("starts organization only from the folder chosen by the user", async () => {
+    const onSelect = vi.fn();
     const onStart = vi.fn();
     render(
       <OnboardingView
-        onSelectFolder={vi.fn()}
+        onSelectFolder={onSelect}
         onComplete={vi.fn()}
         onStartWholeComputer={onStart}
       />,
@@ -356,25 +396,24 @@ describe("Milestone 12.2 zero-friction UX + whole computer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
     fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
-    fireEvent.click(screen.getByRole("button", { name: "Ranger mon ordinateur" }));
-    await waitFor(() => {
-      expect(onStart).toHaveBeenCalledWith([]);
-    });
+    fireEvent.click(screen.getByRole("button", { name: "Choisir un dossier à ranger" }));
+    await waitFor(() => expect(onSelect).toHaveBeenCalledTimes(1));
+    expect(onStart).not.toHaveBeenCalled();
   });
 
-  it("runs whole computer with partial permission denial and still previews", async () => {
+  it("never discovers personal folders automatically in the primary flow", async () => {
     vi.mocked(api.generateOrganizationProposal).mockResolvedValue({
       id: "proposal-1",
       revisionId: "rev-1",
       workspaceId: "workspace-1",
-      rootId: "root-desktop",
+      rootId: "root-selected",
       sourceScanId: "scan-1",
       revision: 1,
       status: "READY_FOR_REVIEW",
       engineVersion: "1",
       policyVersion: "1",
-      createdAt: "2026-08-18T10:00:00Z",
-      updatedAt: "2026-08-18T10:00:00Z",
+      createdAt: "2026-09-05T20:00:00Z",
+      updatedAt: "2026-09-05T20:00:00Z",
       summary: {
         filesAnalyzed: 10,
         proposedMoves: 0,
@@ -390,42 +429,33 @@ describe("Milestone 12.2 zero-friction UX + whole computer", () => {
         averageDepth: 0,
         maximumDepth: 0,
       },
-      change: {
-        destinationsChanged: 0,
-        filesAdded: 0,
-        conflictsResolved: 0,
-        movedToReview: 0,
-      },
+      change: { destinationsChanged: 0, filesAdded: 0, conflictsResolved: 0, movedToReview: 0 },
       nodes: [],
       operations: [],
     });
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Continuer" }));
     fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
-    fireEvent.click(
-      within(screen.getByRole("dialog")).getByRole("button", {
-        name: "Ranger mon ordinateur",
-      }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Choisir un dossier à ranger" }));
 
     await waitFor(() => {
-      expect(api.registerUserContentRoot).toHaveBeenCalled();
-      expect(api.scanWorkspace).toHaveBeenCalled();
-      expect(api.generateOrganizationProposal).toHaveBeenCalled();
+      expect(api.selectAndRegisterRoot).toHaveBeenCalledWith("workspace-1");
+      expect(api.scanWorkspace).toHaveBeenCalledWith("workspace-1");
+      expect(api.analyzeContent).toHaveBeenCalledWith("scan-1");
+      expect(api.analyzeSemantics).toHaveBeenCalledWith("scan-1");
+      expect(api.generateOrganizationProposal).toHaveBeenCalledWith(
+        "workspace-1",
+        true,
+        "root-selected",
+        true,
+      );
     });
+    expect(api.listUserContentLocations).not.toHaveBeenCalled();
+    expect(api.probeUserContentAccess).not.toHaveBeenCalled();
+    expect(api.registerUserContentRoot).not.toHaveBeenCalled();
     expect(
-      await screen.findByRole("heading", {
-        name: /0 fichiers? à ranger/i,
-      }),
+      await screen.findByRole("heading", { name: /0 fichiers? à ranger/i }),
     ).toBeTruthy();
-    expect(api.prepareExecution).not.toHaveBeenCalled();
-    expect(api.registerUserContentRoot).not.toHaveBeenCalledWith(
-      "workspace-1",
-      "pictures",
-    );
-    expect(screen.getByText(/1 dossier nécessite votre autorisation/i)).toBeTruthy();
-    expect(screen.queryByText(/Aucun dossier n’a pu être analysé/i)).toBeNull();
-    expect(screen.queryByText(/EACCES|TCC|ACCESS_DENIED/i)).toBeNull();
   });
 
   it("keeps primary journey CTAs wired after onboarding completion", async () => {
@@ -456,7 +486,7 @@ describe("Milestone 12.2 zero-friction UX + whole computer", () => {
 
     render(<App />);
     expect(
-      await screen.findByRole("heading", { name: "Votre ordinateur est en bazar ?" }),
+      await screen.findByRole("heading", { name: "Que voulez-vous ranger ?" }),
     ).toBeTruthy();
 
     const nav = screen.getByRole("navigation", {
@@ -484,7 +514,7 @@ describe("Milestone 12.2 zero-friction UX + whole computer", () => {
   it("requests no permissions before the user chooses a scope", async () => {
     render(<App />);
     await screen.findByRole("heading", {
-      name: "ZEMO range vos fichiers, pas vos applications.",
+      name: "Vous choisissez ce que ZEMO peut ranger.",
     });
     expect(api.selectAndRegisterRoot).not.toHaveBeenCalled();
     expect(api.registerUserContentRoot).not.toHaveBeenCalled();

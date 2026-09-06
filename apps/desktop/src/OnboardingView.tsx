@@ -9,30 +9,28 @@ export type OnboardingViewProps = {
   selectBusy?: boolean;
   wholeComputerBusy?: boolean;
   onComplete: () => void;
-  onStartWholeComputer: (kinds: string[]) => void | Promise<void>;
+  onStartWholeComputer?: (kinds: string[]) => void | Promise<void>;
 };
 
 const STEPS: Array<{ title: string; body: string }> = [
   {
-    title: "ZEMO range vos fichiers, pas vos applications.",
-    body: "Le rangement concerne vos documents personnels. Les programmes restent en place.",
+    title: "Vous choisissez ce que ZEMO peut ranger.",
+    body: "ZEMO n’accède qu’au dossier que vous sélectionnez. Rien d’autre n’est parcouru.",
   },
   {
-    title: "Vous voyez toujours un aperçu avant le rangement.",
-    body: "Rien n’est déplacé tant que vous n’avez pas cliqué sur Appliquer le rangement.",
+    title: "Une sélection suffit.",
+    body: "ZEMO détecte automatiquement tous les fichiers et sous-dossiers de l’emplacement choisi.",
   },
   {
-    title: "Vous pouvez annuler après le rangement.",
-    body: "Si le résultat ne vous convient pas, un bouton Annuler remet vos fichiers comme avant.",
+    title: "Vous gardez le contrôle.",
+    body: "ZEMO montre un aperçu avant tout déplacement, puis vous pouvez annuler le rangement.",
   },
 ];
 
 export function OnboardingView({
   onSelectFolder,
   selectBusy = false,
-  wholeComputerBusy = false,
   onComplete,
-  onStartWholeComputer,
 }: OnboardingViewProps) {
   const [step, setStep] = useState<OnboardingStep>(0);
   const titleId = useId();
@@ -51,9 +49,11 @@ export function OnboardingView({
 
   const last = step === 2;
 
-  function completeOnboarding() {
+  function startSelectedFolderFlow() {
     recordBetaMetric("onboarding_completed", { success: true });
+    recordBetaMetric("organization_started");
     onComplete();
+    void onSelectFolder();
   }
 
   return (
@@ -93,30 +93,14 @@ export function OnboardingView({
                 Continuer
               </button>
             ) : (
-              <>
-                <button
-                  type="button"
-                  disabled={selectBusy || wholeComputerBusy}
-                  onClick={() => {
-                    completeOnboarding();
-                    void onSelectFolder();
-                  }}
-                >
-                  Choisir les dossiers
-                </button>
-                <button
-                  className="primary"
-                  type="button"
-                  disabled={wholeComputerBusy}
-                  onClick={() => {
-                    recordBetaMetric("onboarding_completed", { success: true });
-                    recordBetaMetric("organization_started");
-                    void onStartWholeComputer([]);
-                  }}
-                >
-                  {wholeComputerBusy ? "Analyse…" : "Ranger mon ordinateur"}
-                </button>
-              </>
+              <button
+                className="primary"
+                type="button"
+                disabled={selectBusy}
+                onClick={startSelectedFolderFlow}
+              >
+                {selectBusy ? "Ouverture…" : "Choisir un dossier à ranger"}
+              </button>
             )}
           </div>
         </section>

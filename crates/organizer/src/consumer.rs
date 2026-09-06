@@ -124,6 +124,17 @@ pub fn decide_consumer_organization(
     let path_context = source_relative_path.replace('\\', "/").to_lowercase();
     let classification_context = format!("{path_context} {name_lower}");
 
+    if is_project_manifest(&name_lower) && is_loose_file(source_relative_path) {
+        return ConsumerDecision {
+            category: ConsumerCategory::Documents,
+            destination: vec!["Développement".to_owned(), "Fichiers projet".to_owned()],
+            leave_in_place: false,
+            needs_review: false,
+            reason_code: "project_manifest",
+            explanation: "Fichier de projet classé dans Développement.",
+        };
+    }
+
     if is_program_or_system(source_relative_path, source_name, extension.as_deref()) {
         return leave_in_place(
             "program_protected",

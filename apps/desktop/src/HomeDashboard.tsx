@@ -148,9 +148,9 @@ export function resolvePrimaryAction(input: {
   organized?: boolean;
 }): PrimaryAction {
   if (input.organized) {
-    return { label: "Relancer le rangement", run: "ranger" };
+    return { label: "Ranger un autre dossier", run: "selectFolder" };
   }
-  return { label: "Ranger mon ordinateur", run: "ranger" };
+  return { label: "Choisir un dossier à ranger", run: "selectFolder" };
 }
 
 type HomeDashboardProps = {
@@ -210,7 +210,7 @@ export function HomeDashboard({
   if (organized) {
     return (
       <section className="home-dashboard home-dashboard--simple home-dashboard--minimal" aria-labelledby="home-title">
-        <h2 id="home-title">Votre ordinateur est rangé.</h2>
+        <h2 id="home-title">Votre dossier est rangé.</h2>
         <p className="home-promise">
           {organizedCount != null
             ? `${organizedCount.toLocaleString()} fichiers ont été organisés.`
@@ -222,7 +222,7 @@ export function HomeDashboard({
             className="primary home-primary-cta"
             onClick={startOrganization}
           >
-            Relancer le rangement
+            Ranger un autre dossier
           </button>
           {workspaceId ? (
             <button
@@ -240,12 +240,12 @@ export function HomeDashboard({
 
   return (
     <section className="home-dashboard home-dashboard--simple home-dashboard--minimal" aria-labelledby="home-title">
-      <h2 id="home-title">Votre ordinateur est en bazar ?</h2>
+      <h2 id="home-title">Que voulez-vous ranger ?</h2>
       <p className="home-promise">
-        ZEMO range vos fichiers personnels sans toucher à vos applications.
+        Vous choisissez le dossier. ZEMO ne touche à rien d’autre.
       </p>
       <p className="home-preview-promise">
-        Avant tout changement, ZEMO vous montre seulement les dossiers qu’il veut créer.
+        ZEMO analyse automatiquement tous les fichiers et sous-dossiers du dossier choisi, puis vous montre un aperçu avant tout changement.
       </p>
       <div className="home-main-actions">
         <button
@@ -253,7 +253,7 @@ export function HomeDashboard({
           className="primary home-primary-cta"
           onClick={startOrganization}
         >
-          Ranger mon ordinateur
+          Choisir un dossier à ranger
         </button>
         {workspaceId ? (
           <button

@@ -162,6 +162,18 @@ where
                 OperationDirection::Rollback,
             ) => self.remove_directory(&root, destination_relative_path),
             (
+                OperationPrimitiveManifest::RemoveDirectoryIfEmpty {
+                    source_relative_path,
+                },
+                OperationDirection::Forward,
+            ) => self.remove_directory(&root, source_relative_path),
+            (
+                OperationPrimitiveManifest::RemoveDirectoryIfEmpty {
+                    source_relative_path,
+                },
+                OperationDirection::Rollback,
+            ) => self.create_directory(&root, source_relative_path),
+            (
                 OperationPrimitiveManifest::SameVolumeMove {
                     source_relative_path,
                     destination_relative_path,
@@ -580,6 +592,7 @@ fn operation_requires_qualified_case_only_staging(operation: &ApprovedOperationM
             destination_relative_path,
         ),
         OperationPrimitiveManifest::CreateDirectory { .. }
+        | OperationPrimitiveManifest::RemoveDirectoryIfEmpty { .. }
         | OperationPrimitiveManifest::InternalStage { .. } => return false,
     };
     (source != destination && source.to_lowercase() == destination.to_lowercase())
@@ -618,6 +631,7 @@ fn qualified_case_only_stage_chain_valid(
             expected_source,
         ),
         OperationPrimitiveManifest::CreateDirectory { .. }
+        | OperationPrimitiveManifest::RemoveDirectoryIfEmpty { .. }
         | OperationPrimitiveManifest::InternalStage { .. } => return false,
     };
     let staging_components = source.split('/').collect::<Vec<_>>();

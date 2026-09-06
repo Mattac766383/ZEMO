@@ -1,0 +1,62 @@
+name: Patch Whole-User Folder Organization
+
+on:
+  push:
+    branches: [fix/whole-user-folder-organization]
+    paths:
+      - "scripts/patch_whole_user_folder_organization.py"
+      - ".github/workflows/patch-whole-user-folder-organization.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-check:
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: fix/whole-user-folder-organization
+          fetch-depth: 0
+
+      - name: Setup Rust
+        run: |
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Apply source patch
+        run: python3 scripts/patch_whole_user_folder_organization.py
+
+      - name: Format Rust
+        run: cargo fmt --all
+
+      - name: Commit patched source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            crates/organizer/src/consumer.rs \
+            crates/organizer/src/organization.rs \
+            crates/domain/src/execution.rs \
+            crates/persistence/src/execution.rs \
+            crates/ipc-contracts/src/executor_v2/model.rs \
+            workers/operation-executor/src/lib.rs \
+            crates/application/tests/support/mod.rs \
+            crates/application/src/execution.rs \
+            schemas/operation-executor-protocol-v2.schema.json \
+            crates/application/tests/one_click_real_user_pipeline.rs
+          git diff --cached --stat
+          git commit -m "Implement whole-user folder organization"
+          git push origin HEAD:fix/whole-user-folder-organization
+
+      - name: Compile workspace
+        run: cargo check --workspace
+
+      - name: Run organizer tests
+        run: cargo test -p organizer --lib
+
+      - name: Run real dirty-folder One-Click test
+        run: cargo test -p application --test one_click_real_user_pipeline -- --nocapture

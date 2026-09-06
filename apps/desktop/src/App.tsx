@@ -441,11 +441,11 @@ function App() {
 
   function handlePrimaryAction(action: PrimaryAction) {
     if (action.run === "selectFolder") {
-      void handleSelectFolder();
+      void handleOrganizeSelectedFolder();
       return;
     }
     if (action.run === "ranger") {
-      void handleWholeComputer([]);
+      void handleOrganizeSelectedFolder();
       return;
     }
     if (action.run === "startScan") {
@@ -463,7 +463,7 @@ function App() {
 
   async function handleSelectFolder() {
     clearError();
-        setBusy("select");
+    setBusy("select");
     try {
       let activeWorkspace = workspace;
       if (!activeWorkspace) {
@@ -495,6 +495,92 @@ function App() {
       reportError(reason);
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function handleOrganizeSelectedFolder() {
+    clearError();
+    setBusy("select");
+    setWholeComputerBusy(true);
+    setWholeComputerProgress(null);
+    setAccessSummary(null);
+    setAccessProbes([]);
+    setOneClickProposals([]);
+    setOneClickFilesAnalyzed(0);
+    try {
+      let activeWorkspace = workspace;
+      if (!activeWorkspace) {
+        activeWorkspace = await createWorkspace("ZEMO");
+        setWorkspace(activeWorkspace);
+      }
+
+      const selected = await selectAndRegisterRoot(activeWorkspace.id);
+      setRoot(selected);
+      setOrganizationRootId(selected.id);
+      setScan(null);
+      setProgress(null);
+      setAnalysis(null);
+      setAnalysisProgress(null);
+      setSemanticAnalysis(null);
+      setSemanticProgress(null);
+      setContentResults([]);
+      setSelectedContent(null);
+      setDetailFileId(null);
+      setDetailIdentityId(null);
+      setFiles([]);
+      setDuplicates([]);
+      setIssues([]);
+      setOneClickFolders([
+        {
+          kind: selected.id,
+          label: selected.displayLabel || "Dossier sélectionné",
+          phase: "scanning",
+        },
+      ]);
+      markOnboardingCompleted();
+      setShowOnboarding(false);
+      setView("oneclick-scan");
+
+      setWholeComputerProgress("Analyse du dossier choisi…");
+      const scanResult = await scanWorkspace(activeWorkspace.id);
+      setScan(scanResult);
+      setOneClickFilesAnalyzed(scanResult.filesIndexed);
+
+      setWholeComputerProgress("Lecture du contenu…");
+      const contentAnalysis = await analyzeContent(scanResult.id);
+      setAnalysis(contentAnalysis);
+
+      setWholeComputerProgress("Compréhension des fichiers…");
+      const semantic = await analyzeSemantics(scanResult.id);
+      setSemanticAnalysis(semantic);
+
+      setWholeComputerProgress("Préparation du rangement…");
+      const proposal = await generateOrganizationProposal(
+        activeWorkspace.id,
+        true,
+        selected.id,
+        true,
+      );
+      if (!proposal) {
+        throw new Error("Aucune proposition de rangement n’a été générée.");
+      }
+      setOneClickProposals([proposal]);
+      setOneClickFolders([
+        {
+          kind: selected.id,
+          label: selected.displayLabel || "Dossier sélectionné",
+          phase: "ready",
+          filesIndexed: scanResult.filesIndexed,
+        },
+      ]);
+      setView("oneclick-preview");
+    } catch (reason) {
+      reportError(reason, "organization");
+      setView("home");
+    } finally {
+      setBusy(null);
+      setWholeComputerBusy(false);
+      setWholeComputerProgress(null);
     }
   }
 
@@ -992,7 +1078,7 @@ function App() {
           selectedPath={root?.selectedPath ?? null}
           selectBusy={busy === "select"}
           wholeComputerBusy={wholeComputerBusy}
-          onSelectFolder={handleSelectFolder}
+          onSelectFolder={handleOrganizeSelectedFolder}
           onStartWholeComputer={handleWholeComputer}
           onComplete={() => {
             markOnboardingCompleted();

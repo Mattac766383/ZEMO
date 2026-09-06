@@ -257,6 +257,22 @@
           }
         },
         {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "source_relative_path"
+          ],
+          "properties": {
+            "kind": {
+              "const": "remove_directory_if_empty"
+            },
+            "source_relative_path": {
+              "$ref": "#/$defs/relativePath"
+            }
+          }
+        },
+        {
           "allOf": [
             {
               "$ref": "#/$defs/filePrimitiveProperties"
