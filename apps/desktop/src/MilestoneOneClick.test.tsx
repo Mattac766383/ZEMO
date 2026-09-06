@@ -155,7 +155,11 @@ vi.mock("./api", () => ({
     id: "workspace-1",
     name: "ZEMO",
   }),
-  selectAndRegisterRoot: vi.fn(),
+  selectAndRegisterRoot: vi.fn().mockResolvedValue({
+    id: "root-selected",
+    displayLabel: "Dossier test",
+    selectedPath: "/Users/local/Dossier-test",
+  }),
   listUserContentLocations: vi.fn(),
   probeUserContentAccess: vi.fn(),
   authorizeUserContentFolder: vi.fn(),
@@ -242,7 +246,42 @@ vi.mock("./api", () => ({
     items: [],
   }),
   getLatestOrganizationProposal: vi.fn().mockResolvedValue(null),
-  generateOrganizationProposal: vi.fn(),
+  generateOrganizationProposal: vi.fn().mockResolvedValue({
+    id: "proposal-selected",
+    revisionId: "revision-selected",
+    workspaceId: "workspace-1",
+    rootId: "root-selected",
+    sourceScanId: "scan-1",
+    revision: 1,
+    status: "READY_FOR_REVIEW",
+    engineVersion: "test",
+    policyVersion: "test",
+    createdAt: "2026-09-05T20:00:00Z",
+    updatedAt: "2026-09-05T20:00:00Z",
+    summary: {
+      filesAnalyzed: 0,
+      proposedMoves: 0,
+      proposedRenames: 0,
+      unchanged: 0,
+      needsReview: 0,
+      unresolved: 0,
+      conflicts: 0,
+      highConfidence: 0,
+      mediumConfidence: 0,
+      lowConfidence: 0,
+      duplicateNoAction: 0,
+      averageDepth: 0,
+      maximumDepth: 0,
+    },
+    change: {
+      destinationsChanged: 0,
+      filesAdded: 0,
+      conflictsResolved: 0,
+      movedToReview: 0,
+    },
+    nodes: [],
+    operations: [],
+  }),
   cancelOrganizationProposal: vi.fn(),
   subscribeOrganizationProposalProgress: vi.fn().mockResolvedValue(() => undefined),
   getOrganizationProposal: vi.fn(),
@@ -419,77 +458,59 @@ describe("ZEMO one-click organize", () => {
     expect(summary.counts["À vérifier"]).toBe(1);
   });
 
-  it("shows a three-step first launch then Ranger mon ordinateur", async () => {
+  it("shows a three-step first launch ending with user-selected folder access", async () => {
     render(<OnboardingView onSelectFolder={vi.fn()} onComplete={vi.fn()} onStartWholeComputer={vi.fn()} />);
-    expect(
-      screen.getByRole("heading", {
-        name: "ZEMO range vos fichiers, pas vos applications.",
-      }),
-    ).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Vous choisissez ce que ZEMO peut ranger." })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
-    expect(
-      screen.getByRole("heading", {
-        name: "Vous voyez toujours un aperçu avant le rangement.",
-      }),
-    ).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Une sélection suffit." })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
-    expect(
-      screen.getByRole("heading", {
-        name: "Vous pouvez annuler après le rangement.",
-      }),
-    ).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Ranger mon ordinateur" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Choisir les dossiers" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Vous gardez le contrôle." })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Choisir un dossier à ranger" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Ranger mon ordinateur" })).toBeNull();
   });
 
-  it("walks home → scan → preview → apply → done → undo", async () => {
+  it("walks selected folder → scan → preview → apply → done → undo", async () => {
     markOnboardingCompleted();
+    vi.mocked(api.selectAndRegisterRoot).mockResolvedValue({
+      id: "root-desktop",
+      displayLabel: "Bureau",
+      selectedPath: "/Users/local/Desktop",
+    });
     render(<App />);
-    expect(
-      await screen.findByRole("heading", { name: "Votre ordinateur est en bazar ?" }),
-    ).toBeTruthy();
-    expect(
-      screen.getByText(
-        /range vos fichiers personnels sans toucher à vos applications/i,
-      ),
-    ).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Ranger mon ordinateur" }));
+    expect(await screen.findByRole("heading", { name: "Que voulez-vous ranger ?" })).toBeTruthy();
+    expect(screen.getByText(/vous choisissez le dossier/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Choisir un dossier à ranger" }));
 
     await waitFor(() => {
-      expect(api.probeUserContentAccess).toHaveBeenCalled();
-      expect(api.registerUserContentRoot).toHaveBeenCalled();
+      expect(api.selectAndRegisterRoot).toHaveBeenCalledWith("workspace-1");
       expect(api.scanWorkspace).toHaveBeenCalled();
+      expect(api.analyzeContent).toHaveBeenCalledWith("scan-1");
+      expect(api.analyzeSemantics).toHaveBeenCalledWith("scan-1");
       expect(api.generateOrganizationProposal).toHaveBeenCalled();
     });
+    expect(api.probeUserContentAccess).not.toHaveBeenCalled();
+    expect(api.registerUserContentRoot).not.toHaveBeenCalled();
     const generateArgs = vi.mocked(api.generateOrganizationProposal).mock.calls[0];
-    expect(generateArgs[3]).toBe(true);
+    expect(generateArgs).toEqual(["workspace-1", true, "root-desktop", true]);
 
-    expect(
-      await screen.findByRole("heading", {
-        name: /7 fichiers à ranger/i,
-      }),
-    ).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: /7 fichiers à ranger/i })).toBeTruthy();
     expect(screen.getByText("Documents")).toBeTruthy();
     expect(screen.getByText("Installateurs")).toBeTruthy();
     expect(screen.queryByText(/confidence|moteur local|journal sequence/i)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Appliquer le rangement" }));
-    expect(
-      await screen.findByRole("heading", { name: "Rangement terminé." }),
-    ).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Rangement terminé." })).toBeTruthy();
     expect(screen.getByText(/7 fichiers rangés/i)).toBeTruthy();
     expect(screen.getByText(/0 fichier supprimé/i)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Annuler le rangement" }));
-    await waitFor(() => {
-      expect(api.rollbackExecution).toHaveBeenCalledWith("exec-1");
-    });
+    await waitFor(() => expect(api.rollbackExecution).toHaveBeenCalledWith("exec-1"));
   });
 
   it("keeps advanced architecture out of the primary nav", async () => {
     markOnboardingCompleted();
     render(<App />);
-    await screen.findByRole("heading", { name: "Votre ordinateur est en bazar ?" });
+    await screen.findByRole("heading", { name: "Que voulez-vous ranger ?" });
     const nav = screen.getByRole("navigation", { name: "Navigation principale" });
     expect(within(nav).getByRole("button", { name: "Accueil" })).toBeTruthy();
     expect(within(nav).getByRole("button", { name: "Recherche" })).toBeTruthy();
@@ -499,82 +520,44 @@ describe("ZEMO one-click organize", () => {
     expect(within(nav).getByRole("button", { name: "Historique" })).toBeTruthy();
   });
 
-  it("asks for in-product authorization instead of dumping the user home", async () => {
+  it("does not probe Desktop or Documents before the user chooses a folder", async () => {
     markOnboardingCompleted();
-    vi.mocked(api.probeUserContentAccess).mockResolvedValue([
-      toProbe(locations[0], "authorization_required"),
-    ]);
     render(<App />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Ranger mon ordinateur" }),
-    );
-    expect(
-      await screen.findByRole("heading", {
-        name: "ZEMO a besoin de votre autorisation pour accéder à ce dossier.",
-      }),
-    ).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Autoriser l’accès" })).toBeTruthy();
-    expect(screen.getByText("Bureau — Autorisation nécessaire")).toBeTruthy();
-    expect(screen.queryByText(/Aucun dossier n’a pu être analysé/i)).toBeNull();
-    expect(screen.queryByText(/EACCES|TCC|System Settings|Full Disk Access/i)).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Choisir un dossier à ranger" }));
+    await waitFor(() => expect(api.selectAndRegisterRoot).toHaveBeenCalled());
+    expect(api.listUserContentLocations).not.toHaveBeenCalled();
+    expect(api.probeUserContentAccess).not.toHaveBeenCalled();
     expect(api.registerUserContentRoot).not.toHaveBeenCalled();
+  });
+
+  it("stops safely if the native folder selection is refused", async () => {
+    markOnboardingCompleted();
+    vi.mocked(api.selectAndRegisterRoot).mockRejectedValueOnce(new Error("selection refused"));
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Choisir un dossier à ranger" }));
+    await waitFor(() => expect(api.selectAndRegisterRoot).toHaveBeenCalled());
     expect(api.scanWorkspace).not.toHaveBeenCalled();
+    expect(api.generateOrganizationProposal).not.toHaveBeenCalled();
   });
 
-  it("keeps Autoriser visible when packaged inspect fails as unexpected_error", async () => {
+  it("scans only the selected root and generates a consumer proposal for it", async () => {
     markOnboardingCompleted();
-    vi.mocked(api.probeUserContentAccess).mockResolvedValue([
-      {
-        ...toProbe(locations[0], "unexpected_error"),
-        humanStatus: "Bureau — Impossible à analyser",
-        failedStage: "inspect_volume",
-        errorKind: "Other",
-        technicalDetails: "Folder: desktop\
-Stage: inspect_volume\
-AccessState: unexpected_error",
-      },
-    ]);
+    vi.mocked(api.selectAndRegisterRoot).mockResolvedValue({
+      id: "root-selected-only",
+      displayLabel: "Entreprise",
+      selectedPath: "/Users/local/Entreprise",
+    });
     render(<App />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Ranger mon ordinateur" }),
-    );
-    expect(
-      await screen.findByRole("heading", {
-        name: "ZEMO a besoin de votre autorisation pour accéder à ce dossier.",
-      }),
-    ).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Autoriser l’accès" })).toBeTruthy();
-    expect(screen.queryByText(/Aucun dossier n’a pu être analysé/i)).toBeNull();
-    fireEvent.click(screen.getByText("Diagnostic"));
-    expect(screen.getByText(/inspect_volume/)).toBeTruthy();
-  });
-
-  it("scans accessible folders when another folder still needs authorization", async () => {
-    markOnboardingCompleted();
-    vi.mocked(api.probeUserContentAccess).mockResolvedValue([
-      toProbe(locations[0], "accessible"),
-      {
-        ...toProbe(locations[0], "authorization_required"),
-        kind: "documents",
-        logicalName: "documents",
-        displayLabel: "Documents",
-        humanStatus: "Documents — Autorisation nécessaire",
-      },
-    ]);
-    render(<App />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Ranger mon ordinateur" }),
-    );
-    expect(
-      await screen.findByRole("heading", { name: /7 fichiers à ranger/i }),
-    ).toBeTruthy();
-    expect(screen.getByText(/1 dossier nécessite votre autorisation/i)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Autoriser" })).toBeTruthy();
-    expect(api.registerUserContentRoot).toHaveBeenCalledWith("workspace-1", "desktop");
-    expect(api.registerUserContentRoot).not.toHaveBeenCalledWith(
-      "workspace-1",
-      "documents",
-    );
-    expect(screen.queryByText(/Aucun dossier n’a pu être analysé/i)).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Choisir un dossier à ranger" }));
+    await waitFor(() => {
+      expect(api.generateOrganizationProposal).toHaveBeenCalledWith(
+        "workspace-1",
+        true,
+        "root-selected-only",
+        true,
+      );
+    });
+    expect(api.registerUserContentRoot).not.toHaveBeenCalled();
+    expect(api.probeUserContentAccess).not.toHaveBeenCalled();
   });
 });

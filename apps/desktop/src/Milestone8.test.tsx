@@ -25,7 +25,11 @@ vi.mock("./api", () => ({
   prepareExecution: vi.fn(),
   recoverExecution: vi.fn(),
   rollbackExecution: vi.fn(),
-  selectAndRegisterRoot: vi.fn(),
+  selectAndRegisterRoot: vi.fn().mockResolvedValue({
+    id: "root-selected",
+    displayLabel: "Dossier test",
+    selectedPath: "/Users/local/Dossier-test",
+  }),
   setOrganizationProposalStatus: vi.fn(),
   startExecution: vi.fn(),
   subscribeExecutionProgress: vi.fn((handler) => {

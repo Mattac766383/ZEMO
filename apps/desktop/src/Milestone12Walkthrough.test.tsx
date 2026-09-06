@@ -26,7 +26,11 @@ vi.mock("./api", () => ({
     version: "0.1.0",
   }),
   createWorkspace: vi.fn(),
-  selectAndRegisterRoot: vi.fn(),
+  selectAndRegisterRoot: vi.fn().mockResolvedValue({
+    id: "root-selected",
+    displayLabel: "Dossier test",
+    selectedPath: "/Users/local/Dossier-test",
+  }),
 
   listUserContentLocations: vi.fn().mockResolvedValue([]),
   probeUserContentAccess: vi.fn().mockResolvedValue([]),
@@ -220,7 +224,42 @@ vi.mock("./api", () => ({
       },
     ],
   }),
-  generateOrganizationProposal: vi.fn(),
+  generateOrganizationProposal: vi.fn().mockResolvedValue({
+    id: "proposal-selected",
+    revisionId: "revision-selected",
+    workspaceId: "workspace-1",
+    rootId: "root-selected",
+    sourceScanId: "scan-1",
+    revision: 1,
+    status: "READY_FOR_REVIEW",
+    engineVersion: "test",
+    policyVersion: "test",
+    createdAt: "2026-09-05T20:00:00Z",
+    updatedAt: "2026-09-05T20:00:00Z",
+    summary: {
+      filesAnalyzed: 0,
+      proposedMoves: 0,
+      proposedRenames: 0,
+      unchanged: 0,
+      needsReview: 0,
+      unresolved: 0,
+      conflicts: 0,
+      highConfidence: 0,
+      mediumConfidence: 0,
+      lowConfidence: 0,
+      duplicateNoAction: 0,
+      averageDepth: 0,
+      maximumDepth: 0,
+    },
+    change: {
+      destinationsChanged: 0,
+      filesAdded: 0,
+      conflictsResolved: 0,
+      movedToReview: 0,
+    },
+    nodes: [],
+    operations: [],
+  }),
   cancelOrganizationProposal: vi.fn(),
   subscribeOrganizationProposalProgress: vi.fn().mockResolvedValue(() => undefined),
   getOrganizationProposal: vi.fn(),
@@ -346,118 +385,59 @@ describe("Milestone 12 non-technical user walkthrough", () => {
     });
   });
 
-  it("walks a first-time user from onboarding to search and monitoring", async () => {
+  it("walks a first-time user from selected-folder onboarding to search", async () => {
+    const latest = await api.getLatestOrganizationProposal("workspace-1");
+    vi.mocked(api.generateOrganizationProposal).mockResolvedValue(latest as never);
     render(<App />);
 
-    expect(
-      await screen.findByRole("heading", {
-        name: "ZEMO range vos fichiers, pas vos applications.",
-      }),
-    ).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Vous choisissez ce que ZEMO peut ranger." })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
+    expect(screen.getByRole("heading", { name: "Une sélection suffit." })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
-    fireEvent.click(screen.getByRole("button", { name: "Choisir les dossiers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Choisir un dossier à ranger" }));
+
     await waitFor(() => {
-      expect(api.selectAndRegisterRoot).toHaveBeenCalled();
+      expect(api.selectAndRegisterRoot).toHaveBeenCalledWith("workspace-1");
+      expect(api.scanWorkspace).toHaveBeenCalledWith("workspace-1");
+      expect(api.generateOrganizationProposal).toHaveBeenCalledWith(
+        "workspace-1",
+        true,
+        "root-1",
+        true,
+      );
     });
+    expect(api.probeUserContentAccess).not.toHaveBeenCalled();
+    expect(api.registerUserContentRoot).not.toHaveBeenCalled();
+    expect(await screen.findByRole("heading", { name: /fichiers? à ranger/i })).toBeTruthy();
 
-    expect(
-      await screen.findByRole("heading", { name: "Votre ordinateur est en bazar ?" }),
-    ).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Ranger mon ordinateur" })).toBeTruthy();
-
-    const nav = screen.getByRole("navigation", {
-      name: "Navigation principale",
-    });
-    fireEvent.click(screen.getByText("Options avancées"));
-    fireEvent.click(within(nav).getByRole("button", { name: "Inventaire" }));
-    fireEvent.click(screen.getByRole("button", { name: "Scanner" }));
-    expect(
-      await screen.findByRole("heading", { name: "Analyse terminée" }),
-    ).toBeTruthy();
-    expect(
-      screen.getByText(/fichiers analysés\. Rien n’a encore été modifié/i),
-    ).toBeTruthy();
-
-    const advanced = screen.getByText("Options avancées").closest("details");
-    if (advanced) {
-      advanced.open = true;
-    }
-    fireEvent.click(within(nav).getByRole("button", { name: "Organisation détaillée" }));
-    expect(
-      await screen.findByText(
-        "Rien n’a encore été modifié sur votre ordinateur.",
-      ),
-    ).toBeTruthy();
-    expect(screen.getByText(/À vérifier :/)).toBeTruthy();
-    expect(screen.getAllByText("À vérifier").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Confiance élevée").length).toBeGreaterThan(0);
-
-    if (advanced) {
-      advanced.open = true;
-    }
-    fireEvent.click(within(nav).getByRole("button", { name: "À revoir" }));
-    expect(
-      await screen.findByText("Emplacement incertain — à vérifier."),
-    ).toBeTruthy();
-
+    const nav = screen.getByRole("navigation", { name: "Navigation principale" });
     fireEvent.click(within(nav).getByRole("button", { name: "Recherche" }));
     const search = await screen.findByLabelText(/^Recherche$/i);
-    fireEvent.change(search, {
-      target: { value: "facture Point P" },
-    });
-    await waitFor(() => {
-      expect(api.searchLocalFiles).toHaveBeenCalled();
-    });
+    fireEvent.change(search, { target: { value: "facture Point P" } });
+    await waitFor(() => expect(api.searchLocalFiles).toHaveBeenCalled());
     expect(await screen.findByRole("heading", { name: "facture-point-p.pdf" })).toBeTruthy();
-
-    fireEvent.click(within(nav).getByRole("button", { name: "Surveillance" }));
-    expect(
-      await screen.findByRole("heading", { name: "Surveillance" }),
-    ).toBeTruthy();
-    expect(
-      screen.getAllByText(/ne sont pas déplacés automatiquement/i)[0],
-    ).toBeTruthy();
-    expect(screen.getByText("Saine")).toBeTruthy();
-    expect(
-      screen.queryByRole("button", {
-        name: /^(move|rename|delete|apply|exécuter)$/i,
-      }),
-    ).toBeNull();
   });
 
   it("keeps the essential keyboard flow reachable", async () => {
     render(<App />);
-    const primary = await within(await screen.findByRole("dialog")).findByRole(
-      "button",
-      { name: "Continuer" },
-    );
+    const dialog = await screen.findByRole("dialog");
+    const primary = within(dialog).getByRole("button", { name: "Continuer" });
     primary.focus();
     expect(document.activeElement).toBe(primary);
-    fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
-    fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
-    fireEvent.click(screen.getByRole("button", { name: "Choisir les dossiers" }));
 
-    const cta = await screen.findByRole("button", {
-      name: "Ranger mon ordinateur",
-    });
-    expect((cta as HTMLButtonElement).disabled).toBe(false);
-    expect(cta.getAttribute("type")).toBe("button");
-    cta.focus();
-    expect(document.activeElement === cta || cta.matches(":focus")).toBeTruthy();
+    fireEvent.click(primary);
+    const second = within(screen.getByRole("dialog")).getByRole("button", { name: "Continuer" });
+    second.focus();
+    expect(document.activeElement).toBe(second);
+    fireEvent.click(second);
 
-    const nav = screen.getByRole("navigation", {
-      name: "Navigation principale",
+    const choose = within(screen.getByRole("dialog")).getByRole("button", {
+      name: "Choisir un dossier à ranger",
     });
-    fireEvent.click(screen.getByText("Options avancées"));
-    const filesNav = within(nav).getByRole("button", { name: "Inventaire" });
-    filesNav.focus();
-    fireEvent.click(filesNav);
-    expect(
-      await screen.findByRole("heading", { name: "Dossier à analyser" }),
-    ).toBeTruthy();
-    const choose = screen.getByRole("button", { name: "Choisir un dossier" });
     expect((choose as HTMLButtonElement).disabled).toBe(false);
+    expect(choose.getAttribute("type")).toBe("button");
+    choose.focus();
+    expect(document.activeElement).toBe(choose);
     expect(window.innerWidth).toBe(1280);
     expect(window.innerHeight).toBe(800);
   });

@@ -32,7 +32,11 @@ vi.mock("./api", async () => {
     listUserContentLocations: vi.fn(),
     probeUserContentAccess: vi.fn(),
     authorizeUserContentFolder: vi.fn(),
-    selectAndRegisterRoot: vi.fn(),
+    selectAndRegisterRoot: vi.fn().mockResolvedValue({
+    id: "root-selected",
+    displayLabel: "Dossier test",
+    selectedPath: "/Users/local/Dossier-test",
+  }),
     registerUserContentRoot: vi.fn(),
     scanWorkspace: vi.fn(),
     prepareExecution: vi.fn(),
@@ -250,7 +254,7 @@ describe("Milestone 12.3 radical simplification + error recovery", () => {
     expect(shouldShowGlobalBanner(recovery)).toBe(true);
   });
 
-  it("uses Ranger mon ordinateur as the primary CTA", () => {
+  it("uses Choisir un dossier à ranger as the primary CTA", () => {
     expect(
       resolvePrimaryAction({
         root: null,
@@ -258,7 +262,7 @@ describe("Milestone 12.3 radical simplification + error recovery", () => {
         dashboard: null,
         contentNeedsReview: null,
       }).label,
-    ).toBe("Ranger mon ordinateur");
+    ).toBe("Choisir un dossier à ranger");
 
     expect(
       resolvePrimaryAction({
@@ -283,7 +287,7 @@ describe("Milestone 12.3 radical simplification + error recovery", () => {
         dashboard: null,
         contentNeedsReview: null,
       }).label,
-    ).toBe("Ranger mon ordinateur");
+    ).toBe("Choisir un dossier à ranger");
   });
 
   it("shows a user-level Apply path without raw Rust preflight wording", async () => {
@@ -364,13 +368,13 @@ describe("Milestone 12.3 radical simplification + error recovery", () => {
     render(<App />);
     expect(
       await screen.findByRole("heading", {
-        name: "Votre ordinateur est en bazar ?",
+        name: "Que voulez-vous ranger ?",
       }),
     ).toBeTruthy();
     expect(screen.getByText("ZEMO")).toBeTruthy();
     expect(screen.queryByText(/Working Name/i)).toBeNull();
     expect(screen.queryByText(/Milestone/i)).toBeNull();
     expect(screen.queryByText(/embedding|ANN|ONNX|IPC/i)).toBeNull();
-    expect(screen.getByRole("button", { name: "Ranger mon ordinateur" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Choisir un dossier à ranger" })).toBeTruthy();
   });
 });

@@ -22,7 +22,11 @@ vi.mock("./api", () => ({
     version: "0.1.0",
   }),
   createWorkspace: vi.fn(),
-  selectAndRegisterRoot: vi.fn(),
+  selectAndRegisterRoot: vi.fn().mockResolvedValue({
+    id: "root-selected",
+    displayLabel: "Dossier test",
+    selectedPath: "/Users/local/Dossier-test",
+  }),
 
   listUserContentLocations: vi.fn().mockResolvedValue([]),
   probeUserContentAccess: vi.fn().mockResolvedValue([]),
@@ -136,7 +140,42 @@ vi.mock("./api", () => ({
   cancelIdentityResolution: vi.fn(),
   decideIdentityCandidate: vi.fn(),
   resolveIdentities: vi.fn(),
-  generateOrganizationProposal: vi.fn(),
+  generateOrganizationProposal: vi.fn().mockResolvedValue({
+    id: "proposal-selected",
+    revisionId: "revision-selected",
+    workspaceId: "workspace-1",
+    rootId: "root-selected",
+    sourceScanId: "scan-1",
+    revision: 1,
+    status: "READY_FOR_REVIEW",
+    engineVersion: "test",
+    policyVersion: "test",
+    createdAt: "2026-09-05T20:00:00Z",
+    updatedAt: "2026-09-05T20:00:00Z",
+    summary: {
+      filesAnalyzed: 0,
+      proposedMoves: 0,
+      proposedRenames: 0,
+      unchanged: 0,
+      needsReview: 0,
+      unresolved: 0,
+      conflicts: 0,
+      highConfidence: 0,
+      mediumConfidence: 0,
+      lowConfidence: 0,
+      duplicateNoAction: 0,
+      averageDepth: 0,
+      maximumDepth: 0,
+    },
+    change: {
+      destinationsChanged: 0,
+      filesAdded: 0,
+      conflictsResolved: 0,
+      movedToReview: 0,
+    },
+    nodes: [],
+    operations: [],
+  }),
   cancelOrganizationProposal: vi.fn(),
   subscribeOrganizationProposalProgress: vi.fn().mockResolvedValue(() => undefined),
   getOrganizationProposal: vi.fn(),
@@ -187,9 +226,9 @@ function openAdvancedNav() {
 
 async function waitForRestoredHome() {
   expect(
-    await screen.findByRole("heading", { name: "Votre ordinateur est en bazar ?" }),
+    await screen.findByRole("heading", { name: "Que voulez-vous ranger ?" }),
   ).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Ranger mon ordinateur" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Choisir un dossier à ranger" })).toBeTruthy();
   await waitFor(() => {
     expect(
       (screen.getByRole("button", { name: "Surveillance" }) as HTMLButtonElement)
@@ -297,16 +336,16 @@ describe("safe scanner desktop workflow", () => {
 
     expect(await screen.findByText("ZEMO")).toBeTruthy();
     expect(
-      await screen.findByRole("heading", { name: "Votre ordinateur est en bazar ?" }),
+      await screen.findByRole("heading", { name: "Que voulez-vous ranger ?" }),
     ).toBeTruthy();
     expect(
       screen.getByText(
-        /range vos fichiers personnels sans toucher à vos applications/i,
+        /choisissez le dossier. ZEMO ne touche à rien d’autre/i,
       ),
     ).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Ranger mon ordinateur" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Choisir un dossier à ranger" })).toBeTruthy();
     expect(
-      screen.queryByRole("button", { name: "Choisir les dossiers" }),
+      screen.queryByRole("button", { name: "Ranger mon ordinateur" }),
     ).toBeNull();
     expect(
       screen.getByText(/Aucun fichier source n’est modifié/i),

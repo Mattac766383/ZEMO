@@ -23,7 +23,11 @@ vi.mock("./api", () => ({
     version: "0.1.0",
   }),
   createWorkspace: vi.fn(),
-  selectAndRegisterRoot: vi.fn(),
+  selectAndRegisterRoot: vi.fn().mockResolvedValue({
+    id: "root-selected",
+    displayLabel: "Dossier test",
+    selectedPath: "/Users/local/Dossier-test",
+  }),
   listUserContentLocations: vi.fn().mockResolvedValue([
     {
       kind: "documents",
@@ -118,7 +122,42 @@ vi.mock("./api", () => ({
     items: [],
   }),
   getLatestOrganizationProposal: vi.fn().mockRejectedValue(new Error("none")),
-  generateOrganizationProposal: vi.fn(),
+  generateOrganizationProposal: vi.fn().mockResolvedValue({
+    id: "proposal-selected",
+    revisionId: "revision-selected",
+    workspaceId: "workspace-1",
+    rootId: "root-selected",
+    sourceScanId: "scan-1",
+    revision: 1,
+    status: "READY_FOR_REVIEW",
+    engineVersion: "test",
+    policyVersion: "test",
+    createdAt: "2026-09-05T20:00:00Z",
+    updatedAt: "2026-09-05T20:00:00Z",
+    summary: {
+      filesAnalyzed: 0,
+      proposedMoves: 0,
+      proposedRenames: 0,
+      unchanged: 0,
+      needsReview: 0,
+      unresolved: 0,
+      conflicts: 0,
+      highConfidence: 0,
+      mediumConfidence: 0,
+      lowConfidence: 0,
+      duplicateNoAction: 0,
+      averageDepth: 0,
+      maximumDepth: 0,
+    },
+    change: {
+      destinationsChanged: 0,
+      filesAdded: 0,
+      conflictsResolved: 0,
+      movedToReview: 0,
+    },
+    nodes: [],
+    operations: [],
+  }),
   cancelOrganizationProposal: vi.fn(),
   subscribeOrganizationProposalProgress: vi.fn().mockResolvedValue(() => undefined),
   getOrganizationProposal: vi.fn(),
@@ -220,7 +259,7 @@ describe("Milestone 12 first-run onboarding", () => {
 
     expect(
       await screen.findByRole("heading", {
-        name: "ZEMO range vos fichiers, pas vos applications.",
+        name: "Vous choisissez ce que ZEMO peut ranger.",
       }),
     ).toBeTruthy();
     expect(screen.getByRole("dialog")).toBeTruthy();
@@ -228,38 +267,35 @@ describe("Milestone 12 first-run onboarding", () => {
     fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
     expect(
       within(screen.getByRole("dialog")).getByRole("button", {
-        name: "Ranger mon ordinateur",
+        name: "Choisir un dossier à ranger",
       }),
-    ).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: "Choisir les dossiers" }),
     ).toBeTruthy();
   });
 
   it("explains preview and undo before organizing", async () => {
     render(<App />);
     await screen.findByRole("heading", {
-      name: "ZEMO range vos fichiers, pas vos applications.",
+      name: "Vous choisissez ce que ZEMO peut ranger.",
     });
     fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
     expect(
       screen.getByRole("heading", {
-        name: "Vous voyez toujours un aperçu avant le rangement.",
+        name: "Une sélection suffit.",
       }),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
     expect(
       screen.getByRole("heading", {
-        name: "Vous pouvez annuler après le rangement.",
+        name: "Vous gardez le contrôle.",
       }),
     ).toBeTruthy();
   });
 
-  it("reuses folder selection from Choisir les dossiers", async () => {
+  it("reuses folder selection from Choisir un dossier à ranger", async () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Continuer" }));
     fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
-    fireEvent.click(screen.getByRole("button", { name: "Choisir les dossiers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Choisir un dossier à ranger" }));
 
     await waitFor(() => {
       expect(api.createWorkspace).toHaveBeenCalled();
@@ -271,7 +307,7 @@ describe("Milestone 12 first-run onboarding", () => {
     const { unmount } = render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Continuer" }));
     fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
-    fireEvent.click(screen.getByRole("button", { name: "Choisir les dossiers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Choisir un dossier à ranger" }));
 
     await waitFor(() => {
       expect(isOnboardingCompleted()).toBe(true);
@@ -283,7 +319,7 @@ describe("Milestone 12 first-run onboarding", () => {
 
     expect(
       await screen.findByRole("heading", {
-        name: "Votre ordinateur est en bazar ?",
+        name: "Que voulez-vous ranger ?",
       }),
     ).toBeTruthy();
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -294,13 +330,13 @@ describe("Milestone 12 first-run onboarding", () => {
     render(<App />);
     expect(
       await screen.findByRole("heading", {
-        name: "Votre ordinateur est en bazar ?",
+        name: "Que voulez-vous ranger ?",
       }),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Ouvrir la visite guidée" }));
     expect(
       await screen.findByRole("heading", {
-        name: "ZEMO range vos fichiers, pas vos applications.",
+        name: "Vous choisissez ce que ZEMO peut ranger.",
       }),
     ).toBeTruthy();
     expect(isOnboardingCompleted()).toBe(true);

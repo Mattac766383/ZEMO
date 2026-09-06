@@ -235,7 +235,7 @@ impl ScannerApplicationService {
         {
             self.database.set_current_workspace(workspace_id)?;
             self.database.set_current_root(workspace_id, existing.id)?;
-            self.ensure_root_monitoring_metadata(workspace_id, existing.id)?;
+            self.register_root_for_monitoring(&existing)?;
             return Ok(existing);
         }
 
@@ -259,7 +259,7 @@ impl ScannerApplicationService {
 
         self.database.set_current_workspace(workspace_id)?;
         self.database.set_current_root(workspace_id, root.id)?;
-        self.ensure_root_monitoring_metadata(workspace_id, root.id)?;
+        self.register_root_for_monitoring(&root)?;
         Ok(root)
     }
 

@@ -925,7 +925,7 @@ fn apply_consumer_folder_bundle_policy(
         // relocation itself is safe to apply without silently guessing a final taxonomy.
         draft.operation.needs_review = false;
         draft.operation.conflict_state = ProposalConflictState::None;
-        draft.operation.semantic_context = "consumer_folder_bundle".to_owned();
+        // Preserve the original bounded semantic context; bundle policy only changes placement.
         draft.operation.reasons.push(OrganizationReason {
             code: "consumer_folder_bundle".to_owned(),
             explanation: "Le dossier est conservé comme un bloc cohérent et rangé avec toute son arborescence.".to_owned(),

@@ -194,7 +194,10 @@ fn one_click_user_selected_folder_is_analyzed_moved_monitored_and_exactly_undoab
         .join("Administratif")
         .join("Factures")
         .join("facture_2026.txt");
-    let photo_destination = selected_root.join("Images").join("Photos").join("photo.jpg");
+    let photo_destination = selected_root
+        .join("Images")
+        .join("Photos")
+        .join("photo.jpg");
     for path in [&notes_destination, &invoice_destination, &photo_destination] {
         assert_is_test_sandbox(selected_root, path);
         assert!(

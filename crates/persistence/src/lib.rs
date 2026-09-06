@@ -73,6 +73,8 @@ const LOCAL_ANN_SEMANTIC_INDEX_MIGRATION: &str =
     include_str!("../../../migrations/0016_local_ann_semantic_index.sql");
 const INCREMENTAL_ORGANIZATION_PROPOSALS_MIGRATION: &str =
     include_str!("../../../migrations/0017_incremental_organization_proposals.sql");
+const EXECUTION_EMPTY_DIRECTORY_CLEANUP_MIGRATION: &str =
+    include_str!("../../../migrations/0018_execution_empty_directory_cleanup.sql");
 const LOCAL_PRINCIPAL_ID: &str = "01900000-0000-7000-8000-000000000001";
 const BUILTIN_PROCESSOR_ID: &str = "01900000-0000-7000-8000-000000000002";
 
@@ -4629,7 +4631,7 @@ fn apply_schema_migrations(
             db_init_trace("0009_monitoring_if_missing");
             apply_monitoring_migration_if_missing(connection, schema_version)?;
         }
-        12..=17 => {}
+        12..=18 => {}
         value => return Err(PersistenceError::UnsupportedSchema(value)),
     }
     if schema_version <= 10 {
@@ -4676,6 +4678,13 @@ fn apply_schema_migrations(
             connection,
             "0017_incremental_organization_proposals",
             INCREMENTAL_ORGANIZATION_PROPOSALS_MIGRATION,
+        )?;
+    }
+    if schema_version <= 17 {
+        execute_migration(
+            connection,
+            "0018_execution_empty_directory_cleanup",
+            EXECUTION_EMPTY_DIRECTORY_CLEANUP_MIGRATION,
         )?;
     }
     Ok(())
