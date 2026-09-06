@@ -146,7 +146,7 @@ jobs:
           npm run test:ui -- --run
 
       - name: Prepare macOS sidecar for Tauri validation
-        run: npm run sidecar:prepare
+        run: npm run sidecar:prepare --workspace @working-name/desktop
 
       - name: Rust formatting and supported desktop compile
         run: |
