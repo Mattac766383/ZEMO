@@ -5324,7 +5324,7 @@ mod tests {
                     .map_err(PersistenceError::Sql)
             })
             .unwrap_or_else(|error| panic!("schema version should load: {error}"));
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
     }
 
     #[test]
@@ -5763,7 +5763,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap_or_else(|error| panic!("preference columns should load: {error}"));
-        assert_eq!(version_after, 17);
+        assert_eq!(version_after, 18);
         assert_eq!(rules_tables, 4);
         assert_eq!(preference_columns, 4);
         drop(connection);
@@ -5825,7 +5825,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap_or_else(|error| panic!("hybrid tables should load: {error}"));
-        assert_eq!(version_after, 17);
+        assert_eq!(version_after, 18);
         assert_eq!(hybrid_tables, 3);
         drop(connection);
         drop(database);
@@ -5948,7 +5948,7 @@ mod tests {
             connection
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap_or_else(|error| panic!("current version should load: {error}")),
-            17
+            18
         );
         let legacy_root_state: (String, i64, String, Option<String>) = connection
             .query_row(
@@ -6037,7 +6037,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap_or_else(|error| panic!("semantic tables should be readable: {error}"));
-        assert_eq!(version_after, 17);
+        assert_eq!(version_after, 18);
         assert_eq!(semantic_tables, 5);
         drop(connection);
         drop(database);

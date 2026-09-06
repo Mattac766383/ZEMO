@@ -1,0 +1,60 @@
+name: Patch Windows Beta Qualification 0018
+
+on:
+  push:
+    branches: [fix/windows-beta-qualification-0018]
+    paths:
+      - scripts/patch_windows_beta_qualification_0018.py
+      - .github/workflows/patch-windows-beta-qualification-0018.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-validate:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: fix/windows-beta-qualification-0018
+          fetch-depth: 0
+
+      - name: Setup Rust
+        run: |
+          rustup default stable
+          rustup component add rustfmt
+
+      - name: Apply targeted qualification patch
+        run: python scripts/patch_windows_beta_qualification_0018.py
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Persistence migration tests
+        env:
+          LIBSQLITE3_FLAGS: -DSQLCIPHER_OMIT_DLLMAIN
+          RUST_MIN_STACK: "268435456"
+          RUSTFLAGS: -C link-arg=/STACK:268435456
+        run: cargo test -p persistence --lib -- --nocapture --test-threads=1
+
+      - name: Milestone 8 qualification compile and tests
+        env:
+          LIBSQLITE3_FLAGS: -DSQLCIPHER_OMIT_DLLMAIN
+          RUST_MIN_STACK: "268435456"
+          RUSTFLAGS: -C link-arg=/STACK:268435456
+        run: cargo test -p application --test milestone8_qualification -- --nocapture --test-threads=1
+
+      - name: Commit validated test compatibility fix
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/persistence/src/lib.rs crates/application/tests/milestone8_qualification.rs
+          if (git diff --cached --quiet) {
+            Write-Host "No generated qualification changes to commit."
+            exit 0
+          }
+          git commit -m "Fix Windows qualification for schema 18 cleanup"
+          git push origin HEAD:fix/windows-beta-qualification-0018
