@@ -53,6 +53,17 @@ if '"0018_execution_empty_directory_cleanup"' not in lib:
         "migration application",
     )
 
+# A database that has successfully applied migration 0018 must be reopenable.
+# This widens only the accepted current schema version; unknown future versions
+# remain fail-closed through the existing UnsupportedSchema branch.
+if "12..=18 => {}" not in lib:
+    lib = patch_once(
+        lib,
+        "        12..=17 => {}\n",
+        "        12..=18 => {}\n",
+        "supported schema ceiling",
+    )
+
 LIB.write_text(lib, encoding="utf-8")
 
 migration = r'''-- Allow the fail-closed executor to record safe cleanup of directories that
