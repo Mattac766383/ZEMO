@@ -361,14 +361,18 @@ export function OneClickPreviewView({
 export type OneClickDoneViewProps = {
   filesMoved: number;
   undoBusy: boolean;
+  openFolderBusy: boolean;
   onUndo: () => void;
+  onOpenFolder: () => void;
   onFinish: () => void;
 };
 
 export function OneClickDoneView({
   filesMoved,
   undoBusy,
+  openFolderBusy,
   onUndo,
+  onOpenFolder,
   onFinish,
 }: OneClickDoneViewProps) {
   return (
@@ -383,7 +387,15 @@ export function OneClickDoneView({
         <button type="button" disabled={undoBusy} onClick={onUndo}>
           {undoBusy ? "Annulation…" : "Annuler le rangement"}
         </button>
-        <button className="primary" type="button" onClick={onFinish}>
+        <button
+          className="primary"
+          type="button"
+          disabled={openFolderBusy}
+          onClick={onOpenFolder}
+        >
+          {openFolderBusy ? "Ouverture…" : "Ouvrir le dossier rangé"}
+        </button>
+        <button type="button" onClick={onFinish}>
           Terminé
         </button>
       </div>

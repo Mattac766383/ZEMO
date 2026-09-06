@@ -771,3 +771,7 @@ export function runMonitoringCycle(
 export function cancelMonitoring(workspaceId: string): Promise<void> {
   return invoke<void>("cancel_monitoring", { workspaceId });
 }
+
+export async function openRegisteredRoot(): Promise<void> {
+  await invoke("open_registered_root");
+}
