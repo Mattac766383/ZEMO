@@ -14,6 +14,7 @@ import {
   listScanErrors,
   listScanFiles,
   listContentResults,
+  openRegisteredRoot,
   authorizeUserContentFolder,
   prepareExecution,
   probeUserContentAccess,
@@ -234,6 +235,7 @@ function App() {
   const [oneClickFilesAnalyzed, setOneClickFilesAnalyzed] = useState(0);
   const [applyBusy, setApplyBusy] = useState(false);
   const [undoBusy, setUndoBusy] = useState(false);
+  const [openFolderBusy, setOpenFolderBusy] = useState(false);
   const [lastOrganize, setLastOrganize] = useState(() =>
     readLastOrganizeResult(),
   );
@@ -247,6 +249,18 @@ function App() {
 
   function clearError() {
     setError(null);
+  }
+
+  async function handleOpenOrganizedFolder() {
+    clearError();
+    setOpenFolderBusy(true);
+    try {
+      await openRegisteredRoot();
+    } catch (reason) {
+      reportError(reason);
+    } finally {
+      setOpenFolderBusy(false);
+    }
   }
 
   useEffect(() => {
@@ -1255,7 +1269,9 @@ function App() {
         <OneClickDoneView
           filesMoved={lastOrganize?.filesMoved ?? 0}
           undoBusy={undoBusy}
+          openFolderBusy={openFolderBusy}
           onUndo={() => void handleUndoOneClick()}
+          onOpenFolder={() => void handleOpenOrganizedFolder()}
           onFinish={() => setView("home")}
         />
       ) : null}

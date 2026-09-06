@@ -391,6 +391,37 @@ async fn create_workspace(
     .await
 }
 
+#[tauri::command]
+fn open_registered_root(state: State<'_, ManagedScanner>) -> Result<(), String> {
+    let session = state
+        .service
+        .restore_workspace_session()
+        .map_err(command_error)?
+        .ok_or_else(|| "Aucun dossier ZEMO n’est actuellement enregistré.".to_owned())?;
+    let root = session
+        .root
+        .ok_or_else(|| "Aucun dossier ZEMO n’est actuellement enregistré.".to_owned())?;
+    let path = fs::canonicalize(&root.absolute_path)
+        .map_err(|_| "Le dossier rangé n’est plus disponible à cet emplacement.".to_owned())?;
+    if !path.is_dir() {
+        return Err("Le dossier rangé n’est plus disponible à cet emplacement.".to_owned());
+    }
+
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg(&path).spawn();
+    #[cfg(target_os = "windows")]
+    let result = std::process::Command::new("explorer.exe")
+        .arg(&path)
+        .spawn();
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let result = std::process::Command::new("xdg-open").arg(&path).spawn();
+
+    result.map(|_| ()).map_err(|_| {
+        "Impossible d’ouvrir le dossier rangé avec le gestionnaire de fichiers du système."
+            .to_owned()
+    })
+}
+
 #[tauri::command(rename_all = "camelCase")]
 async fn select_and_register_root(
     state: State<'_, ManagedScanner>,
@@ -3923,6 +3954,7 @@ pub fn run() {
             run_monitoring_cycle,
             cancel_monitoring,
             create_workspace,
+            open_registered_root,
             select_and_register_root,
             list_user_content_locations,
             probe_user_content_access,
