@@ -27,6 +27,7 @@ fn one_click_user_selected_folder_is_analyzed_moved_monitored_and_exactly_undoab
     let sandbox = MutationSandbox::new();
 
     // The sandbox itself represents the exact folder selected by the user.
+    // This acceptance test treats that selected root as a hard containment boundary.
     // Loose files prove normal classification; nested project folders prove that
     // coherent subtrees can be moved as blocks without escaping the selected scope.
     sandbox.write(
