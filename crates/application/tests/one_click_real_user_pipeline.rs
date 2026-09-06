@@ -30,7 +30,7 @@ fn one_click_user_selected_folder_is_analyzed_moved_monitored_and_exactly_undoab
     // Loose files prove normal classification; nested project folders prove that
     // coherent subtrees can be moved as blocks without escaping the selected scope.
     sandbox.write(
-        "notes.txt",
+        "chantier_bordeaux_notes.txt",
         b"Compte rendu chantier Bordeaux pour le client Martin. Travaux et devis a verifier.",
     );
     sandbox.write(
@@ -124,7 +124,7 @@ fn one_click_user_selected_folder_is_analyzed_moved_monitored_and_exactly_undoab
     }));
 
     assert!(proposal.operations.iter().any(|operation| {
-        operation.source.relative_path.replace('\\', "/") == "notes.txt"
+        operation.source.relative_path.replace('\\', "/") == "chantier_bordeaux_notes.txt"
             && operation.operation_kind == ProposalOperationKind::MoveProposal
             && operation.proposed_destination == ["Documents", "Travail"]
     }));
@@ -188,7 +188,7 @@ fn one_click_user_selected_folder_is_analyzed_moved_monitored_and_exactly_undoab
     let notes_destination = selected_root
         .join("Documents")
         .join("Travail")
-        .join("notes.txt");
+        .join("chantier_bordeaux_notes.txt");
     let invoice_destination = selected_root
         .join("Documents")
         .join("Administratif")
@@ -203,7 +203,7 @@ fn one_click_user_selected_folder_is_analyzed_moved_monitored_and_exactly_undoab
             path.display()
         );
     }
-    assert!(!selected_root.join("notes.txt").exists());
+    assert!(!selected_root.join("chantier_bordeaux_notes.txt").exists());
     assert!(!selected_root.join("facture_2026.txt").exists());
     assert!(!selected_root.join("photo.jpg").exists());
 
