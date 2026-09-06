@@ -145,6 +145,9 @@ jobs:
           npm run typecheck
           npm run test:ui -- --run
 
+      - name: Prepare macOS sidecar for Tauri validation
+        run: npm run sidecar:prepare
+
       - name: Rust formatting and supported desktop compile
         run: |
           cargo fmt --all -- --check
