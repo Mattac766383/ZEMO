@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "channel": "private-beta",
-  "request_id": 9,
-  "macos_dist_tag": "0.1.0-beta.13",
-  "windows_dist_tag": "0.1.0-beta.11",
-  "notes": "Fresh tester builds after PR #48 merged to main. Includes the selected-folder organization flow plus schema 18 migration qualification and exhaustive RemoveDirectoryIfEmpty rollback qualification. Preserve exact user-selected scope, filesystem confinement, physical Apply and exact Undo/recovery guarantees. Do not redistribute obsolete beta.8 or beta.9 artifacts, and do not reuse failed beta.10/beta.12 attempts. macOS remains fail-closed unless Developer ID signing, Apple notarization, stapling, and Gatekeeper qualification all succeed."
+  "request_id": 10,
+  "macos_dist_tag": "0.1.0-beta.14",
+  "windows_dist_tag": "0.1.0-beta.14",
+  "notes": "Fresh tester builds after PR #49 merged to main. Includes the user-selected-folder organization flow plus the safe 'Ouvrir le dossier rangé' action, which opens only the currently registered canonical ZEMO root and accepts no arbitrary frontend path. Preserve exact user-selected scope, filesystem confinement, physical Apply and exact Undo/recovery guarantees, schema 18 compatibility, and RemoveDirectoryIfEmpty rollback qualification. Do not redistribute or reuse obsolete beta.8/beta.9 or any failed beta.10/beta.12/beta.13 attempts. macOS remains fail-closed unless Developer ID signing, Apple notarization, stapling, and Gatekeeper qualification all succeed."
 }
