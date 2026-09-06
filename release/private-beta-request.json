@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "channel": "private-beta",
-  "request_id": 7,
-  "macos_dist_tag": "0.1.0-beta.11",
-  "windows_dist_tag": "0.1.0-beta.9",
-  "notes": "Prepare fresh tester builds after PR #45. Windows beta.9 contains the real Ranger end-to-end fix: recursive scan, semantic analysis before proposal generation, physical Apply and exact Undo validation. macOS official external release remains fail-closed until Apple Developer ID and notarization secrets are configured."
+  "request_id": 8,
+  "macos_dist_tag": "0.1.0-beta.12",
+  "windows_dist_tag": "0.1.0-beta.10",
+  "notes": "Fresh tester builds after PR #47 merged to main. Includes exact user-selected-folder scope, recursive organization inside that root, continuous monitoring, safe empty-directory cleanup, physical Apply and exact Undo/recovery validation. Do not redistribute obsolete beta.8 or beta.9 artifacts. macOS workflow remains fail-closed unless Developer ID signing, Apple notarization, stapling, and Gatekeeper qualification all succeed."
 }
