@@ -36,8 +36,8 @@ jobs:
       - name: Apply targeted release-gate fixes
         run: python3 scripts/fix_pr47_release_gates.py
 
-      - name: Refresh lockfile only
-        run: npm install --package-lock-only --ignore-scripts
+      - name: Apply npm audit lockfile fix without lifecycle scripts
+        run: npm audit fix --package-lock-only --ignore-scripts
 
       - name: Install locked dependencies
         run: npm ci
