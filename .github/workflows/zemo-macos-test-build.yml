@@ -1,0 +1,94 @@
+name: ZEMO macOS Test Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/zemo-macos-test-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zemo-macos-test-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  macos-test-build:
+    name: macos-test-build
+    runs-on: macos-14
+    timeout-minutes: 100
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup Rust
+        run: |
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build ZEMO.app test bundle
+        run: npm run tauri -- build --bundles app
+
+      - name: Inspect test app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_REL="$(find target -type d -path '*/release/bundle/macos/ZEMO.app' -print -quit)"
+          test -n "$APP_REL"
+          test -d "$APP_REL"
+          APP="$(cd "$(dirname "$APP_REL")" && pwd -P)/$(basename "$APP_REL")"
+          test -x "$APP/Contents/MacOS/operation-executor"
+          codesign --verify --deep --strict "$APP"
+          file "$APP/Contents/MacOS/operation-executor"
+          echo "WORKING_NAME_PACKAGED_APP=$APP" >> "$GITHUB_ENV"
+
+      - name: Run packaged sidecar authentication and physical Apply tests
+        run: |
+          test -d "$WORKING_NAME_PACKAGED_APP"
+          cargo test -p desktop --lib packaged_macos_apply -- --ignored --nocapture --test-threads=1
+
+      - name: Package internal test artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/macos-test-build/dist
+          ditto -c -k --sequesterRsrc --keepParent "$WORKING_NAME_PACKAGED_APP" target/macos-test-build/dist/ZEMO-macos-arm64-test.zip
+          shasum -a 256 target/macos-test-build/dist/ZEMO-macos-arm64-test.zip > target/macos-test-build/dist/SHA256SUMS.txt
+          cat > target/macos-test-build/dist/README-FIRST.txt <<'EOF'
+          INTERNAL TEST BUILD ONLY.
+          This artifact is not Developer ID signed, not notarized, and not Gatekeeper-qualified for external distribution.
+          Do not redistribute it as a trusted/private-beta release.
+          EOF
+          printf 'commit=%s\n' "$GITHUB_SHA" > target/macos-test-build/dist/BUILDINFO.txt
+
+      - name: Upload internal macOS test artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZEMO-macos-arm64-internal-test-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 7
+          path: target/macos-test-build/dist/*
+
+      - name: Job summary
+        if: always() && !cancelled()
+        shell: bash
+        run: |
+          echo "## ZEMO macOS internal test build" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Distribution: internal test only" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Developer ID signing: not required" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Apple notarization: not attempted" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Trusted private-beta workflow remains unchanged and fail-closed" >> "$GITHUB_STEP_SUMMARY"
