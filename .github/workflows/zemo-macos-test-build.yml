@@ -92,3 +92,4 @@ jobs:
           echo "- Developer ID signing: not required" >> "$GITHUB_STEP_SUMMARY"
           echo "- Apple notarization: not attempted" >> "$GITHUB_STEP_SUMMARY"
           echo "- Trusted private-beta workflow remains unchanged and fail-closed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Refresh reason: latest merged selected-folder build" >> "$GITHUB_STEP_SUMMARY"
