@@ -1,4 +1,5 @@
 name: ZEMO macOS Private Beta
+# Test-build trigger after PR #36 merge. Do not merge this branch.
 
 on:
   pull_request:
